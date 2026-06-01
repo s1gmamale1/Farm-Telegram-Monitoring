@@ -1,0 +1,12 @@
+# Secrets — never commit your live token
+.env
+
+# Runtime state
+data/
+logs/*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

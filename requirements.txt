@@ -1,0 +1,5 @@
+# Log-file mode (run.py) needs NOTHING beyond the Python standard library.
+#
+# The Telegram group watcher (run_telegram.py) needs Telethon to read messages
+# from other bots as a user account (the Bot API forbids bot-to-bot reads):
+telethon>=1.36

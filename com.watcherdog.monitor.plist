@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd service for WatcherDogBot.
+
+  Install:
+    cp com.watcherdog.monitor.plist ~/Library/LaunchAgents/
+    launchctl load  ~/Library/LaunchAgents/com.watcherdog.monitor.plist
+
+  Stop / uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.watcherdog.monitor.plist
+
+  Check status:
+    launchctl list | grep watcherdog
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.watcherdog.monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/macmini4/Documents/WatcherDogBot/run.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macmini4/Documents/WatcherDogBot</string>
+
+    <!-- Restart automatically if it ever exits. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Service logs (WatcherDog's own stdout/stderr, not the bots'). -->
+    <key>StandardOutPath</key>
+    <string>/Users/macmini4/Documents/WatcherDogBot/data/service.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macmini4/Documents/WatcherDogBot/data/service.err.log</string>
+</dict>
+</plist>

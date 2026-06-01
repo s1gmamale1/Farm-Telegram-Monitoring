@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd service for the WatcherDog TELEGRAM watcher (MTProto user-client).
+  This is the mode for monitoring the SinFermera group.
+
+  Prereqs: you have run tools/tg_login.py and set TELEGRAM_API_ID / API_HASH /
+  WATCH_CHATS in .env.
+
+  Install:
+    cp com.watcherdog.telegram.plist ~/Library/LaunchAgents/
+    launchctl load  ~/Library/LaunchAgents/com.watcherdog.telegram.plist
+
+  Stop / uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.watcherdog.telegram.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.watcherdog.telegram</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/macmini4/Documents/WatcherDogBot/.venv/bin/python</string>
+        <string>/Users/macmini4/Documents/WatcherDogBot/run_telegram.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macmini4/Documents/WatcherDogBot</string>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/macmini4/Documents/WatcherDogBot/data/telegram.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macmini4/Documents/WatcherDogBot/data/telegram.err.log</string>
+</dict>
+</plist>
