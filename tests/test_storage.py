@@ -36,6 +36,46 @@ def test_last_seen_returns_most_recent_ts(store):
     assert store.last_seen("dup") == 2000.0
 
 
+def test_recurring_flags_repeated_hash(store):
+    now = 10_000.0
+    for i in range(3):
+        store.record("SinFermera5", "high", {"summary": "proxy timeout"},
+                     "DUP", "proxy timeout", False, ts=now - i * 60)
+    groups = store.recurring(3600, 3, now=now)
+    assert len(groups) == 1
+    g = groups[0]
+    assert g["raw_hash"] == "DUP"
+    assert g["count"] == 3
+    assert g["bots"] == ["SinFermera5"]
+    assert g["summary"] == "proxy timeout"   # from the latest incident
+
+
+def test_recurring_ignores_below_min_count(store):
+    now = 10_000.0
+    store.record("b", "high", ANALYSIS, "h", "raw", False, ts=now - 10)
+    store.record("b", "high", ANALYSIS, "h", "raw", False, ts=now - 20)
+    assert store.recurring(3600, 3, now=now) == []  # only 2 < min_count 3
+
+
+def test_recurring_respects_window(store):
+    now = 10_000.0
+    for i in range(4):
+        store.record("b", "high", ANALYSIS, "h", "raw", False, ts=now - i * 60)
+    # All four are inside the last hour...
+    assert store.recurring(3600, 3, now=now)
+    # ...but none within the last 30s.
+    assert store.recurring(30, 3, now=now) == []
+
+
+def test_recurring_collects_distinct_bots(store):
+    now = 10_000.0
+    for bot in ("SinFermera1", "SinFermera2", "SinFermera1"):
+        store.record(bot, "high", ANALYSIS, "shared", "raw", False, ts=now - 5)
+    g = store.recurring(3600, 3, now=now)[0]
+    assert sorted(g["bots"]) == ["SinFermera1", "SinFermera2"]
+    assert g["count"] == 3
+
+
 def test_recent_orders_newest_first_and_limits(store):
     for i in range(5):
         store.record("bot", "high", ANALYSIS, f"h{i}", "raw", True, ts=float(i))

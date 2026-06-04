@@ -5,6 +5,9 @@
 data/
 logs/*.log
 
+# Self-edit backups (the bot's undo files: <file>.bak.<timestamp>)
+*.bak.*
+
 # Python
 __pycache__/
 *.pyc

@@ -13,7 +13,14 @@ from telethon import TelegramClient, events
 logger = logging.getLogger("watcherdog.source")
 
 
-def make_client(api_id, api_hash, session_path):
+def make_client(api_id, api_hash, session_path, session_string=None):
+    """Telethon client. Uses an in-memory StringSession when `session_string` is
+    given (lets the watcher reuse an already-authorized session without its own
+    login); otherwise a file session at `session_path`."""
+    if session_string:
+        from telethon.sessions import StringSession
+
+        return TelegramClient(StringSession(session_string), api_id, api_hash)
     return TelegramClient(session_path, api_id, api_hash)
 
 

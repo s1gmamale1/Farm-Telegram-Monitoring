@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import random
 import subprocess
+import threading
 import time
 
 import Quartz
@@ -54,6 +55,7 @@ def window_bounds(owner_name="Telegram"):
 
 
 def capture_window(window_id, path="/tmp/wd_window.png"):
+    _gate()
     subprocess.run(["screencapture", "-x", "-o", f"-l{window_id}", path],
                    check=True, capture_output=True)
     return path
@@ -121,7 +123,70 @@ def set_smooth(enabled):
     _SMOOTH = bool(enabled)
 
 
+# --- pause / resume (F10) ---------------------------------------------------
+# When paused, every GUI action blocks at the next event so the user can take
+# over the Mac; pressing the hotkey again resumes exactly where it left off.
+_PAUSED = threading.Event()        # set == paused
+
+
+def pause():
+    _PAUSED.set()
+
+
+def resume():
+    _PAUSED.clear()
+
+
+def toggle_pause():
+    resume() if _PAUSED.is_set() else pause()
+    return _PAUSED.is_set()
+
+
+def is_paused():
+    return _PAUSED.is_set()
+
+
+def _gate():
+    """Block here while paused (checked before every input/capture)."""
+    while _PAUSED.is_set():
+        time.sleep(0.1)
+
+
+def install_pause_hotkey(keycode=109, on_change=None):
+    """Start a daemon thread that toggles pause when `keycode` is pressed
+    (109 = F10). Uses key-state polling, so no event tap is needed — just the
+    Accessibility permission we already have."""
+    def _loop():
+        prev = False
+        last_toggle = 0.0
+        while True:
+            try:
+                down = bool(Quartz.CGEventSourceKeyState(
+                    Quartz.kCGEventSourceStateHIDSystemState, keycode))
+            except Exception:
+                down = False
+            now = time.monotonic()
+            # Debounce: only toggle on a fresh press edge, and never more than
+            # once per 0.7s (a single physical tap can otherwise register as
+            # several edges and pause→resume instantly).
+            if down and not prev and (now - last_toggle) > 0.7:
+                last_toggle = now
+                state = toggle_pause()
+                if on_change:
+                    try:
+                        on_change(state)
+                    except Exception:
+                        pass
+            prev = down
+            time.sleep(0.05)
+
+    t = threading.Thread(target=_loop, daemon=True, name="pause-hotkey")
+    t.start()
+    return t
+
+
 def _post(ev):
+    _gate()
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
 
 

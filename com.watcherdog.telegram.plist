@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd service for the WatcherDog TELEGRAM watcher (MTProto user-client).
-  This is the mode for monitoring the SinFermera group.
+  launchd service for the WatcherDog MCP/MTProto watcher (run_watcher.py).
+  Proactively monitors the Farms folder and answers ibo via the self-contained
+  agent. This is the current default mode.
 
-  Prereqs: you have run tools/tg_login.py and set TELEGRAM_API_ID / API_HASH /
-  WATCH_CHATS in .env.
+  Prereqs: run tools/tg_login.py (authorize the user session) and set
+  TELEGRAM_API_ID / API_HASH / IBO_CHAT_ID in .env, plus an OpenRouter key
+  (OPENROUTER_API_KEY, also picked up from ~/.hermes/.env).
 
   Install:
     cp com.watcherdog.telegram.plist ~/Library/LaunchAgents/
@@ -21,7 +23,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/macmini4/Documents/WatcherDogBot/.venv/bin/python</string>
-        <string>/Users/macmini4/Documents/WatcherDogBot/run_telegram.py</string>
+        <string>/Users/macmini4/Documents/WatcherDogBot/run_watcher.py</string>
+        <string>--verbose</string>
     </array>
 
     <key>WorkingDirectory</key>

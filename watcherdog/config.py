@@ -37,6 +37,13 @@ def _parse_env_file(path):
     return values
 
 
+def _hermes_env_value(name):
+    """Look up a single KEY from ~/.hermes/.env (where Hermes stores provider
+    keys like OPENROUTER_API_KEY). Returns "" if absent/unreadable."""
+    path = os.path.expanduser("~/.hermes/.env")
+    return _parse_env_file(path).get(name, "")
+
+
 class Config:
     """Resolved runtime configuration."""
 
@@ -80,6 +87,11 @@ class Config:
         self.telegram_api_id = int(api_id) if api_id.isdigit() else 0
         self.telegram_api_hash = get("TELEGRAM_API_HASH", "").strip()
         self.telegram_session = resolve_path(get("TELEGRAM_SESSION", "data/watcher.session"))
+        # Optional: reuse an already-authorized session STRING instead of a file
+        # session (avoids a separate tools/tg_login.py). If blank and no file
+        # session exists, the watcher falls back to the telegram-mcp's session.
+        self.telegram_session_string = get("TELEGRAM_SESSION_STRING", "").strip()
+        self.telegram_mcp_dir = os.path.expanduser(get("TELEGRAM_MCP_DIR", "~/Documents/telegram-mcp"))
         # Comma-separated chat IDs or @usernames to monitor. Empty = every chat
         # the account is in (not recommended — name the SinFermera group).
         raw_watch = get("WATCH_CHATS", "").strip()
@@ -100,10 +112,123 @@ class Config:
         # known-error pattern (catches novel failures at the cost of more Ollama calls).
         self.analyze_unknown = get("ANALYZE_UNKNOWN", "true").strip().lower() in ("1", "true", "yes")
 
-        # --- GUI (no-API) mode: drive the real Telegram app ---
+        # --- MCP / MTProto watcher mode (current default; replaces GUI mode) ---
+        # Runs as a USER account (Telethon) and proactively watches one folder of
+        # bots, alerting the ibo chat; ibo's messages are answered by Hermes
+        # (which has the Telegram MCP read-tools). See run_watcher.py.
+        # The dialog FOLDER (filter) whose chats are monitored. Default "Farms"
+        # holds the 24 SinFermera bots. Matched by name; WATCH_FOLDER_ID (a
+        # numeric filter id, 0 = ignore) takes precedence when set.
+        self.watch_folder = get("WATCH_FOLDER", "Farms").strip()
+        wf_id = get("WATCH_FOLDER_ID", "").strip()
+        self.watch_folder_id = int(wf_id) if wf_id.lstrip("-").isdigit() else 0
+        # The chat that receives proactive alerts AND whose messages are routed to
+        # Hermes. A numeric user id (e.g. 1406109190) or an @username.
+        self.ibo_chat_id = get("IBO_CHAT_ID", "").strip()
+        # Seconds between proactive monitor sweeps of the watch folder.
+        self.watch_poll_interval = float(get("WATCH_POLL_INTERVAL", "120"))
+        # After reading a chat (monitor sweep or agent), acknowledge it as read
+        # so its unread badge clears — reading via the API does NOT do this on its
+        # own. Set false to leave unread markers untouched.
+        self.mark_read_after_read = get("MARK_READ_AFTER_READ", "true").strip().lower() in ("1", "true", "yes")
+
+        # --- Hermes panels & skills (docs/hermes/skills/) ---
+        # Folder holding the panel control bots; the number in a chat's display
+        # name is its Panel# (skill 0). Panels are driven via /start + inline
+        # buttons.
+        self.panels_folder = get("PANELS_FOLDER", "Panels").strip()
+        # Always keep exactly this many launched accounts per panel (skill 4).
+        self.accounts_per_panel = int(get("ACCOUNTS_PER_PANEL", "4"))
+        # Chance (0..1) of sending a random sticker after a text reply (skill 6).
+        self.sticker_chance = min(1.0, max(0.0, float(get("STICKER_CHANCE", "0.25"))))
+
+        # --- Weekly drop stats -> Google Sheets (skill 5) ---
+        # Wednesday 00:00: stop farms, pull Drops Stats per panel, buffer one row
+        # per panel to DROP_STATS_DIR/<YYYY-Www>.json, then push to a sheet via
+        # watcherdog/drop_sheets.py. See docs/hermes/skills/05-drop-stats.md.
+        self.drop_stats_dir = resolve_path(get("DROP_STATS_DIR", "data/hermes/drop_stats"))
+        # Google Sheets sink. drop_sheets.py reads these from the ENVIRONMENT; the
+        # weekly job bridges them across before calling append_week(). The creds
+        # path is resolved under the project root so a relative .env value works
+        # regardless of the process's CWD (drop_sheets checks os.path.exists).
+        creds = get("GSHEETS_CREDENTIALS", "").strip()
+        self.gsheets_credentials = resolve_path(creds) if creds else ""
+        self.gsheets_sheet_id = get("GSHEETS_SHEET_ID", "").strip()
+        self.gsheets_tab = get("GSHEETS_TAB", "DropStats").strip() or "DropStats"
+
+        # --- Recurring-error watchdog ---
+        # Every RECURRING_ERROR_INTERVAL seconds, check the incident store: if the
+        # SAME error (identical hash) has fired at least MIN_COUNT times within the
+        # trailing WINDOW, alert ibo that it keeps happening. COOLDOWN suppresses
+        # re-alerting the same recurring error for that many seconds.
+        self.recurring_error_enabled = get("RECURRING_ERROR_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.recurring_error_interval = float(get("RECURRING_ERROR_INTERVAL", "900"))   # 15 min
+        self.recurring_error_window = float(get("RECURRING_ERROR_WINDOW", "3600"))      # last 1 h
+        self.recurring_error_min_count = max(2, int(get("RECURRING_ERROR_MIN_COUNT", "3")))
+        self.recurring_error_cooldown = float(get("RECURRING_ERROR_COOLDOWN", "3600"))  # 1 h
+
+        # --- Special Forces group (@-mention auto-reply) ---
+        # When this account is @-mentioned in the SPECIAL_FORCES_CHAT group, the
+        # mention is handed to the agent and its answer is posted back IN the group
+        # (read-only: the agent runs with actions disabled so untrusted group text
+        # can never trigger a real action). Match by group title, @username, or id.
+        self.special_forces_enabled = get("SPECIAL_FORCES_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.special_forces_chat = get("SPECIAL_FORCES_CHAT", "Special Forces").strip()
+
+        # --- Auto weekly digest (read-only report pushed to ibo) ---
+        # A /weekly-style summary the agent compiles from the Farms folder and
+        # sends to ibo on WEEKDAY at HOUR (local). weekday 6 = Sunday. This does
+        # NOT stop farms — that's the separate Wednesday drop-stats job (skill 5).
+        self.weekly_digest_enabled = get("WEEKLY_DIGEST_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.weekly_digest_weekday = int(get("WEEKLY_DIGEST_WEEKDAY", "6"))   # Sunday
+        self.weekly_digest_hour = int(get("WEEKLY_DIGEST_HOUR", "18"))        # 18:00
+
+        # --- Auto hourly report (pushed to a forum topic or chat) ---
+        self.hourly_report_enabled = get("HOURLY_REPORT_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.hourly_report_topic = get("HOURLY_REPORT_TOPIC", "").strip()
+        raw_hourly_chat = get("HOURLY_REPORT_CHAT", "").strip()
+        self.hourly_report_chat = raw_hourly_chat if raw_hourly_chat else self.telegram_chat_id
+        # A bot counts as "quiet" in the hourly report when its last message is
+        # older than this many minutes (was 30; now 60 = 1 hour).
+        self.quiet_threshold_minutes = float(get("QUIET_THRESHOLD_MINUTES", "60"))
+
+        # --- Self-contained conversation agent (answers ibo) ---
+        # ibo's messages are answered by a small READ-ONLY tool-calling loop over
+        # an OpenAI-compatible chat API (OpenRouter by default — the same model
+        # Hermes uses). It reads Telegram through the watcher's own connection.
+        self.agent_model = get("AGENT_MODEL", "deepseek/deepseek-v4-pro")
+        self.agent_api_base = get("AGENT_API_BASE", "https://openrouter.ai/api/v1").rstrip("/")
+        # Tool-call rounds per turn. The skill-2 action loop chains several calls
+        # (lookup_fix -> screenshot -> read -> press button(s) -> log/report), so
+        # this needs headroom beyond a read-only Q&A. If the budget is spent the
+        # agent makes one final tool-less pass to answer from what it gathered
+        # (agent.answer), so a long turn still replies instead of erroring.
+        self.agent_max_steps = int(get("AGENT_MAX_STEPS", "12"))
+        self.agent_timeout = float(get("AGENT_TIMEOUT", "120"))
+        # History turns (user+assistant pairs) kept for context per ibo session.
+        self.agent_history_turns = int(get("AGENT_HISTORY_TURNS", "8"))
+        # API key: explicit AGENT_API_KEY wins, else OPENROUTER_API_KEY from the
+        # environment, else from ~/.hermes/.env (where Hermes keeps it).
+        agent_key = (get("AGENT_API_KEY", "").strip()
+                     or os.environ.get("OPENROUTER_API_KEY", "").strip()
+                     or _hermes_env_value("OPENROUTER_API_KEY").strip())
+        self.agent_api_key = agent_key
+        # Where the live ibo conversation is mirrored (tail-able).
+        self.agent_chat_log = get(
+            "AGENT_CHAT_LOG",
+            os.path.join(os.path.dirname(self.db_path) or ".", "agent_chat.log"))
+
+        # --- GUI (no-API) mode: drive the real Telegram app [LEGACY] ---
+        # Superseded by the MCP/MTProto watcher above. Kept for reference only;
+        # run_gui.py is no longer the supported entrypoint.
         # Sidebar name of the chat to type alerts into. "Saved Messages" = yourself.
         self.gui_alert_chat = get("GUI_ALERT_CHAT", "Saved Messages")
         self.gui_poll_interval = float(get("GUI_POLL_INTERVAL", "120"))
+        # Between the (slow) 24-bot sweeps we keep polling JUST the alert chat on
+        # this much shorter interval, so a message you text in ibo is read and
+        # handed to Hermes within seconds instead of waiting for the next sweep.
+        self.gui_reply_poll_interval = max(
+            1.0, float(get("GUI_REPLY_POLL_INTERVAL", "5")))
         # How Telegram sends: "return" (Send by Enter) or "cmd_return" (Cmd+Enter).
         self.gui_send_key = get("GUI_SEND_KEY", "return").strip().lower()
         # Right-pane fraction for locating the message input on click fallback.
@@ -117,8 +242,9 @@ class Config:
         self.gui_chat_load_wait = float(get("GUI_CHAT_LOAD_WAIT", "1.3"))
         # Max scroll iterations when enumerating the chat list to the end.
         self.gui_scroll_max = int(get("GUI_SCROLL_MAX", "40"))
-        # Regex identifying a bot chat by name.
-        self.gui_bot_name_re = get("GUI_BOT_NAME_RE", r"sinf[ae]rmera\s*0*\d+")
+        # Regex identifying a bot chat by name (1-2 digits — bots are 1..24 —
+        # so an OCR smear like "221" resolves to 22, not a phantom bot).
+        self.gui_bot_name_re = get("GUI_BOT_NAME_RE", r"sinf[ae]rmera\s*0*\d{1,2}")
         # The "all good" status line sent to the alert chat (deduplicated).
         self.gui_status_message = get(
             "GUI_STATUS_MESSAGE", "✅ WatcherDog: everything working perfectly."
@@ -136,6 +262,22 @@ class Config:
         # horizontal position within the chat-list span is at/beyond this
         # fraction (badges sit at the far right of the row).
         self.gui_unread_x_frac = float(get("GUI_UNREAD_X_FRAC", "0.5"))
+        # Ignore messages older than this many minutes (stale → not worth acting on).
+        self.gui_max_age_minutes = float(get("GUI_MAX_AGE_MINUTES", "120"))
+        # Type replies character-by-character (human cadence) instead of pasting.
+        self.gui_human_typing = get("GUI_HUMAN_TYPING", "true").strip().lower() in ("1", "true", "yes")
+        # Global hotkey (key code) to pause/resume all GUI work. 109 = F10.
+        self.gui_pause_keycode = int(get("GUI_PAUSE_KEYCODE", "109"))
+        # File the activity log is mirrored to (so you can `tail -f` it even when
+        # running in the foreground). Lives next to the DB by default.
+        self.gui_run_log = get(
+            "GUI_RUN_LOG",
+            os.path.join(os.path.dirname(self.db_path) or ".", "gui_run.log"),
+        )
+        # On startup, auto-open a stacked column of Terminal windows down the
+        # RIGHT side of the screen, each tailing one log (activity + Hermes chat).
+        self.gui_monitor_terminals = get(
+            "GUI_MONITOR_TERMINALS", "true").strip().lower() in ("1", "true", "yes")
 
         # --- Hermes two-way conversation ---
         # When enabled, replies in the alert chat are answered by your local
@@ -154,15 +296,26 @@ class Config:
         # In the conversation pane, fragments whose center-x fraction is below
         # this are treated as INCOMING (a reply); above it are our own messages.
         self.gui_incoming_x_threshold = float(get("GUI_INCOMING_X_THRESHOLD", "0.66"))
+        # A command prefix you can type from ANY account — even the same one
+        # WatcherDog watches from — to ask Hermes a question it will reliably
+        # answer. Same-account replies render as OUTGOING, so the left/right
+        # x-heuristic alone can never see them; a prefixed message is matched
+        # regardless of which side it lands on. Blank disables the prefix path.
+        self.gui_command_prefix = get("GUI_COMMAND_PREFIX", "!dog").strip()
         # Vertical gap (px) above which two OCR lines belong to different chat rows.
         self.gui_row_gap_px = float(get("GUI_ROW_GAP_PX", "26"))
+        # When a chat is open its name also shows in the conversation HEADER at
+        # the very top — and clicking that title opens the profile panel instead
+        # of the chat. Ignore name matches in the top this-fraction of the window
+        # (the header band; the chat list's first row is always below it).
+        self.gui_header_band_frac = float(get("GUI_HEADER_BAND_FRAC", "0.10"))
         # SAFETY: when false (default), detect + log but never type/send. Flip to
         # true only once you've watched a dry run and trust what it flags.
         self.gui_send_enabled = get("GUI_SEND_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
         # --- Silence / heartbeat detection ---
         # Alert when a bot that normally reports goes quiet this long (minutes).
-        self.silence_threshold = float(get("SILENCE_THRESHOLD_MINUTES", "30")) * 60.0
+        self.silence_threshold = float(get("SILENCE_THRESHOLD_MINUTES", "120")) * 60.0
         # How often to scan for newly-silent bots (seconds).
         self.silence_check_interval = float(get("SILENCE_CHECK_INTERVAL_SECONDS", "60"))
         self.heartbeat_path = resolve_path(get("HEARTBEAT_PATH", "data/heartbeats.json"))
@@ -182,6 +335,112 @@ class Config:
         # If True, skip the Ollama call and just forward raw errors (faster, no AI).
         self.disable_ai = get("DISABLE_AI", "false").strip().lower() in ("1", "true", "yes")
 
+        # --- Hermes skills (skill 2: error handling) ---
+        # The learned-fixes "brain" Hermes reads + appends (docs/hermes/skills/
+        # 02-error-handling.md), and the AI-fix log it reports at end of day —
+        # or immediately on startup if a crash/reboot left it non-empty.
+        self.learned_fixes_path = resolve_path(
+            get("LEARNED_FIXES_PATH", "data/hermes/learned_fixes.md"))
+        self.daily_errors_path = resolve_path(
+            get("DAILY_ERRORS_PATH", "data/hermes/daily_errors.jsonl"))
+        # Local time (HH:MM) to send ibo the end-of-day AI-fix summary, after
+        # which the log is cleared. Default just before midnight.
+        self.daily_report_time = get("DAILY_REPORT_TIME", "23:59").strip()
+        # When true, the conversation agent may DRIVE panels (send /start, press
+        # inline buttons, screenshot) and apply fixes — not just read. Destructive
+        # buttons (Kill/Restart/Reboot/Shutdown) still need an explicit ibo "yes".
+        # Set false to keep the agent strictly read-only.
+        self.agent_actions_enabled = get(
+            "AGENT_ACTIONS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+
+        # --- Bot interface (the TALKING front-end; bot_interface.py) ----------
+        # WatcherDog answers people through a Telegram BOT (logged in over MTProto
+        # on the same event loop as the user account). The bot is what humans talk
+        # to: it replies to slash-commands and questions in a group (and, if
+        # allowed, DMs) — read-only, backed by the USER account's read tools. The
+        # user account itself never speaks in groups; it only reads/manages the
+        # SinFermera bots (which the Bot API is forbidden from reading).
+        #
+        # Split of responsibilities (who does what):
+        #   • BOT  (Bot API)  — talk to humans: commands, Q&A, proactive alert DMs.
+        #   • USER (MTProto)  — read the farm bots, sweep the folder, drive panels
+        #                       and press inline buttons (a bot legally cannot).
+        self.bot_enabled = get("BOT_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        # The bot token. Reuses TELEGRAM_BOT_TOKEN (the project's bot slot).
+        self.bot_token = self.telegram_bot_token
+        # Bot's own MTProto session (separate from the user account's).
+        self.bot_session = resolve_path(get("BOT_SESSION", "data/bot.session"))
+        # Group(s) the bot answers in — comma-separated chat ids or @usernames.
+        # Defaults to the Special Forces group when blank (the bot lives there).
+        raw_bot_groups = get("BOT_GROUPS", "").strip()
+        self.bot_groups = [g.strip() for g in raw_bot_groups.split(",") if g.strip()]
+        # Restrict the bot to a single forum TOPIC: it only reacts to, and only
+        # posts in, this topic — never any other topic of the group. Blank = no
+        # restriction. Defaults to the hourly-report topic (Class A Farming).
+        self.bot_topic = get("BOT_TOPIC", "").strip() or self.hourly_report_topic
+        # Also answer private DMs to the bot (read-only Q&A from anyone).
+        self.bot_answer_dms = get("BOT_ANSWER_DMS", "true").strip().lower() in ("1", "true", "yes")
+        # Deliver proactive alerts (errors / silence / recovery / recurring /
+        # daily / weekly digest) by having the BOT DM the owner, instead of the
+        # user account DMing them. Falls back to the user account if the bot send
+        # fails (e.g. the owner never pressed Start on the bot).
+        self.bot_alerts = get("BOT_ALERTS", "true").strip().lower() in ("1", "true", "yes")
+        # Numeric user id the bot DMs alerts to. Blank = resolve IBO_CHAT_ID via
+        # the user account at startup. NOTE: a bot can only DM a user who has
+        # pressed Start on it at least once.
+        self.bot_alert_user_id = get("BOT_ALERT_USER_ID", "").strip()
+        # Install WatcherDog's command menu on the bot at startup (BotFather
+        # setMyCommands). Set false to leave the bot's existing menu untouched.
+        self.bot_set_commands = get("BOT_SET_COMMANDS", "true").strip().lower() in ("1", "true", "yes")
+        # Let the bot DRIVE panels (press buttons / send commands), not just read.
+        # SAFETY: only the users in BOT_ACTION_USERS can trigger actions — the bot
+        # lives in an untrusted group, so it must never act on a random member's
+        # (or another bot's) message. Destructive buttons still follow the action
+        # skill's confirm rules. Requires AGENT_ACTIONS_ENABLED too.
+        self.bot_actions_enabled = get("BOT_ACTIONS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+        # Comma-separated user ids / @usernames allowed to make the bot ACT.
+        # Blank = the owner (IBO_CHAT_ID) plus the watcher's own user account.
+        raw_action_users = get("BOT_ACTION_USERS", "").strip()
+        self.bot_action_users = [u.strip() for u in raw_action_users.split(",") if u.strip()]
+        # ADMINS may tell the bot (in natural language) to grant/revoke other
+        # users' action access — the agent does it itself via grant_bot_access.
+        # Blank = the owner (IBO_CHAT_ID) plus the watcher's own user account.
+        raw_admins = get("BOT_ADMIN_USERS", "").strip()
+        self.bot_admin_users = [u.strip() for u in raw_admins.split(",") if u.strip()]
+        # Where the agent-granted access list is persisted (survives restarts).
+        self.bot_access_path = resolve_path(get("BOT_ACCESS_PATH", "data/bot_access.json"))
+        # Let an admin tell the bot to CHANGE WATCHERDOG'S OWN FILES (read/edit/
+        # write within the project root; every write is backed up). Powerful and
+        # risky — off by default; admin-gated when on. A restart applies code
+        # changes.
+        self.bot_self_edit_enabled = get("BOT_SELF_EDIT_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+        # Let the bot RESTART itself after a self-edit so code changes take effect
+        # without a manual relaunch. Safe: it validates the whole project imports
+        # first (rolling back the change if not), and a detached supervisor rolls
+        # back + relaunches if the new code fails to come up healthy.
+        self.bot_self_restart_enabled = get("BOT_SELF_RESTART_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        _data_dir = os.path.dirname(self.db_path) or "."
+        # Journal of pending self-edits (path + backup) so a failed restart can be
+        # rolled back; and a health beacon the supervisor watches for after relaunch.
+        self.self_edits_path = os.path.join(_data_dir, "self_edits.json")
+        self.watcher_health_path = os.path.join(_data_dir, "watcher_healthy")
+        # Where in-progress action tasks are persisted so the bot can RESUME them
+        # after a restart. Each task is resumed at most BOT_TASK_MAX_RESUMES times
+        # (so a task that keeps crashing can't loop forever).
+        self.bot_task_path = resolve_path(get("BOT_TASK_PATH", "data/bot_tasks.json"))
+        self.bot_task_max_resumes = max(0, int(get("BOT_TASK_MAX_RESUMES", "2")))
+        # Live "working on it…" status message that edits as the task progresses,
+        # then is deleted and replaced by the final answer.
+        self.bot_progress_status = get("BOT_PROGRESS_STATUS", "true").strip().lower() in ("1", "true", "yes")
+        # Multitasking: how many bot turns may run AT ONCE. Read-only Q&A/status
+        # runs concurrently up to this cap so the bot never freezes while busy;
+        # panel-driving ACTION turns still take turns among themselves (one acts
+        # at a time) so they can't clash on the shared account.
+        self.bot_max_concurrent = max(1, int(get("BOT_MAX_CONCURRENT", "3")))
+        # How many bots the dispatch_bots fan-out works on AT ONCE (parallel sub-
+        # agents). Different bots run simultaneously; same bot is serialized.
+        self.fanout_concurrency = max(1, int(get("FANOUT_CONCURRENCY", "4")))
+
     def validate(self):
         """Return a list of human-readable problems (empty if all good)."""
         problems = []
@@ -200,6 +459,22 @@ class Config:
             problems.append("TELEGRAM_API_ID is not set (get it from https://my.telegram.org)")
         if not self.telegram_api_hash:
             problems.append("TELEGRAM_API_HASH is not set (get it from https://my.telegram.org)")
+        return problems
+
+
+    def validate_watcher(self):
+        """Problems specific to the MCP/MTProto watcher (run_watcher.py).
+
+        The watcher sends as the user account (Telethon), so it needs only the
+        API credentials and a target chat — not the bot token.
+        """
+        problems = []
+        if not self.telegram_api_id:
+            problems.append("TELEGRAM_API_ID is not set (get it from https://my.telegram.org)")
+        if not self.telegram_api_hash:
+            problems.append("TELEGRAM_API_HASH is not set (get it from https://my.telegram.org)")
+        if not self.ibo_chat_id:
+            problems.append("IBO_CHAT_ID is not set (the chat that gets alerts / talks to Hermes)")
         return problems
 
 

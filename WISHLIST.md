@@ -3,7 +3,8 @@
 Ideas and known gaps, roughly prioritized. Done items are checked.
 
 ## Done
-- [x] No-API GUI mode: read Telegram via screenshot + OCR, act via synthetic events
+- [x] **API rework (current default):** `run_watcher.py` over MTProto (Telethon) as the user account. Proactively watches the `Farms` folder (24 SinFermera bots) and answers `ibo` via a self-contained read-only agent (deepseek-v4-pro / OpenRouter) with Telegram read tools (`tg_tools` + `agent`). Default focus = Farms. **Replaces the GUI/OCR mode** (`run_gui.py` is now legacy). Telegram MCP also wired into Hermes for interactive use (`scripts/setup_hermes.sh`).
+- [x] No-API GUI mode: read Telegram via screenshot + OCR, act via synthetic events [legacy]
 - [x] Ollama decides whether a message is an error
 - [x] Alert the `ibo` chat with summary + suggested fix
 - [x] Scroll the chat list and open EACH bot chat to read the real conversation
@@ -11,12 +12,13 @@ Ideas and known gaps, roughly prioritized. Done items are checked.
 - [x] Two-way Hermes conversation (reply → `hermes -z` → typed answer), loop-guarded
 - [x] SQLite incident history + de-dup
 - [x] Developer documentation (`DOCUMENTATION.md`)
+- [x] **Robust reply detection** — command-prefix path (`find_reply`) matches a reply no matter which side it renders on; left/right x-heuristic kept as fallback.
+- [x] **Detect "your reply" from the same account** — type `!dog ...` (configurable `GUI_COMMAND_PREFIX`); the watcher answers it even though same-account replies render as outgoing.
+- [x] **Silence detection in pull mode** — `check_silence` reads each chat's last-message time and alerts when a bot is quiet past `SILENCE_THRESHOLD_MINUTES`, recovers when it posts again (seeds quietly on first scan to avoid a startup flood).
+- [x] **Faster full sweep** — `scan_once` does a fast sidebar pass then deep-reads only unread / preview-changed chats (hybrid sidebar+deep).
 
 ## High priority
-- [ ] **Robust reply detection** — current incoming/outgoing is x-position heuristic. Better: detect the message tail/timestamp position, or read sender color, or track message count deltas.
-- [ ] **Detect "your reply" from the same account** — replies you type from the same account WatcherDog uses appear as outgoing and aren't seen. Consider a command prefix (e.g. you type `@dog ...`) the script watches for.
-- [ ] **Silence detection in pull mode** — parse each chat's last-message timestamp via OCR; alert if a bot hasn't posted in N minutes (current pull mode reads latest regardless of age).
-- [ ] **Faster full sweep** — opening 24 chats each cycle is slow. Option: only deep-read chats whose sidebar preview changed since last cycle (hybrid sidebar+deep).
+_All current high-priority items are done — see the Done section above._
 
 ## Medium
 - [ ] Cache Ollama verdicts for unchanged "unknown" messages to cut model calls.

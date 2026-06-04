@@ -51,8 +51,8 @@ def test_config_defaults():
     assert cfg.min_severity == "high"
     assert cfg.alert_via == "user"
     assert cfg.poll_interval == 2.0
-    # SILENCE_THRESHOLD_MINUTES default 30 -> seconds
-    assert cfg.silence_threshold == 30 * 60.0
+    # SILENCE_THRESHOLD_MINUTES default 120 -> seconds
+    assert cfg.silence_threshold == 120 * 60.0
     assert cfg.disable_ai is False
 
 

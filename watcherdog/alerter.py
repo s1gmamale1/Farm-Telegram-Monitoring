@@ -132,6 +132,28 @@ def format_recovery_alert(bot_name):
     return f"✅ Back online — {bot_name} is reporting again."
 
 
+def format_recurring_alert(group, window_minutes):
+    """Alert for an error that keeps repeating (the recurring-error watchdog).
+
+    ``group`` is one entry from ``IncidentStore.recurring`` (count, bots, the
+    latest summary/excerpt).
+    """
+    bots = ", ".join(group.get("bots") or []) or "?"
+    summary = (group.get("summary") or "").strip()
+    if not summary:
+        summary = (group.get("raw_excerpt") or "").strip()[:200]
+    lines = [
+        f"🔁 Recurring error — {group.get('count', '?')}× in the last "
+        f"{int(window_minutes)} min",
+        "",
+        f"Bots: {bots}",
+    ]
+    if summary:
+        lines += ["", summary]
+    lines += ["", "It keeps happening and isn't clearing on its own — worth a look."]
+    return "\n".join(lines)
+
+
 class TelegramAlerter:
     def __init__(self, bot_token, chat_id, thread_id=None, *, attempts=3):
         self.bot_token = bot_token

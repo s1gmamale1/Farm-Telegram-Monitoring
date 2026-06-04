@@ -70,6 +70,52 @@ class IncidentStore:
         self.conn.commit()
         return cur.lastrowid
 
+    def recurring(self, window_seconds, min_count, now=None):
+        """Errors whose identical hash has recurred at least ``min_count`` times
+        within the trailing ``window_seconds``.
+
+        Returns a list of group dicts, most frequent first::
+
+            {"raw_hash", "count", "last_ts", "bots": [..],
+             "severity", "summary", "raw_excerpt"}
+
+        ``severity``/``summary``/``raw_excerpt`` come from the latest matching
+        incident (what to show in the alert).
+        """
+        now = now if now is not None else time.time()
+        since = now - window_seconds
+        cur = self.conn.execute(
+            """
+            SELECT raw_hash,
+                   COUNT(*)                   AS count,
+                   MAX(ts)                    AS last_ts,
+                   GROUP_CONCAT(DISTINCT bot) AS bots
+            FROM incidents
+            WHERE ts >= ?
+            GROUP BY raw_hash
+            HAVING COUNT(*) >= ?
+            ORDER BY count DESC, last_ts DESC
+            """,
+            (since, min_count),
+        )
+        groups = []
+        for row in cur.fetchall():
+            latest = self.conn.execute(
+                "SELECT severity, summary, raw_excerpt FROM incidents "
+                "WHERE raw_hash = ? ORDER BY ts DESC LIMIT 1",
+                (row["raw_hash"],),
+            ).fetchone()
+            groups.append({
+                "raw_hash": row["raw_hash"],
+                "count": row["count"],
+                "last_ts": row["last_ts"],
+                "bots": [b for b in (row["bots"] or "").split(",") if b],
+                "severity": latest["severity"] if latest else "",
+                "summary": latest["summary"] if latest else "",
+                "raw_excerpt": latest["raw_excerpt"] if latest else "",
+            })
+        return groups
+
     def recent(self, limit=20):
         cur = self.conn.execute(
             "SELECT * FROM incidents ORDER BY ts DESC LIMIT ?", (limit,)
