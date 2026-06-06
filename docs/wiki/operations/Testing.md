@@ -10,17 +10,17 @@ status: current
 
 # Testing
 
-> The pytest suite — **402 test functions across 31 `test_*.py` files** (32 `.py` files incl. `conftest.py`) — and how to run it after any change.
+> The pytest suite — **464 test functions across 35 `test_*.py` files** (36 `.py` files incl. `conftest.py`) — and how to run it after any change.
 
 Part of [[Home]].
 
 WatcherDog ships a regression suite under `tests/`. Run it after every change to [[The Monitor Loop|the loop]], [[The Agent|the agent]], or any module — see the build/test rule in [[Running WatcherDog]].
 
 > [!info] Test count history (now correct)
-> [[README]]/[[DOCUMENTATION]] once claimed *412 tests*; the verified count when this vault was first written was **302**. The suite was then expanded by **100** reviewed tests — notably new coverage for [[Telegram Tools and Actions|tg_tools]], `hermes_bridge`, and `bot_logging` — bringing it to **402 `def test_` functions across 31 `test_*.py` files** (plus `conftest.py`; `tests/README.md` is non-code). The root docs are now corrected to match.
+> [[README]]/[[DOCUMENTATION]] once claimed *412 tests*; the verified count when this vault was first written was **302**. The suite was then expanded by **100** reviewed tests — notably new coverage for [[Telegram Tools and Actions|tg_tools]], `hermes_bridge`, and `bot_logging` — bringing it to **402 `def test_` functions across 31 `test_*.py` files** (plus `conftest.py`; `tests/README.md` is non-code). The root docs are now corrected to match. The [[Monitoring and Recovery Rules|deterministic panel engine]] feature then added `test_farm_stats`, `test_panel_rules`, `test_panel_actions`, and `test_evaluate_panel`, taking the suite to **464** functions across **35** files.
 
 > [!warning] 4 known failures in a clean checkout
-> A full `pytest` run reports **511 passed, 4 failed** (parametrization expands 402 functions into 515 cases). The 4 failures are **not** logic regressions: 2 are the legacy GUI smoke imports (`watcherdog.gui_mac`, `run_gui`) that need the unpinned `pyobjc`/`Quartz` ([[Legacy Modes]]), and 2 are pre-existing concurrency assertions in `test_bot_interface.py` (`test_action_turns_serialize`, `test_stopjobs_...`) that also fail in isolation on pristine code.
+> A full `pytest` run reports **583 passed, 4 failed** (parametrization expands the 464 functions into 587 cases). The 4 failures are **not** logic regressions: 2 are the legacy GUI smoke imports (`watcherdog.gui_mac`, `run_gui`) that need the unpinned `pyobjc`/`Quartz` ([[Legacy Modes]]), and 2 are pre-existing concurrency assertions in `test_bot_interface.py` (`test_action_turns_serialize`, `test_stopjobs_...`) that also fail in isolation on pristine code.
 
 ## Running the suite
 
@@ -36,9 +36,9 @@ scripts/run_tests.sh -k config      # only tests matching "config"
 > [!tip] The dev dependency is just pytest
 > `requirements-dev.txt` adds only `pytest>=8.0` on top of `requirements.txt` (which pins only `telethon>=1.36`). The whole suite runs without Ollama, OpenRouter, or a live Telegram — it stubs those boundaries.
 
-## The 31 test modules
+## The 35 test modules
 
-> [!tip] ⭐ marks the three modules added this session (new coverage for previously-untested code).
+> [!tip] ⭐ marks modules added for new coverage. The [[Monitoring and Recovery Rules|panel engine]] added four: `test_farm_stats` (5), `test_panel_rules` (9), `test_panel_actions` (5), `test_evaluate_panel` (5) — and grew `test_drop_stats` (→32) and `test_config` (→18).
 
 | Module | tests | Covers |
 |--------|------:|--------|
