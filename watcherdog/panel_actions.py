@@ -7,12 +7,9 @@ just execution. Button labels: see docs/wiki/reference/Panel Control Bot.md.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 
 from watcherdog import tg_actions
-
-logger = logging.getLogger("watcherdog.panel_actions")
 
 BTN_KILL_ALL = "kill all cs"
 BTN_SELECT_UNFARMED = "unfarmed"

@@ -274,17 +274,13 @@ _ACTION_LABELS = {
 }
 
 
-async def _evaluate_panel(client, cfg, name, ent, *, deliver, state):
-    """Deterministic per-panel watch/recover (R1-R6). No model. Reads the panel's
-    latest status message, advances timers, asks panel_rules for a Decision, then
-    flags / runs / offers a confirm card per that Decision. Returns a short note
-    when it HANDLED the panel (so the caller skips the AI incident path), else
-    None."""
+async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state):
+    """Deterministic per-panel watch/recover (R1-R6). No model. Takes the panel's
+    already-fetched latest status (text, date) — no extra read — advances timers,
+    asks panel_rules for a Decision, then flags / runs / offers a confirm card per
+    that Decision. Returns a short note when it HANDLED the panel (so the caller
+    skips the AI incident path), else None."""
     target_ref = _panel_target(ent, name)
-    try:
-        text, date = await tg_tools.latest_message(client, ent, mark_read=False)
-    except Exception:  # noqa: BLE001
-        text, date = None, None
     now = time.time()
     age = (now - date.timestamp()) if date else None
     status = farm_stats.parse_panel_status(text) if text else None
@@ -460,19 +456,27 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
     already_silent, healthy = [], 0
 
     for name, ent in watch:
-        # Deterministic panel watch/recover (R1-R6, no model) runs FIRST. When it
-        # handles a panel it returns a note and we skip the AI incident + silence
-        # paths for that chat this sweep.
+        # Single status read per panel, reused by both the deterministic engine
+        # and the AI fall-through (avoids a double fetch across the fleet).
+        try:
+            text, date = await tg_tools.latest_message(client, ent, mark_read=cfg.mark_read_after_read)
+        except Exception:  # noqa: BLE001
+            log.warning("latest_message failed for %s; treating as empty", name)
+            text, date = "", None
+
+        # Deterministic panel watch/recover (R1-R6, no model) runs FIRST on that
+        # read. When it handles a panel it returns a note and we skip the AI
+        # incident + silence paths for that chat this sweep.
         if cfg.panel_rules_enabled:
             try:
-                note = await _evaluate_panel(client, cfg, name, ent, deliver=deliver, state=state)
+                note = await _evaluate_panel(client, cfg, name, ent, text, date,
+                                             deliver=deliver, state=state)
             except Exception:  # noqa: BLE001
                 log.exception("panel eval failed for %s; continuing", name)
                 note = None
             if note is not None:
                 continue
 
-        text, date = await tg_tools.latest_message(client, ent, mark_read=cfg.mark_read_after_read)
         await _evaluate_bot(client, cfg, store, state, target, name, text, now, loop,
                             deliver, ent=ent)
 
