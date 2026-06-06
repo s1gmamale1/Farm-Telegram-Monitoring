@@ -1,273 +1,290 @@
 # WatcherDogBot 🐶
 
-A tiny, **zero-dependency** watchdog for your Telegram bots (or any program).
-It tails log files, detects errors and Python tracebacks, asks a **local Ollama
-model** to triage them (severity + root cause + suggested fix), and sends you a
-**Telegram alert** — only for errors at or above a severity you choose.
+A monitor for a fleet of **Telegram farm bots**. It watches the 24 `SinFermera*`
+CS2/Steam drop-farming bots (the **Farms** folder), **auto-fixes the errors it
+already knows how to fix with zero AI cost**, escalates only genuinely *novel*
+errors to an LLM (once — then it remembers), answers your questions, drives the
+farm control panels on command, and posts an hourly health report.
 
 ```
-  your bots ──▶ logs/*.log ──▶ WatcherDog monitor ──▶ Ollama (local) ──▶ Telegram ──▶ you
-                                      │
-                                      └──▶ SQLite incident history (data/incidents.db)
+                    ┌──────────── ONE process, TWO Telegram logins ────────────┐
+                    │                                                          │
+  Farms folder ───▶ │  USER account  (Sigma Male @s1gmamale1)                  │
+  (24 SinFermera    │   • sweeps the folder every ~2 min                       │
+   farm bots)       │   • reads each bot (Bot API can't read other bots)       │
+                    │   • drives panels / presses inline buttons               │
+                    │                                                          │
+  you / the group ─▶│  BOT  (@sherlock_homeless_chigga_bot)                    │
+                    │   • the human-facing talker: commands + Q&A              │
+                    │   • DMs you proactive alerts                             │
+                    └──────────────────────────────────────────────────────────┘
+                                          │
+   each farm message ─▶ script-first router (no LLM) ─▶ AI only if novel ─▶ you
+                                          │
+                                          └──▶ SQLite history + learned-fixes "brain"
 ```
 
-## Three modes
+> **TL;DR** — the current, supported entry point is **`run_watcher.py`** (MTProto
+> / Telethon). The old screenshot-and-OCR GUI mode (`run_gui.py`) and the
+> log-file tailer (`run.py`) are **legacy** and documented in the
+> [Appendix](#appendix-legacy-modes) at the bottom.
 
-All modes share the same brain (classify → Ollama analyze → severity filter →
-alert → SQLite history). They differ only in how they read messages and alert:
-
-1. **GUI watcher** (`run_gui.py`) — **no API at all.** Drives the real Telegram
-   macOS app like a person: screenshots the window, reads it with on-device OCR
-   (Apple Vision), and types/pastes alerts back in. Needs Screen Recording +
-   Accessibility permission. Best when you can't/won't use any Telegram API.
-2. **Telegram group watcher** (`run_telegram.py`) — logs in as a *user account*
-   via MTProto (Telethon) and reads the group, including other bots' messages.
-   Needs `api_id`/`api_hash`. More reliable than GUI, but uses the API.
-3. **Log-file watchdog** (`run.py`) — tails `logs/*.log`. Zero dependencies.
-   Only if you control a bot's source.
-
-> SinFermera are bots, and a Telegram *bot* can't read other bots' messages —
-> so the bot API is out. That leaves the GUI watcher (no API) or the MTProto
-> user-client. See **"GUI watcher setup"** just below for the no-API route.
+**Docs map**
+| File | What it covers |
+|------|----------------|
+| **README.md** (this file) | What it is, how it's wired, quick start, configuration. |
+| [HOWTORUN.md](HOWTORUN.md) | The operational runbook — install, run, watch, stop, troubleshoot. |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Developer internals — module-by-module, data/state, debugging. |
+| [docs/OPTIMIZATION_PLAN.md](docs/OPTIMIZATION_PLAN.md) | Why/how the watcher became *script-first, AI-last*. |
+| [docs/hermes/](docs/hermes/) | The agent's own operating guides + the panel "skills" (00–07). |
 
 ---
 
-## GUI watcher setup (no API)
+## 1. The big idea: two identities, one process
 
-Drives the real Telegram app — reads each bot's latest message from the chat
-list, detects problems with Ollama, and pastes an alert into a chat of your
-choice. **Reliability caveats:** the Mac must stay **on, unlocked, and with
-Telegram visible**; don't use the mouse/keyboard while it runs; it's slower and
-more fragile than the API modes.
+The Telegram **Bot API forbids a bot from reading another bot's messages** — so a
+bot alone can never watch the `SinFermera*` farm bots. WatcherDog solves this by
+running **two logins on one asyncio event loop** (`run_watcher.py` →
+`watcherdog/mcp_watcher.run`), each with a clean job:
 
-**One-time setup (you):**
-1. **Screen Recording** permission for Terminal: System Settings → Privacy &
-   Security → Screen Recording → enable Terminal.
-2. **Accessibility** permission for Terminal: same place → Accessibility →
-   enable Terminal. (Both are required: capture needs Screen Recording; clicking
-   and typing need Accessibility.)
-3. In `.env`, set `GUI_ALERT_CHAT` to the **exact sidebar name** of the chat to
-   alert (default `Saved Messages` = yourself; or a person's name as it shows in
-   your chat list), and confirm `GUI_SEND_KEY` matches your Telegram setting
-   (`return` if Telegram sends on Enter, `cmd_return` if on Cmd+Enter).
+| | **The USER account** — *the watcher* | **The BOT** — *the talker* |
+|---|---|---|
+| Identity | `Sigma Male` (`@s1gmamale1`) | `@sherlock_homeless_chigga_bot` |
+| API | MTProto (Telethon) | Bot API (over Telethon) |
+| Reads the farm bots? | **Yes** — only a user account can | No (forbidden by Telegram) |
+| Talks to humans? | No (it never speaks in groups) | **Yes** — commands, Q&A, alert DMs |
+| Can act on panels? | **Yes** — presses inline buttons | Only by relaying to the user account |
 
-**Try it (safe — dry run, sends nothing):**
+The user account *owns* the bot (it created it). For the bot to DM you alerts,
+the alert owner (`IBO_CHAT_ID`) must press **Start** on the bot **once**;
+otherwise alerts quietly fall back to being sent by the user account.
+
+> **Heads up:** that bot token was reclaimed from an old *OpenClaw* deployment.
+> If the bot ever behaves oddly or "fights" over updates, suspect a leftover
+> OpenClaw process still polling the same token.
+
+---
+
+## 2. The big idea: script-first, AI-last
+
+Every message a farm bot posts hits a **deterministic router** *before* any LLM
+runs (`watcherdog/auto_fix.py`, wired into `mcp_watcher._evaluate_bot`). Known
+situations are handled by scripts at **zero token cost**; the model is invoked
+**only** when (a) you ask something, or (b) an error is genuinely *novel*.
+
+```
+farm message ─▶ classify()                          (scripts, no LLM)
+                  │
+         normal ──┴── error / unknown
+                         │
+                  learned_fixes.find_fix(text)       (scripts, no LLM — the "brain")
+                         │
+             hit ────────┴──────── miss
+              │                     │
+   known, non-destructive      NOVEL error
+   → APPLY the mapped          → ask the AI ONCE: it proposes + applies a fix,
+     button steps now            then save_fix() with a runnable `action`
+              │                   so the *next* time is script-only
+              └──────────┬────────┘
+                         ▼
+                 daily_report.record()  (log every fix)
+```
+
+- **Known error** → the router executes the saved button steps (e.g. *Kill All →
+  Start 4 accounts*) and reports what it did, past tense. No question asked.
+- **Novel error** → escalated to the agent (deepseek via OpenRouter) **once**. It
+  fixes it, then **saves the fix with an executable `action`** so every repeat is
+  handled by the router with **no model**.
+- **Destructive steps** (Kill / Restart / Reboot / Shutdown) → never pressed
+  blindly. The bot posts an **inline confirm button** instead of a text question.
+- **`type: human` fix** → the router does *not* act; it pings you (a person is
+  needed).
+
+The knowledge base is a plain-Markdown file you can read and edit:
+`data/hermes/learned_fixes.md` (`watcherdog/learned_fixes.py`).
+
+---
+
+## 3. What you actually see
+
+- **Proactive alerts** — when a bot errors, gets banned, hits captcha/Steam
+  Guard, or goes **silent** past `SILENCE_THRESHOLD_MINUTES`, you get a DM (and a
+  "✅ back online" note when it recovers). De-duplicated so the same bug doesn't
+  spam you within `DEDUPE_WINDOW`.
+- **Inline confirm/action buttons** (`watcherdog/buttons.py`) — anything needing a
+  yes shows tappable buttons, not a typed question:
+  ```
+  ⚠️ SinFermera9 — farm dead (device on). Proposed: relaunch (Kill All → Start 4).
+  [ ✅ Do it ]   [ ✋ Skip ]   [ 🔁 Restart instead ]
+  ```
+  Each button is a **signed, single-use, expiring token** — it only ever runs the
+  exact action it was posted for. By the owner's deliberate choice, **anyone in
+  the group can tap** (the token is the authorization, not the user id); the
+  presser is logged. Re-tighten with `BOT_ACTION_USERS` if the group is untrusted.
+- **Hourly farm report** — a structured per-PC report posted to the **Class A
+  Farming** forum topic every hour, ending with a *"🔧 Fixed last hour"* line.
+- **Fast slash-commands** (no LLM, instant, free) — `/status`, `/problems`,
+  `/silent`, `/fixes`, `/mode`. AI-backed commands (`/weekly`, `/today`, `/top`,
+  `/worst`, `/value`, `/check N`, `/bans`, `/compare`, `/whatsnew`) read the
+  folder and summarize. `/help` lists everything.
+- **Live progress + resume** — an action task replies instantly with a status
+  message that **edits live** as each step runs, then is replaced by the final
+  answer. Tasks are persisted, so a restart mid-task **resumes** it. The bot is
+  **multitasking**: read-only questions answer in parallel while a long action
+  runs.
+
+---
+
+## 4. Admin powers (gated)
+
+Most people are answered **read-only**. Authorized/admin users get more:
+
+- **Drive panels** (`BOT_ACTIONS_ENABLED`, `BOT_ACTION_USERS`) — *"press Drop
+  Stats on panel 3"*, *"stop all panels"*; destructive buttons still confirm.
+- **Grant/revoke access** (`BOT_ADMIN_USERS`) — *"give @someone access"* → the
+  agent calls `grant_bot_access` itself; persisted to `data/bot_access.json`.
+- **Self-edit** (`BOT_SELF_EDIT_ENABLED`) — an admin can tell the bot to change
+  WatcherDog's **own source**. It rewrites the whole file in one pass, **syntax-
+  checks** it, and writes only if valid, keeping a `<file>.bak.<timestamp>` undo.
+- **Self-restart** (`BOT_SELF_RESTART_ENABLED`) — after a self-edit the bot can
+  relaunch itself. It validates that the whole project still imports first
+  (rolling back if not), and a detached supervisor restores the backups and
+  relaunches if the new code never comes up healthy.
+
+These are triggered **only by a real authorized sender**, never by message *text*
+(prompt-injection guard). ⚠️ Self-editing modifies running code — the `.bak.*`
+files are your undo.
+
+---
+
+## 5. Quick start
+
 ```bash
 cd ~/Documents/WatcherDogBot
-.venv/bin/python run_gui.py --once     # seeds the visible bots
-.venv/bin/python run_gui.py            # runs; logs "[DRY-RUN] would send ..."
+
+# 0. One-time: authorize the user-account session (phone + login code)
+.venv/bin/python tools/tg_login.py
+
+# 1. Make sure Ollama is up (used to triage farm messages) and a model is pulled
+ollama list
+
+# 2. Run it (foreground, verbose)
+.venv/bin/python run_watcher.py --verbose
 ```
-When you trust what it flags, set `GUI_SEND_ENABLED=true` in `.env` to actually
-paste+send alerts.
 
-**Helper probes:** `tools/gui_probe.py` (OCR what's on screen), `tools/ax_probe.py`
-(accessibility check).
+Test safely without sending anything:
 
-**Reading all bots:** the watcher **scrolls the chat list** each cycle
-(`GUI_SCROLL_STEPS`) so it reads every bot's latest message, not just the
-visible ones. Each non-routine message is sent to Ollama, which **decides**
-whether it's a real problem.
+```bash
+.venv/bin/python run_watcher.py --once --dry-run --verbose   # one sweep, detect + log only
+.venv/bin/python tools/agent_probe.py "give me a quick farms health summary"
+```
 
-**Two-way Hermes conversation:** alerts go to the `GUI_ALERT_CHAT` (e.g. `ibo`).
-When a **reply** appears in that chat, WatcherDog passes it to your local
-**Hermes** agent (`hermes -z … --continue`) and types Hermes's answer back — so
-you can chat about the incident and Hermes adapts. A loop-guard stops it ever
-replying to its own messages. (Reply detection uses left/right bubble position;
-tune `GUI_INCOMING_X_THRESHOLD` if needed. Replies you send from the *same*
-account WatcherDog types as won't be seen as "incoming".)
+The full runbook — background running, launchd service, watching the logs, and
+troubleshooting — is in **[HOWTORUN.md](HOWTORUN.md)**.
 
 ---
 
-## Architecture
+## 6. Configuration
 
-| File | Job |
-|------|-----|
-| `run.py` | Entry point + main loop: poll → analyze → filter → alert → store |
-| `watcherdog/config.py` | Loads `.env` |
-| `watcherdog/monitor.py` | Tails `logs/*.log`, groups tracebacks, de-dupes, persists read offsets |
-| `watcherdog/analyzer.py` | Calls Ollama `/api/chat` for `{severity, summary, root_cause, fix}` |
-| `watcherdog/alerter.py` | Sends Telegram messages via the Bot API (stdlib `urllib`) |
-| `watcherdog/storage.py` | SQLite incident history |
-| `watcherdog/bot_logging.py` | **Drop-in** so your bots write errors where WatcherDog can see them |
-| `tools/simulate_error.py` | Writes a fake error to test the whole pipeline |
-| `com.watcherdog.monitor.plist` | launchd service (auto-start + auto-restart) |
-
----
-
-## Quick start
-
-```bash
-cd ~/Documents/WatcherDogBot
-
-# 1. Your credentials are already in .env. Confirm a test alert reaches you:
-python3 run.py --test
-#    -> You should get "✅ WatcherDogBot test alert" in Telegram.
-
-# 2. Start the watchdog:
-python3 run.py
-
-# 3. In another terminal, simulate a crash:
-python3 tools/simulate_error.py
-#    -> Within a few seconds you get an AI-analyzed alert.
-```
-
-Stop with `Ctrl+C`.
-
----
-
-## Telegram group watcher setup (for SinFermera)
-
-This monitors the group where your `SinFermera*` bots post and alerts you when
-one reports a problem (ban, Steam Guard, login/proxy failure, crash, etc.).
-
-**One-time setup (you must do steps 1–3 — they need your Telegram identity):**
-
-1. **Get API credentials.** Go to https://my.telegram.org → log in with your
-   phone → "API development tools" → create an app. Copy the **`api_id`** and
-   **`api_hash`** into `.env` (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`).
-
-2. **Log in once** (use an account that is a member of the SinFermera group):
-   ```bash
-   cd ~/Documents/WatcherDogBot
-   .venv/bin/python tools/tg_login.py
-   ```
-   Enter your phone number and the code Telegram sends you (+ 2FA password if
-   set). A session file is saved to `data/watcher.session`.
-
-3. **Find the chat ids and set them:**
-   ```bash
-   .venv/bin/python tools/list_dialogs.py
-   ```
-   Copy the SinFermera chat/group id(s) into `WATCH_CHATS` in `.env`
-   (comma-separated, e.g. `WATCH_CHATS=-1001234567890,123456789`).
-
-4. **Choose where alerts go** (`.env`):
-   - `ALERT_VIA=user` (default) sends the alert **as your own account** to the
-     person in `ALERT_USER` (a `@username`, phone, or numeric id). `ALERT_USER=me`
-     sends to your own Saved Messages. *Blank → defaults to `me`, so it never
-     messages an unintended contact.*
-   - `ALERT_VIA=bot` sends via `@sigmawatchdogbot` to `ALERT_CHAT_ID` instead
-     (lowest account risk).
-
-**Run it:**
-```bash
-.venv/bin/python run_telegram.py            # foreground
-```
-or always-on:
-```bash
-cp com.watcherdog.telegram.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.watcherdog.telegram.plist
-```
-
-**Test without waiting for a real error:**
-```bash
-.venv/bin/python run_telegram.py --once-test "[SinFermera2] ERROR: login rejected, account banned"
-```
-
-**Notes**
-- Automating a *personal* account technically violates Telegram's ToS for
-  abusive automation; read-only monitoring is low-risk, but a **dedicated
-  secondary account** (added to the group) is the safest choice.
-- Routine drop/match/warmup posts are filtered out cheaply; only suspicious or
-  unrecognized messages reach Ollama, and the model makes the final call on
-  whether something is truly an error before you get pinged.
-- Set `ANALYZE_UNKNOWN=false` to only AI-check messages that hit an explicit
-  error keyword (fewer Ollama calls, but may miss novel failure wording).
-
-### Silence detection (catching dead/banned bots)
-Every message a bot posts counts as a heartbeat. If a bot that normally reports
-goes quiet, it probably crashed, got banned, or lost connection — so you get a
-`🔕 Bot went SILENT` alert, and a `✅ Back online` notice when it returns.
-
-- Bots are **auto-learned** the first time they post. Set `EXPECTED_BOTS=SinFermera3,SinFermera10`
-  to also watch specific bots from startup.
-- Tune with `SILENCE_THRESHOLD_MINUTES` (default 30) and `SILENCE_CHECK_INTERVAL_SECONDS`.
-- A restart resets each bot's clock (a grace period), so restarting the watcher
-  never floods you with false silence alerts. Turn it off with `SILENCE_ENABLED=false`.
-
----
-
-## Connecting your own bots (log-file mode)
-
-WatcherDog watches the `logs/` directory. Each monitored bot just needs to
-write its errors to `logs/<botname>.log`. There are two ways:
-
-### Option A — Python bot (recommended): use the drop-in
-Copy `watcherdog/bot_logging.py` into your bot project (or import it) and add
-**two lines** at startup:
-
-```python
-from watcherdog.bot_logging import install
-install("payments")   # -> writes ERROR+ and tracebacks to logs/payments.log
-```
-
-Point it at this folder's `logs/` dir from another project with an env var:
-
-```bash
-export WATCHERDOG_LOG_DIR=/Users/macmini4/Documents/WatcherDogBot/logs
-```
-
-After that, every `logging.error(...)`, `log.exception(...)`, and any **uncaught
-exception** (main thread or worker threads) is captured automatically.
-
-### Option B — any language: just write a log file
-Have your bot append errors/tracebacks to `logs/<botname>.log`. WatcherDog
-detects:
-- Python tracebacks (`Traceback (most recent call last):` … exception line)
-- any line containing `ERROR`, `CRITICAL`, `FATAL`, or `Exception`
-
-You can also symlink existing logs in:
-```bash
-ln -s /opt/bots/support/error.log ~/Documents/WatcherDogBot/logs/support.log
-```
-
----
-
-## Configuration (`.env`)
+All settings live in `.env` (copy `.env.example`, which documents every key with
+its default). The keys you'll touch most:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `TELEGRAM_BOT_TOKEN` | — | BotFather token (already set) |
-| `TELEGRAM_CHAT_ID` | — | Where alerts go (already set) |
-| `TELEGRAM_THREAD_ID` | _(empty)_ | Forum topic id, if used |
-| `OLLAMA_URL` | `http://127.0.0.1:11434` | Local Ollama endpoint |
-| `OLLAMA_MODEL` | `huihui_ai/gemma-4-abliterated:e4b` | Model used for triage |
-| `DISABLE_AI` | `false` | Skip AI, forward raw errors |
-| `LOG_DIR` | `logs` | Directory watched for `*.log` |
-| `POLL_INTERVAL` | `2.0` | Seconds between checks |
-| `MIN_SEVERITY` | `high` | Only alert at/above: low/medium/high/critical |
-| `DEDUPE_WINDOW` | `300` | Suppress repeat of same error (seconds) |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | — | User-account MTProto creds (from https://my.telegram.org). |
+| `TELEGRAM_BOT_TOKEN` | — | The talking bot's token (BotFather). |
+| `IBO_CHAT_ID` | — | The owner — gets alerts and talks to the agent (`@username` or numeric id). |
+| `WATCH_FOLDER` / `WATCH_FOLDER_ID` | `Farms` / `6` | The dialog folder of bots to monitor. |
+| `WATCH_POLL_INTERVAL` | `120` | Seconds between proactive sweeps. |
+| `MIN_SEVERITY` | `high` | Alert at/above `low`/`medium`/`high`/`critical`. |
+| `SILENCE_THRESHOLD_MINUTES` | `120` | Alert if a bot is quiet this long. |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | local | Local model used to triage messages. |
+| `AGENT_MODEL` | `deepseek/deepseek-v4-pro` | The conversation/novel-error model (OpenRouter). |
+| `AGENT_API_KEY` / `OPENROUTER_API_KEY` | — | Model key (also read from `~/.hermes/.env`). |
+| `AGENT_ACTIONS_ENABLED` | `true` | Let the agent DRIVE panels, not just read. |
+| `BOT_ACTIONS_ENABLED` | `false` | Let the BOT trigger actions (for `BOT_ACTION_USERS`). |
+| `BOT_SELF_EDIT_ENABLED` | `false` | Let an admin make the bot edit its own code. |
+| `HOURLY_REPORT_ENABLED` / `HOURLY_REPORT_TOPIC` | `true` / `7` | Hourly report + its forum topic. |
 
-Lower `MIN_SEVERITY` to `low` while testing so every error pings you; raise it
-back to `high` in production to avoid spam.
-
----
-
-## Run it 24/7 (launchd)
-
-```bash
-cp com.watcherdog.monitor.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.watcherdog.monitor.plist
-launchctl list | grep watcherdog        # confirm it's running
-```
-
-It auto-starts on login and restarts if it crashes. WatcherDog's own logs go to
-`data/service.out.log` / `data/service.err.log`.
-
-Stop it:
-```bash
-launchctl unload ~/Library/LaunchAgents/com.watcherdog.monitor.plist
-```
+See `.env.example` for the complete, commented list (bot interface, drop-stats →
+Sheets, recurring-error watchdog, weekly digest, and the legacy GUI keys).
 
 ---
 
-## Notes & limits
-- **Auto-recovery is intentionally OFF.** WatcherDog only detects, analyzes, and
-  alerts — it never restarts your bots.
-- New `*.log` files are read from the **start**; persisted read offsets
-  (`data/offsets.json`) mean a restart never replays errors it already saw. If
-  you symlink in a large pre-existing log, it will be read once on first sight.
-- De-duplication normalizes timestamps / line numbers / addresses so the *same*
-  bug doesn't alert repeatedly within `DEDUPE_WINDOW`.
-- Sending is direct-to-Telegram on purpose: a watchdog must still reach you when
-  other services (including Hermes) are down.
+## 7. Architecture (file map)
+
+### Entry points
+| File | Job |
+|------|-----|
+| **`run_watcher.py`** | **The supported entry point.** Loads config + system prompts, then runs `mcp_watcher`. |
+| `run_gui.py` | *Legacy.* Screenshot + OCR GUI watcher (no API). See appendix. |
+| `run_telegram.py`, `run.py` | *Legacy.* Group watcher / log-file tailer. See appendix. |
+
+### Package `watcherdog/` — the current architecture
+| Module | Responsibility |
+|--------|----------------|
+| `mcp_watcher.py` | The core loop: sweep the Farms folder, route each message, answer ibo, schedule the hourly/weekly/recurring jobs. |
+| `bot_interface.py` | The talking **BOT** front-end: commands, Q&A, alert DMs, callback buttons, live progress, task resume, multitasking. |
+| `auto_fix.py` | The **script-first router** — classify + learned-fix, then suppress / apply / escalate. Zero LLM for known errors. |
+| `learned_fixes.py` | The Markdown **brain** (`data/hermes/learned_fixes.md`): read/match/append known fixes with runnable `action`s. |
+| `agent.py` | The read/act tool-calling agent (OpenRouter). Handles novel errors + answers questions; saves fixes. |
+| `buttons.py` | Signed single-use inline confirm/action buttons (callback queries handled with no LLM). |
+| `roster.py` | Deterministic per-bot health scan shared by the hourly report + fast commands. |
+| `fast_commands.py` / `commands.py` | No-LLM slash commands / AI-prompt slash commands. |
+| `tg_tools.py` / `tg_actions.py` | Read-only Telegram helpers / the action layer (drive panels, press buttons). |
+| `classifier.py` / `analyzer.py` | Cheap rule prefilter / Ollama triage (`is_error`, severity, summary, fix). |
+| `heartbeat.py` | Silence detection (bot went quiet → alert; recovered → notice). |
+| `storage.py` | SQLite incident history + de-dup (`data/incidents.db`). |
+| `daily_report.py` | The auto-fix log (`daily_errors.jsonl`) + the "fixed this hour / today" summaries. |
+| `drop_stats.py` / `drop_sheets.py` | Weekly Wednesday drop-stats job → Google Sheets (skill 5). |
+| `task_store.py` | Persists in-progress action tasks so they resume after a restart. |
+| `bot_access.py` | Runtime-editable, persisted access grants. |
+| `self_restart.py` / `restart_helper.py` | Safe self-restart: pre-flight import check + detached rollback supervisor. |
+| `config.py` | Loads `.env` into a typed `Config`. Every tunable lives here. |
+
+### Operating guides — `docs/hermes/`
+The agent's system prompt is built from these (they're the durable knowledge, not
+hard-coded): `STRUCTURE.md` (the account/folder map), `SKILLS.md`, `TOOLS.md`, and
+`skills/00–07` (panels, count farmed, error handling, can't-launch, four-accounts,
+drop-stats, stickers, self-improve).
+
+### Tools `tools/`
+`tg_login.py` (authorize the user session), `list_dialogs.py` (find chat ids),
+`agent_probe.py` (ask the agent a question from the CLI), `simulate_error.py`
+(log-mode testing), `gui_probe.py` / `ax_probe.py` (legacy GUI debugging).
+
+---
+
+## 8. Tests
+
+```bash
+.venv/bin/python -m pytest          # or: ./scripts/run_tests.sh
+```
+
+The suite (`tests/`) covers the router, learned fixes, buttons, fast commands,
+fan-out, progress/resume, and the config — **412 tests** at last count.
+
+---
+
+## Appendix: legacy modes
+
+These predate the MTProto watcher and are kept only for reference. They are **not
+the supported path** — use `run_watcher.py`.
+
+- **GUI watcher (`run_gui.py`)** — drives the real Telegram macOS app like a
+  person: screenshots the window, reads it with Apple Vision OCR, and types
+  alerts back. Needs Screen Recording + Accessibility permission, the Mac on /
+  unlocked / Telegram visible, and it takes over the mouse and keyboard. Slower
+  and more fragile than the API path. Helper probes: `tools/gui_probe.py`,
+  `tools/ax_probe.py`. (All `GUI_*` keys in `.env.example` belong to this mode.)
+- **Group watcher (`run_telegram.py`)** — an earlier MTProto reader of a single
+  group (configured via `WATCH_CHATS`, `ALERT_VIA`). Superseded by the folder-
+  based `run_watcher.py`.
+- **Log-file watchdog (`run.py`)** — tails `logs/*.log`, detects Python tracebacks
+  and `ERROR`/`CRITICAL`/`FATAL`/`Exception` lines, triages with Ollama, alerts
+  Telegram. Zero dependencies; only useful if you control a bot's source and want
+  it to log into this folder (`watcherdog/bot_logging.py` is a drop-in for that).
+
+> **Auto-recovery of *your machine* is intentionally OFF in every mode.**
+> WatcherDog detects, analyzes, alerts, and (on the farm panels only, with a
+> tap or a learned fix) acts — it never restarts your host or your bots' hosts.

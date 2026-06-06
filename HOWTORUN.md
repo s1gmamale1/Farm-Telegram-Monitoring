@@ -1,15 +1,28 @@
 # HOW TO RUN WatcherDogBot 🐶
 
-WatcherDog now runs over the **Telegram API (MTProto)** as your user account
+> This is the **operational runbook**. For *what WatcherDog is and how it's
+> wired*, read [README.md](README.md); for *developer internals*, read
+> [DOCUMENTATION.md](DOCUMENTATION.md).
+
+WatcherDog runs over the **Telegram API (MTProto)** as your user account
 **Sigma Male (@s1gmamale1)** — no more screenshots/OCR/mouse control. It:
 
 1. **Proactively watches the `Farms` folder** (the 24 SinFermera bots) and
    messages **ibo** when one errors or goes silent (recovery note when it's back).
+   Every message hits a **script-first router** (`watcherdog/auto_fix.py`) first:
+   known errors are **auto-fixed with zero AI cost**, and only a *novel* error
+   escalates to the model (which then saves a runnable fix so the next time is
+   free). Destructive steps post a one-tap **confirm button**, never a typed
+   question.
 2. **Answers ibo.** Anything you text the account from **ibo** is read instantly
    and handed to WatcherDog's built-in **agent** (deepseek-v4-pro via OpenRouter),
-   which uses read-only Telegram tools to inspect folders/chats and replies — e.g.
+   which uses Telegram tools to inspect folders/chats and replies — e.g.
    *"check folder Sam and the first chat and tell me what's going on."* Vague
    questions ("status?", "how are the farms?") default to the **Farms** folder.
+   Common triage commands (`/status`, `/problems`, `/silent`, `/fixes`, `/mode`)
+   are answered **with no model** — instant and free.
+3. **Posts an hourly report** to the **Class A Farming** forum topic, ending with
+   what it auto-fixed that hour.
 
 > The old screenshot/OCR GUI mode (`run_gui.py`) is **legacy/unused**.
 
@@ -190,9 +203,22 @@ launchctl load ~/Library/LaunchAgents/com.watcherdog.telegram.plist
 
 ## 6. How a cycle works
 
-- **Every ~2 min:** read each Farms bot's latest message → Ollama triages it →
-  real problem (≥ `MIN_SEVERITY`) or silence (> `SILENCE_THRESHOLD_MINUTES`) →
-  message ibo (de-duped; recovery note when a bot returns).
-- **Whenever ibo texts:** the agent reads the relevant folder/chat with its
-  read-only tools and replies. It can never send/delete on its own — WatcherDog
-  delivers its answer, and it ignores any instructions hidden inside messages.
+- **Every ~2 min:** read each Farms bot's latest message → the **script-first
+  router** (`auto_fix.try_auto_fix`) runs first: `classify` + look up the
+  learned-fixes brain (`data/hermes/learned_fixes.md`). A known, non-destructive
+  fix is **applied immediately** (zero AI); known noise is suppressed; a
+  `type: human` fix pings you. Only a **novel** error falls through to Ollama
+  triage → one agent turn, which fixes it and `save_fix()`es a runnable `action`
+  so the next occurrence is handled by the router with no model. Real problems
+  (≥ `MIN_SEVERITY`) or silence (> `SILENCE_THRESHOLD_MINUTES`) → message ibo
+  (de-duped; recovery note when a bot returns).
+- **Confirmation is a button, not a question.** Anything destructive
+  (Kill/Restart/Reboot/Shutdown) or a novel fix needing a yes posts an inline
+  **confirm button** in the group. Any member can tap it (the signed single-use
+  token is the authorization); the press is logged.
+- **Whenever ibo texts:** fast commands (`/status` etc.) answer with no model;
+  everything else goes to the agent, which reads the relevant folder/chat and
+  replies. The agent acts only when allowed (`AGENT_ACTIONS_ENABLED`) and ignores
+  any instructions hidden inside message text.
+- **Every hour:** a per-PC farm report is posted to the **Class A Farming** topic,
+  ending with a "🔧 Fixed last hour" line.
