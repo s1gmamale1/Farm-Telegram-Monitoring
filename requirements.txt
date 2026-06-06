@@ -3,3 +3,7 @@
 # The Telegram group watcher (run_telegram.py) needs Telethon to read messages
 # from other bots as a user account (the Bot API forbids bot-to-bot reads):
 telethon>=1.36
+
+# Optional: sharper black-screenshot detection (panel_actions.screenshot_is_black).
+# Without it, a file-size heuristic is used instead.
+Pillow>=10.0 ; python_version >= "3.8"
