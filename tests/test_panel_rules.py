@@ -69,3 +69,27 @@ def test_overlaunch_clock_resets_when_back_to_target():
     st = pr.observe(s_over, pr.PanelState(), 0.0, CFG)
     st = pr.observe(s_ok, st, 30.0, CFG)
     assert st.over_launch_since is None
+
+
+def test_unparseable_status_card_is_noop():
+    # launched=None (a normal non-status message) -> noop, NOT a flag.
+    s = _status(launched=None, status=None)
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).kind == "noop"
+
+
+def test_unparsed_status_at_target_is_healthy_noop():
+    # launched==target, in a match, but the Status line didn't parse: must NOT be
+    # read as 'not LIVE' and must NOT relaunch a healthy panel.
+    s = _status(launched=4, status=None, map="de_nuke", score="[1:0]", in_match=True)
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).kind == "noop"
+
+
+def test_explicit_not_live_status_relaunches():
+    s = _status(launched=4, status="OFFLINE", in_match=False)
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).actions == ["select_unfarmed", "start_selected"]
+
+
+def test_idle_requires_confirmed_live():
+    # status unknown + not in a match -> cannot confirm LIVE -> noop, not make_lobbies.
+    s = _status(launched=4, status=None, in_match=False)
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).kind == "noop"

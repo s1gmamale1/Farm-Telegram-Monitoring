@@ -311,16 +311,23 @@ async def run_activity_booster(client, ent):
     return pressed
 
 
-async def collect_week(client, cfg, panels, *, week, date=None):
+async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
     """Stop each farm, pull its drops, and return one row per panel.
 
     One slow/dead panel never blocks the rest — failures are logged and that
-    panel still gets a (blank) row marked in its notes.
+    panel still gets a (blank) row marked in its notes. With ``deliver=False``
+    (a dry run) NO buttons are pressed — each panel just gets a 'dry-run' row.
     """
     rows = []
     for name, ent in panels:
         panel = panel_label(name)
         text = ""
+        if not deliver:
+            log.info("[DRY-RUN] %s: would stop farm -> drop stats -> activity booster", panel)
+            parsed = parse_drop_stats("")
+            parsed["notes"] = "dry-run"
+            rows.append(make_row(week, panel, parsed, date=date))
+            continue
         try:
             await stop_farm(client, ent)
         except Exception as exc:  # noqa: BLE001
@@ -369,7 +376,8 @@ async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
     panels = await load_panels(client, cfg)
     if not panels:
         log.warning("No panels resolved in folder %r; nothing to collect.", cfg.panels_folder)
-    rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat())
+    rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat(),
+                              deliver=deliver)
 
     path = buffer_path(cfg.drop_stats_dir, week)
     write_buffer(path, week, rows, generated=now.isoformat(timespec="seconds"))

@@ -274,21 +274,32 @@ _ACTION_LABELS = {
 }
 
 
-async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state):
+async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target):
     """Deterministic per-panel watch/recover (R1-R6). No model. Takes the panel's
     already-fetched latest status (text, date) — no extra read — advances timers,
     asks panel_rules for a Decision, then flags / runs / offers a confirm card per
     that Decision. Returns a short note when it HANDLED the panel (so the caller
-    skips the AI incident path), else None."""
+    skips the AI incident path), else None — including when the latest message
+    isn't a status card, so normal error/silence monitoring still runs."""
     target_ref = _panel_target(ent, name)
     now = time.time()
     age = (now - date.timestamp()) if date else None
     status = farm_stats.parse_panel_status(text) if text else None
+    # An explicit "All N accounts launched!" alert is a status signal too — feed
+    # its count in when the message isn't the structured status card.
+    if status is not None and status.launched is None and text:
+        alerted = farm_stats.launched_from_alert(text)
+        if alerted is not None:
+            status.launched = alerted
 
     ps = _PANEL_STATE.setdefault(name, panel_rules.PanelState())
     if status is not None:
         panel_rules.observe(status, ps, now, cfg)
     decision = panel_rules.decide(status, age, ps, now, cfg)
+
+    # Clear the cold-case latch as soon as the panel stops flagging.
+    if decision.kind != "flag":
+        ps.flag_alerted = False
 
     if decision.kind == "noop":
         return None
@@ -299,7 +310,11 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state)
         return None
 
     if decision.kind == "flag":
-        await _alert(state, client, None, f"🧰 {name}: {decision.reason}", deliver, cfg=cfg)
+        # Latch: alert ONCE per cold-case episode (until the panel recovers), not
+        # every sweep. Still counts as handled so the AI path is skipped.
+        if not ps.flag_alerted:
+            await _alert(state, client, target, f"🧰 {name}: {decision.reason}", deliver, cfg=cfg)
+            ps.flag_alerted = True
         return decision.reason
 
     # R4 cold-case: a relaunch (select_unfarmed -> start_selected) we already
@@ -309,7 +324,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state)
         if (now - ps.r2_attempted_ts) >= cfg.panel_action_debounce_seconds and deliver:
             shot = await panel_actions.screenshot_black(client, target_ref, cfg)
             if shot["black"]:
-                await _alert(state, client, None,
+                await _alert(state, client, target,
                              f"🧰 {name}: black screenshot — RDP host needs restart (per-PC API)",
                              deliver, cfg=cfg)
                 ps.r2_attempted_ts = None
@@ -333,10 +348,12 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state)
             panel_target=target_ref)
         if posted is not None:
             ps.last_action_ts = now
+            if decision.actions[:2] == ["select_unfarmed", "start_selected"]:
+                ps.r2_attempted_ts = now   # arm the R4 follow-up in confirm mode too
             return f"confirm card: {decision.actions}"
         # No bot to post the card -> fall back to a plain text alert (CONCERN:
         # destructive action then needs a manual confirm via the agent path).
-        await _alert(state, client, None,
+        await _alert(state, client, target,
                      f"🧰 {name}: proposed fix {decision.actions} ({decision.reason}) "
                      "— needs confirmation", deliver, cfg=cfg)
         ps.last_action_ts = now
@@ -470,7 +487,7 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
         if cfg.panel_rules_enabled:
             try:
                 note = await _evaluate_panel(client, cfg, name, ent, text, date,
-                                             deliver=deliver, state=state)
+                                             deliver=deliver, state=state, target=target)
             except Exception:  # noqa: BLE001
                 log.exception("panel eval failed for %s; continuing", name)
                 note = None

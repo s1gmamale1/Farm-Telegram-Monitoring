@@ -200,6 +200,36 @@ def test_collect_week_runs_activity_booster_after_drop_stats(monkeypatch):
     assert len(rows) == 2
 
 
+def test_collect_week_dry_run_presses_nothing(monkeypatch):
+    """deliver=False must press NO buttons (not even Kill all) — just dry-run rows."""
+    import asyncio
+
+    calls = []
+
+    async def boom_stop(client, ent):
+        calls.append("stop_farm")
+
+    async def boom_drops(client, ent, **kw):
+        calls.append("drop_stats")
+        return "x"
+
+    async def boom_boost(client, ent):
+        calls.append("activity_booster")
+
+    monkeypatch.setattr(drop_stats, "stop_farm", boom_stop)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", boom_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", boom_boost)
+
+    panels = [("Panel 1", "ent1"), ("Panel 2", "ent2")]
+    rows = asyncio.run(
+        drop_stats.collect_week(None, Config({}), panels, week="2026-W23",
+                                date="2026-06-03", deliver=False)
+    )
+    assert calls == []                       # nothing pressed
+    assert len(rows) == 2
+    assert all(r["notes"] == "dry-run" for r in rows)
+
+
 # --- env bridge + push (drop_sheets stays as-is) ----------------------------
 
 def test_push_to_sheets_not_configured_keeps_buffer(monkeypatch):

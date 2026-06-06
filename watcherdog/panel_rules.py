@@ -17,6 +17,7 @@ class PanelState:
     last_score_ts: float | None = None
     last_action_ts: float | None = None
     r2_attempted_ts: float | None = None
+    flag_alerted: bool = False   # latch: a cold-case flag was already alerted
 
 
 @dataclass
@@ -59,7 +60,10 @@ def decide(status, status_age, state, now, cfg):
         return Decision("flag", reason="panel/PC down or status stale — needs per-PC API",
                         cold_case=True)
     if status.launched is None:
-        return Decision("flag", reason="could not parse launched count — manual check")
+        # Not a parseable status card (a normal drop/match/warmup post, or a
+        # non-panel chat). Defer to the normal monitoring path — never act or
+        # flag on a message that simply isn't a status card.
+        return Decision("noop", reason="no status card")
 
     if status.launched > target:
         since = state.over_launch_since
@@ -70,15 +74,20 @@ def decide(status, status_age, state, now, cfg):
                             destructive=True)
         return Decision("noop", reason=f"over-launch observed ({status.launched}); waiting")
 
-    if status.launched < target or not _is_live(status):
+    # R2 — under target, or a status we can READ that is not LIVE. A status we
+    # CANNOT read (status.status is None) is NOT inferred as down — never guess;
+    # it falls through to the healthy/idle checks below.
+    if status.launched < target or (status.status is not None and not _is_live(status)):
         return Decision("sequence", actions=["select_unfarmed", "start_selected"],
                         reason=f"launched={status.launched}, status={status.status!r}")
 
-    if not status.in_match:
-        return Decision("sequence", actions=["make_lobbies"], reason="LIVE but no map/score")
-    if (state.last_score == status.score and state.last_score_ts is not None
-            and (now - state.last_score_ts) >= idle_s):
-        return Decision("sequence", actions=["make_lobbies"],
-                        reason=f"score unchanged >{idle_s/60:.0f}m")
+    # R3 — idle: only when we can confirm the panel is LIVE.
+    if _is_live(status):
+        if not status.in_match:
+            return Decision("sequence", actions=["make_lobbies"], reason="LIVE but no map/score")
+        if (state.last_score == status.score and state.last_score_ts is not None
+                and (now - state.last_score_ts) >= idle_s):
+            return Decision("sequence", actions=["make_lobbies"],
+                            reason=f"score unchanged >{idle_s/60:.0f}m")
 
     return Decision("noop", reason="healthy")
