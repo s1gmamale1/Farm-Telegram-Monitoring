@@ -39,8 +39,9 @@ from telethon.tl.types import InputStickerSetID
 from telethon.utils import get_peer_id
 
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
-                        daily_report, drop_stats, fast_commands, roster,
-                        self_restart, tg_tools)
+                        daily_report, drop_stats, farm_stats, fast_commands,
+                        panel_actions, panel_rules, roster, self_restart,
+                        tg_tools)
 from watcherdog.alerter import (
     format_alert,
     format_recovery_alert,
@@ -258,6 +259,105 @@ async def _incident_via_agent(client, cfg, state, target, bot, severity, text, d
     return await _send(client, target, answer, deliver, cfg=cfg)
 
 
+# --- deterministic panel watch/recover (R1-R6, no model) --------------------
+# Per-panel timer state (over-launch, last score, action debounce), keyed by the
+# watch-roster name. Survives across sweeps for the life of the process.
+_PANEL_STATE: dict = {}
+
+# Decision actions are abstract keys; the confirm-card runner (_run_card_steps)
+# presses raw button LABELS, so map keys -> the panel_actions button labels.
+_ACTION_LABELS = {
+    "kill_all": panel_actions.BTN_KILL_ALL,
+    "select_unfarmed": panel_actions.BTN_SELECT_UNFARMED,
+    "start_selected": panel_actions.BTN_START_SELECTED,
+    "make_lobbies": panel_actions.BTN_MAKE_LOBBIES,
+}
+
+
+async def _evaluate_panel(client, cfg, name, ent, *, deliver, state):
+    """Deterministic per-panel watch/recover (R1-R6). No model. Reads the panel's
+    latest status message, advances timers, asks panel_rules for a Decision, then
+    flags / runs / offers a confirm card per that Decision. Returns a short note
+    when it HANDLED the panel (so the caller skips the AI incident path), else
+    None."""
+    target_ref = _panel_target(ent, name)
+    try:
+        text, date = await tg_tools.latest_message(client, ent, mark_read=False)
+    except Exception:  # noqa: BLE001
+        text, date = None, None
+    now = time.time()
+    age = (now - date.timestamp()) if date else None
+    status = farm_stats.parse_panel_status(text) if text else None
+
+    ps = _PANEL_STATE.setdefault(name, panel_rules.PanelState())
+    if status is not None:
+        panel_rules.observe(status, ps, now, cfg)
+    decision = panel_rules.decide(status, age, ps, now, cfg)
+
+    if decision.kind == "noop":
+        return None
+
+    # Debounce: don't re-act on a panel we just acted on within the window.
+    if (decision.kind == "sequence" and ps.last_action_ts is not None
+            and (now - ps.last_action_ts) < cfg.panel_action_debounce_seconds):
+        return None
+
+    if decision.kind == "flag":
+        await _alert(state, client, None, f"🧰 {name}: {decision.reason}", deliver, cfg=cfg)
+        return decision.reason
+
+    # R4 cold-case: a relaunch (select_unfarmed -> start_selected) we already
+    # tried hasn't taken; after the debounce, screenshot to see if the host is
+    # black (RDP frozen) and, if so, flag for a per-PC restart.
+    if decision.actions == ["select_unfarmed", "start_selected"] and ps.r2_attempted_ts:
+        if (now - ps.r2_attempted_ts) >= cfg.panel_action_debounce_seconds and deliver:
+            shot = await panel_actions.screenshot_black(client, target_ref, cfg)
+            if shot["black"]:
+                await _alert(state, client, None,
+                             f"🧰 {name}: black screenshot — RDP host needs restart (per-PC API)",
+                             deliver, cfg=cfg)
+                ps.r2_attempted_ts = None
+                return "R4 cold-case flagged"
+
+    if not deliver:
+        log.info("[panel] %s would run %s (%s)", name, decision.actions, decision.reason)
+        return f"dry-run: {decision.actions}"
+
+    # Auto-run gate: non-destructive recoveries run when PANEL_AUTO_RECOVER;
+    # destructive ones only when PANEL_AUTO_DESTRUCTIVE. Otherwise offer a
+    # one-tap confirm card in the bot's group (anyone can tap).
+    auto = (cfg.panel_auto_destructive if decision.destructive else cfg.panel_auto_recover)
+    if not auto:
+        labels = [_ACTION_LABELS.get(a, a) for a in decision.actions]
+        posted = await _offer_card(
+            state,
+            f"🧰 {name} — {decision.reason}\n"
+            f"Proposed fix: {' → '.join(decision.actions)}",
+            buttons.confirm_options(labels),
+            panel_target=target_ref)
+        if posted is not None:
+            ps.last_action_ts = now
+            return f"confirm card: {decision.actions}"
+        # No bot to post the card -> fall back to a plain text alert (CONCERN:
+        # destructive action then needs a manual confirm via the agent path).
+        await _alert(state, client, None,
+                     f"🧰 {name}: proposed fix {decision.actions} ({decision.reason}) "
+                     "— needs confirmation", deliver, cfg=cfg)
+        ps.last_action_ts = now
+        return f"alert (no card): {decision.actions}"
+
+    results = await panel_actions.run_sequence(
+        client, target_ref, decision.actions, cfg, confirmed=True)
+    ps.last_action_ts = now
+    if decision.actions[:2] == ["select_unfarmed", "start_selected"]:
+        ps.r2_attempted_ts = now
+    ok = all(r.get("ok") for r in results)
+    daily_report.record(cfg.daily_errors_path, panel=name, error=decision.reason,
+                        fix=",".join(decision.actions), result="ok" if ok else "failed")
+    log.info("[panel] %s ran %s -> %s", name, decision.actions, "ok" if ok else "failed")
+    return f"{decision.actions} -> {'ok' if ok else 'failed'}"
+
+
 async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
                         deliver=True, ent=None):
     """Classify + (Ollama) analyze one bot's latest message; alert on a real
@@ -360,6 +460,18 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
     already_silent, healthy = [], 0
 
     for name, ent in watch:
+        # Deterministic panel watch/recover (R1-R6, no model) runs FIRST. When it
+        # handles a panel it returns a note and we skip the AI incident + silence
+        # paths for that chat this sweep.
+        if cfg.panel_rules_enabled:
+            try:
+                note = await _evaluate_panel(client, cfg, name, ent, deliver=deliver, state=state)
+            except Exception:  # noqa: BLE001
+                log.exception("panel eval failed for %s; continuing", name)
+                note = None
+            if note is not None:
+                continue
+
         text, date = await tg_tools.latest_message(client, ent, mark_read=cfg.mark_read_after_read)
         await _evaluate_bot(client, cfg, store, state, target, name, text, now, loop,
                             deliver, ent=ent)
