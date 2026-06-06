@@ -36,6 +36,8 @@ log = logging.getLogger("watcherdog.drop_stats")
 # Button-label prefixes (labels are truncated in Telegram — match by prefix).
 STOP_BUTTONS = ("kill all cs", "kill all", "stop the farm", "stop farm", "stop")
 DROPS_BUTTONS = ("drops stats", "drop stats", "drops")
+# Operator rule: the activity booster must run AFTER drop stats are pulled.
+BOOSTER_BUTTONS = ("run activity booster", "activity booster")
 
 # Wednesday = weekday() 2 (Mon=0). Run at 00:00.
 RUN_WEEKDAY = 2
@@ -293,6 +295,22 @@ async def request_drop_stats(client, ent, *, timeout=25.0):
     return (reply.message or "") if reply else ""
 
 
+async def run_activity_booster(client, ent):
+    """Open the panel's menu and press *Run activity booster*. True if pressed.
+
+    Operator rule: this runs AFTER Drop Stats for the same panel.
+    """
+    menu = await _open_menu(client, ent)
+    if menu is None:
+        log.warning("%s: no /start menu — cannot run activity booster",
+                    tg_tools.entity_name(ent))
+        return False
+    pressed = await _press(menu, BOOSTER_BUTTONS)
+    if not pressed:
+        log.warning("%s: no activity booster button found", tg_tools.entity_name(ent))
+    return pressed
+
+
 async def collect_week(client, cfg, panels, *, week, date=None):
     """Stop each farm, pull its drops, and return one row per panel.
 
@@ -311,6 +329,11 @@ async def collect_week(client, cfg, panels, *, week, date=None):
             text = await request_drop_stats(client, ent)
         except Exception as exc:  # noqa: BLE001
             log.warning("%s: drop-stats request failed: %s", panel, exc)
+        # Operator rule: run the activity booster AFTER drop stats for this panel.
+        try:
+            await run_activity_booster(client, ent)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: activity booster failed: %s", panel, exc)
         parsed = parse_drop_stats(text)
         if not text.strip():
             parsed["notes"] = "no reply"

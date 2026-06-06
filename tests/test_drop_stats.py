@@ -159,6 +159,47 @@ def test_seconds_until_later_wednesday_rolls_to_next_week():
     assert secs == 7 * 24 * 3600 - 60
 
 
+# --- collect_week: activity booster runs AFTER drop stats -------------------
+
+def test_collect_week_runs_activity_booster_after_drop_stats(monkeypatch):
+    """Operator rule: per panel the activity booster fires after drop stats."""
+    import asyncio
+
+    calls = []
+
+    async def fake_stop_farm(client, ent):
+        calls.append(("stop_farm", ent))
+        return True
+
+    async def fake_request_drop_stats(client, ent, **kw):
+        calls.append(("drop_stats", ent))
+        return "312 drops"
+
+    async def fake_run_activity_booster(client, ent):
+        calls.append(("activity_booster", ent))
+        return True
+
+    monkeypatch.setattr(drop_stats, "stop_farm", fake_stop_farm)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", fake_request_drop_stats)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", fake_run_activity_booster)
+
+    panels = [("Panel 1", "ent1"), ("Panel 2", "ent2")]
+    rows = asyncio.run(
+        drop_stats.collect_week(None, Config({}), panels, week="2026-W23", date="2026-06-03")
+    )
+
+    # Two panels, three presses each, in the right order.
+    assert calls == [
+        ("stop_farm", "ent1"), ("drop_stats", "ent1"), ("activity_booster", "ent1"),
+        ("stop_farm", "ent2"), ("drop_stats", "ent2"), ("activity_booster", "ent2"),
+    ]
+    # For each panel, drop_stats must come before its activity_booster.
+    for ent in ("ent1", "ent2"):
+        order = [name for name, e in calls if e == ent]
+        assert order.index("drop_stats") < order.index("activity_booster")
+    assert len(rows) == 2
+
+
 # --- env bridge + push (drop_sheets stays as-is) ----------------------------
 
 def test_push_to_sheets_not_configured_keeps_buffer(monkeypatch):
