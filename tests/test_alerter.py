@@ -179,3 +179,153 @@ def test_user_client_alerter_handles_failure(running_loop):
 
     a = UserClientAlerter(FakeClient(), running_loop, "me")
     assert a.send("hello") is False
+
+
+# --- missing full-form formatters -------------------------------------------
+
+def test_format_silence_alert_contains_bot_and_duration():
+    out = alerter.format_silence_alert("SinFermera3", 3600)
+    assert "SinFermera3" in out
+    assert "SILENT" in out
+    # Duration should be in the output (1 hour).
+    assert "1h" in out
+
+
+def test_format_recovery_alert_contains_bot():
+    out = alerter.format_recovery_alert("SinFermera3")
+    assert "SinFermera3" in out
+    assert "online" in out.lower() or "back" in out.lower()
+
+
+def test_format_recurring_alert_includes_count_and_bots():
+    group = {
+        "count": 5,
+        "bots": ["SinFermera1", "SinFermera2"],
+        "summary": "proxy timeout",
+        "raw_excerpt": "",
+    }
+    out = alerter.format_recurring_alert(group, window_minutes=30)
+    assert "5" in out
+    assert "30" in out
+    assert "SinFermera1" in out
+    assert "proxy timeout" in out
+
+
+def test_format_recurring_alert_falls_back_to_excerpt():
+    """When summary is empty, falls back to raw_excerpt."""
+    group = {"count": 2, "bots": [], "summary": "", "raw_excerpt": "Connection refused"}
+    out = alerter.format_recurring_alert(group, window_minutes=60)
+    assert "Connection refused" in out
+
+
+def test_format_recurring_alert_no_bots():
+    group = {"count": 3, "bots": None, "summary": "err", "raw_excerpt": ""}
+    out = alerter.format_recurring_alert(group, window_minutes=60)
+    assert "?" in out  # fallback for empty bot list
+
+
+# --- TelegramAlerter._post thread_id handling --------------------------------
+
+def test_post_includes_thread_id_when_set(monkeypatch):
+    """A numeric thread_id must be converted to int and included in the payload."""
+    import json as _json
+
+    a = TelegramAlerter("tok", "99", thread_id="42", attempts=1)
+    payloads = []
+
+    def fake_urlopen(req, timeout=None):
+        payloads.append(_json.loads(req.data.decode()))
+
+        class _R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"ok": true}'
+
+        return _R()
+
+    monkeypatch.setattr(alerter.urllib.request, "urlopen", fake_urlopen)
+    a.send("hi")
+    assert payloads[0]["message_thread_id"] == 42
+
+
+def test_post_skips_invalid_thread_id(monkeypatch):
+    """A non-numeric thread_id must be silently dropped (no crash)."""
+    import json as _json
+
+    a = TelegramAlerter("tok", "99", thread_id="not-a-number", attempts=1)
+    payloads = []
+
+    def fake_urlopen(req, timeout=None):
+        payloads.append(_json.loads(req.data.decode()))
+
+        class _R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"ok": true}'
+
+        return _R()
+
+    monkeypatch.setattr(alerter.urllib.request, "urlopen", fake_urlopen)
+    a.send("hi")
+    assert "message_thread_id" not in payloads[0]
+
+
+# --- 429 rate-limit: must retry (not stop early) ----------------------------
+
+def test_send_retries_on_429(monkeypatch):
+    a = TelegramAlerter("tok", "99", attempts=3)
+    monkeypatch.setattr(alerter.time, "sleep", lambda s: None)
+    calls = []
+
+    def boom(text):
+        calls.append(text)
+        raise urllib.error.HTTPError("url", 429, "Too Many Requests", None, None)
+
+    monkeypatch.setattr(a, "_post", boom)
+    result = a.send("hi")
+    assert result is False
+    assert len(calls) == 3  # 429 is explicitly excluded from the "stop early" rule
+
+
+# --- 5xx server errors: must retry -----------------------------------------
+
+def test_send_retries_on_5xx(monkeypatch):
+    a = TelegramAlerter("tok", "99", attempts=3)
+    monkeypatch.setattr(alerter.time, "sleep", lambda s: None)
+    calls = []
+
+    def boom(text):
+        calls.append(text)
+        raise urllib.error.HTTPError("url", 503, "Service Unavailable", None, None)
+
+    monkeypatch.setattr(a, "_post", boom)
+    result = a.send("hi")
+    assert result is False
+    assert len(calls) == 3  # 5xx are transient; must retry all attempts
+
+
+# --- _fmt_duration boundary: zero seconds -----------------------------------
+
+def test_fmt_duration_zero_seconds():
+    assert _fmt_duration(0) == "0 min"
+
+
+def test_fmt_duration_exactly_one_hour():
+    assert _fmt_duration(3600) == "1h 0m"
+
+
+# --- UserClientAlerter.send_alert calls format_alert then send --------------
+
+def test_user_client_alerter_send_alert_formats_and_sends(running_loop):
+    sent = []
+
+    class FakeClient:
+        async def send_message(self, target, text):
+            sent.append(text)
+
+    a = UserClientAlerter(FakeClient(), running_loop, "me")
+    a.send_alert("SinFermera3", "critical", ANALYSIS, "raw excerpt")
+    assert len(sent) == 1
+    assert "SinFermera3" in sent[0]
+    assert "CRITICAL" in sent[0]
+    assert "raw excerpt" in sent[0]

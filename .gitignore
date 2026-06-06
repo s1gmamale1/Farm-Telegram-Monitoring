@@ -13,3 +13,14 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Obsidian vault: keep shareable config, ignore per-user/3rd-party state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/plugins/
+.obsidian/themes/
+
+# Agent/tooling state (machine-local, not source)
+.claude-flow/
+.swarm/
+ruvector.db

@@ -104,3 +104,83 @@ def test_long_excerpt_truncated_to_4000(store):
     store.record("bot", "high", ANALYSIS, "h", "y" * 9000, True, ts=1.0)
     row = store.recent(limit=1)[0]
     assert len(row["raw_excerpt"]) == 4000
+
+
+# --- notified field stored correctly as 1 / 0 --------------------------------
+
+def test_record_notified_true_stores_1(store):
+    store.record("bot", "high", ANALYSIS, "h1", "raw", True, ts=1.0)
+    row = store.recent(limit=1)[0]
+    assert row["notified"] == 1
+
+
+def test_record_notified_false_stores_0(store):
+    store.record("bot", "high", ANALYSIS, "h2", "raw", False, ts=1.0)
+    row = store.recent(limit=1)[0]
+    assert row["notified"] == 0
+
+
+# --- recurring: multiple distinct hashes, ordered by count ------------------
+
+def test_recurring_multiple_hashes_ordered_by_frequency(store):
+    now = 10_000.0
+    # Hash "A" appears 5 times; hash "B" appears 3 times.
+    for i in range(5):
+        store.record("b", "high", {"summary": "A error"}, "A", "raw-a", False, ts=now - i)
+    for i in range(3):
+        store.record("b", "high", {"summary": "B error"}, "B", "raw-b", False, ts=now - i)
+    groups = store.recurring(3600, 3, now=now)
+    assert len(groups) >= 2
+    assert groups[0]["raw_hash"] == "A"   # most frequent first
+    assert groups[0]["count"] == 5
+    assert groups[1]["raw_hash"] == "B"
+    assert groups[1]["count"] == 3
+
+
+# --- recent: limit=0 returns empty ------------------------------------------
+
+def test_recent_limit_zero_returns_empty(store):
+    store.record("bot", "high", ANALYSIS, "h", "raw", True, ts=1.0)
+    assert store.recent(limit=0) == []
+
+
+# --- close is idempotent (no raise on double-close) -------------------------
+
+def test_close_is_idempotent(tmp_path):
+    s = IncidentStore(str(tmp_path / "data" / "incidents.db"))
+    s.close()
+    s.close()  # must not raise
+
+
+# --- schema is idempotent: second IncidentStore on same path ----------------
+
+def test_schema_is_idempotent(tmp_path):
+    """Opening two IncidentStore instances on the same DB path must not error."""
+    path = str(tmp_path / "data" / "incidents.db")
+    s1 = IncidentStore(path)
+    s1.record("bot", "high", ANALYSIS, "h1", "raw", True, ts=1.0)
+    s1.close()
+
+    s2 = IncidentStore(path)
+    rows = s2.recent(limit=10)
+    assert len(rows) == 1
+    s2.close()
+
+
+# --- recurring() with now=None uses current wall-clock ----------------------
+
+def test_recurring_now_none_uses_current_time(store):
+    """recurring(now=None) must default to time.time() without crashing."""
+    store.record("bot", "high", ANALYSIS, "H", "raw", False)
+    # With now=None the query runs against the real clock; we just verify no crash.
+    groups = store.recurring(3600, 1, now=None)
+    assert isinstance(groups, list)
+
+
+# --- recent: returns dict rows, not sqlite.Row objects ----------------------
+
+def test_recent_returns_plain_dicts(store):
+    store.record("bot", "high", ANALYSIS, "h", "raw", True, ts=1.0)
+    rows = store.recent(limit=1)
+    assert isinstance(rows[0], dict)
+    assert "bot" in rows[0]

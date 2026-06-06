@@ -72,3 +72,67 @@ class _Dated:
 
     def timestamp(self):
         return self._ts
+
+
+# --- status_emoji -----------------------------------------------------------
+
+def test_status_emoji_all_buckets():
+    assert roster.status_emoji(roster.FARMING) == "✅"
+    assert roster.status_emoji(roster.QUIET) == "⚠️"
+    assert roster.status_emoji(roster.ATTENTION) == "🔴"
+    assert roster.status_emoji(roster.DEAD) == "💀"
+
+
+def test_status_emoji_unknown_returns_question():
+    assert roster.status_emoji("some unknown bucket") == "❓"
+
+
+# --- classify_status: age boundaries ----------------------------------------
+
+def test_classify_status_attention_at_91_min():
+    """91 min with no error but age > 90 should be ATTENTION, not QUIET."""
+    assert roster.classify_status("collected drop", 91, _cfg(quiet=60)) == roster.ATTENTION
+
+
+def test_classify_status_quiet_at_exactly_90_min():
+    """At exactly 90 min the age heuristic doesn't fire (> 90, not >= 90)."""
+    assert roster.classify_status("collected drop", 90, _cfg(quiet=60)) == roster.QUIET
+
+
+def test_classify_status_attention_when_no_text_and_recent():
+    """No text (bot never replied) → not farming → ATTENTION."""
+    assert roster.classify_status(None, 5, _cfg()) == roster.ATTENTION
+
+
+# --- load_pc_map: file-based ------------------------------------------------
+
+def test_load_pc_map_reads_file(tmp_path, monkeypatch):
+    import json
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "farmer_pc_map.json").write_text(
+        json.dumps({"PC1": [1, 2], "PC2": [3]}), encoding="utf-8"
+    )
+    # Make __file__-based path resolution point into tmp_path.
+    # roster.py does: base = dirname(dirname(abspath(__file__)))
+    # If abspath returns tmp_path/watcherdog/roster.py, base becomes tmp_path.
+    monkeypatch.setattr(roster.os.path, "abspath",
+                        lambda _: str(tmp_path / "watcherdog" / "roster.py"))
+    roster._pc_map_cache = None
+    mapping = roster.load_pc_map(_cfg())
+    roster._pc_map_cache = None
+    assert mapping.get(1) == "PC1"
+    assert mapping.get(3) == "PC2"
+
+
+def test_load_pc_map_missing_file_returns_empty(tmp_path, monkeypatch):
+    """When farmer_pc_map.json doesn't exist, load_pc_map returns {} gracefully."""
+    # tmp_path/data/ exists but has no farmer_pc_map.json.
+    (tmp_path / "data").mkdir()
+    monkeypatch.setattr(roster.os.path, "abspath",
+                        lambda _: str(tmp_path / "watcherdog" / "roster.py"))
+    roster._pc_map_cache = None
+    mapping = roster.load_pc_map(_cfg())
+    roster._pc_map_cache = None
+    assert mapping == {}

@@ -2,7 +2,9 @@
 
 > This is the **operational runbook**. For *what WatcherDog is and how it's
 > wired*, read [README.md](README.md); for *developer internals*, read
-> [DOCUMENTATION.md](DOCUMENTATION.md).
+> [DOCUMENTATION.md](DOCUMENTATION.md). For the full interlinked **Obsidian
+> knowledge base** (notes + canvas map), open the vault and start at `Home`
+> ([docs/wiki/](docs/wiki/)).
 
 WatcherDog runs over the **Telegram API (MTProto)** as your user account
 **Sigma Male (@s1gmamale1)** — no more screenshots/OCR/mouse control. It:

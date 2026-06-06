@@ -181,3 +181,57 @@ def test_bridge_sheets_env_mirrors_config(monkeypatch, tmp_path):
     assert os.environ["GSHEETS_CREDENTIALS"] == str(creds)
     assert os.environ["GSHEETS_SHEET_ID"] == "sheet-123"
     assert os.environ["GSHEETS_TAB"] == "DropStats"
+
+
+# --- drop_sheets.is_configured edge cases -----------------------------------
+
+from watcherdog import drop_sheets
+
+
+def test_drop_sheets_not_configured_when_no_sheet_id(monkeypatch, tmp_path):
+    creds = tmp_path / "creds.json"
+    creds.write_text("{}")
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(creds))
+    monkeypatch.delenv("GSHEETS_SHEET_ID", raising=False)
+    assert drop_sheets.is_configured() is False
+
+
+def test_drop_sheets_not_configured_when_creds_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(tmp_path / "nonexistent.json"))
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+    assert drop_sheets.is_configured() is False
+
+
+def test_drop_sheets_not_configured_when_creds_empty(monkeypatch):
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", "")
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+    assert drop_sheets.is_configured() is False
+
+
+def test_drop_sheets_append_week_empty_rows_returns_ok():
+    result = drop_sheets.append_week([])
+    assert result == {"ok": True, "written": 0}
+
+
+def test_drop_sheets_append_week_not_configured(monkeypatch):
+    monkeypatch.delenv("GSHEETS_SHEET_ID", raising=False)
+    result = drop_sheets.append_week([{"week": "2026-W23"}])
+    assert result["ok"] is False
+    assert result["reason"] == "not configured"
+
+
+def test_drop_sheets_append_week_no_gspread(monkeypatch, tmp_path):
+    """When gspread is not installed, append_week must return a clean error."""
+    creds = tmp_path / "creds.json"
+    creds.write_text("{}")
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(creds))
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+
+    # Simulate gspread not being installed.
+    def boom(*a, **kw):
+        raise ModuleNotFoundError("No module named 'gspread'")
+
+    monkeypatch.setattr(drop_sheets, "_open_worksheet", boom)
+    result = drop_sheets.append_week([{"week": "2026-W23"}])
+    assert result["ok"] is False
+    assert "gspread" in result["reason"]
