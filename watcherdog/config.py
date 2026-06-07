@@ -136,7 +136,12 @@ class Config:
             get("ALLOWED_USERS", "").strip(),
             get("IBO_CHAT_ID", "").strip(),
         ) if v), "")
-        self.ibo_chat_ids = [u.strip() for u in raw_ibo.split(",") if u.strip()]
+        # Clean each ref of surrounding whitespace and any JSON-array/quote
+        # wrapping (so ALLOWLIST=[111, "222"] yields 111, 222 — not "[111"/'222"').
+        # `-` and `@` are NOT stripped, so negative channel ids and @usernames survive.
+        self.ibo_chat_ids = [
+            c for c in (u.strip().strip("[](){}\"'") for u in raw_ibo.split(",")) if c
+        ]
         self.ibo_chat_id = self.ibo_chat_ids[0] if self.ibo_chat_ids else ""
         # Seconds between proactive monitor sweeps of the watch folder.
         self.watch_poll_interval = float(get("WATCH_POLL_INTERVAL", "120"))

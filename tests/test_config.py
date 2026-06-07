@@ -160,6 +160,30 @@ def test_ibo_chat_id_blank_is_empty_list():
     assert cfg.ibo_chat_id == ""
 
 
+def test_ibo_chat_ids_strips_json_array_brackets():
+    # A user who writes the list JSON-style (ALLOWLIST=[111, 222]) must not end
+    # up with bracketed refs like "[111" / "222]" that fail to resolve.
+    cfg = Config({"ALLOWLIST": "[695707378, 1406109190]"})
+    assert cfg.ibo_chat_ids == ["695707378", "1406109190"]
+    assert cfg.ibo_chat_id == "695707378"
+
+
+def test_ibo_chat_ids_strips_brackets_without_spaces():
+    cfg = Config({"ALLOWLIST": "[111,222]"})
+    assert cfg.ibo_chat_ids == ["111", "222"]
+
+
+def test_ibo_chat_ids_strips_surrounding_quotes():
+    cfg = Config({"ALLOWLIST": '"111", \'@two\', 333'})
+    assert cfg.ibo_chat_ids == ["111", "@two", "333"]
+
+
+def test_ibo_chat_ids_keeps_username_and_negative_id():
+    # @username and a negative channel id must survive cleaning intact.
+    cfg = Config({"ALLOWLIST": "[@bob, -1001234567890]"})
+    assert cfg.ibo_chat_ids == ["@bob", "-1001234567890"]
+
+
 def test_validate_watcher_fails_when_ibo_blank():
     cfg = Config({"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "x", "IBO_CHAT_ID": "  "})
     problems = cfg.validate_watcher()
