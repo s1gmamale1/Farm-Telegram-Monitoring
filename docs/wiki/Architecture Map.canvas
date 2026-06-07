@@ -29,6 +29,8 @@
     {"id":"roster","type":"file","file":"docs/wiki/components/Roster and Health Scan.md","x":-1320,"y":-120,"width":420,"height":110,"color":"6"},
     {"id":"reports","type":"file","file":"docs/wiki/components/Scheduled Reports.md","x":-860,"y":-120,"width":420,"height":110,"color":"6"},
     {"id":"drops","type":"file","file":"docs/wiki/components/Drop-Stats Pipeline.md","x":-400,"y":-120,"width":420,"height":110,"color":"6"},
+    {"id":"rules","type":"file","file":"docs/wiki/components/Monitoring and Recovery Rules.md","x":60,"y":-120,"width":420,"height":110,"color":"6"},
+    {"id":"panelbot","type":"file","file":"docs/wiki/reference/Panel Control Bot.md","x":520,"y":-120,"width":420,"height":110,"color":"6"},
 
     {"id":"config","type":"file","file":"docs/wiki/reference/Configuration.md","x":-1780,"y":80,"width":420,"height":110,"color":"2"},
     {"id":"data","type":"file","file":"docs/wiki/reference/Data and State.md","x":-1320,"y":80,"width":420,"height":110,"color":"2"},
@@ -54,6 +56,9 @@
     {"id":"e13","fromNode":"reports","fromSide":"right","toNode":"drops","toSide":"left","label":"Wed 00:00"},
     {"id":"e14","fromNode":"twoid","fromSide":"bottom","toNode":"agent","toSide":"top","label":"user account acts"},
     {"id":"e15","fromNode":"config","fromSide":"top","toNode":"loop","toSide":"bottom","label":".env"},
-    {"id":"e16","fromNode":"data","fromSide":"top","toNode":"brain","toSide":"bottom","label":"learned_fixes.md"}
+    {"id":"e16","fromNode":"data","fromSide":"top","toNode":"brain","toSide":"bottom","label":"learned_fixes.md"},
+    {"id":"e17","fromNode":"loop","fromSide":"bottom","toNode":"rules","toSide":"top","label":"R1–R6 (no AI)"},
+    {"id":"e18","fromNode":"rules","fromSide":"right","toNode":"panelbot","toSide":"left","label":"status + buttons"},
+    {"id":"e19","fromNode":"rules","fromSide":"top","toNode":"tgtools","toSide":"bottom","label":"press_button"}
   ]
 }

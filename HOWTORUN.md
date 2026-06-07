@@ -9,8 +9,9 @@
 WatcherDog runs over the **Telegram API (MTProto)** as your user account
 **Sigma Male (@s1gmamale1)** — no more screenshots/OCR/mouse control. It:
 
-1. **Proactively watches the `Farms` folder** (the 24 SinFermera bots) and
-   messages **ibo** when one errors or goes silent (recovery note when it's back).
+1. **Proactively watches the `Farms` folder** (the 24 SinFermera bots) and DMs
+   **every owner in the `ALLOWLIST`** when one errors or goes silent (recovery
+   note when it's back).
    Every message hits a **script-first router** (`watcherdog/auto_fix.py`) first:
    known errors are **auto-fixed with zero AI cost**, and only a *novel* error
    escalates to the model (which then saves a runnable fix so the next time is
@@ -42,9 +43,9 @@ Why the split? The Bot API **forbids a bot from reading other bots' messages**, 
 only a real user account can watch the SinFermera bots — but a bot is the safe,
 public-facing way to *talk*. The user account owns the bot (it created it).
 
-**One-time:** for the bot to DM you alerts, the alert owner (`IBO_CHAT_ID`) must
+**One-time:** for the bot to DM you alerts, each owner in the `ALLOWLIST` must
 press **Start** on `@sherlock_homeless_chigga_bot` once. If they haven't, alerts
-quietly fall back to being sent by the user account.
+to that user quietly fall back to being sent by the user account.
 
 ### Acting, granting access, and self-editing (admin powers)
 
@@ -63,7 +64,7 @@ The bot answers everyone **read-only**, but **authorized users act**:
   edits within the project root only, **backing up every file it changes**
   (`<file>.bak.<timestamp>`). **Restart the watcher** for code changes to apply.
 
-By default both *authorized users* and *admins* are the owner (`IBO_CHAT_ID`)
+By default both *authorized users* and *admins* are the owners (the `ALLOWLIST`)
 plus the watcher's own account. These powers are **never** triggered by message
 text from anyone else — only by a real authorized sender. ⚠️ Self-editing lets
 the AI modify running code; a bad edit can break startup — the `.bak.*` files
@@ -98,10 +99,24 @@ Project folder: `~/Documents/WatcherDogBot`
    so it never clashes with the Telegram MCP):
    ```bash
    cd ~/Documents/WatcherDogBot
+   .venv/bin/python tools/tg_probe.py        # (optional) connect-only health check
    .venv/bin/python tools/tg_login.py        # phone number + login code
    ```
-   *Skip-able:* if you don't, the watcher reuses the `telegram-mcp` session
-   string automatically — convenient, but don't hammer the MCP at the same time.
+   `tg_probe.py` is **non-interactive**: it runs only the MTProto handshake +
+   an authorization check (no phone, no code, nothing sent to your phone) and
+   prints `PROBE handshake=OK` then `AUTHORIZED` / `NOT_AUTHORIZED`, or
+   `PROBE result=HANDSHAKE_FAILED …` — so you can tell a network/Python problem
+   apart from a "just need to log in" state before touching the phone.
+
+   `tg_login.py` is **transparent**: it prints the handshake result, **which
+   channel** Telegram sent the login code through (App / SMS / Email / Call), and
+   any flood-wait timer; it handles 2FA, sanitizes the phone (spaces ok), and
+   exits early if already authorized. Add `--print-session` to also emit a
+   portable `StringSession` (KEEP SECRET) for reuse on another machine.
+
+   *Skip-able:* if you don't log in, the watcher reuses the `telegram-mcp`
+   session string automatically — convenient, but don't hammer the MCP at the
+   same time.
 
 2. **Set the model key.** The agent uses your OpenRouter key. It's read from
    `OPENROUTER_API_KEY`, or automatically from `~/.hermes/.env`. Override per-app
@@ -111,10 +126,10 @@ Project folder: `~/Documents/WatcherDogBot`
    | Key | Meaning | Default |
    |---|---|---|
    | `WATCH_FOLDER` / `WATCH_FOLDER_ID` | Folder of bots to monitor | `Farms` / `6` |
-   | `IBO_CHAT_ID` | Who gets alerts / talks to the agent | `@ibrokhimel` |
+   | `ALLOWLIST` | **Comma-separated** owners who get alerts / talk to the agent — each a numeric user id (`1406109190`) or an `@username`. Aliases `ALLOW_LIST` / `ALLOWED_USERS`; legacy `IBO_CHAT_ID` still works as a fallback. | — |
    | `WATCH_POLL_INTERVAL` | Seconds between proactive sweeps | `120` |
-   | `MIN_SEVERITY` | Alert at/above `low`/`medium`/`high`/`critical` | `medium` |
-   | `SILENCE_THRESHOLD_MINUTES` | Alert if a bot is quiet this long | `30` |
+   | `MIN_SEVERITY` | Alert at/above `low`/`medium`/`high`/`critical` | `high` |
+   | `SILENCE_THRESHOLD_MINUTES` | Alert if a bot is quiet this long | `120` |
    | `AGENT_MODEL` | The conversation model | `deepseek/deepseek-v4-pro` |
 
    Ollama must be running (used to triage bot messages): `ollama list`.
@@ -194,8 +209,8 @@ launchctl load ~/Library/LaunchAgents/com.watcherdog.telegram.plist
 
 | Symptom | Fix |
 |---|---|
-| `session not authorized` | Run `.venv/bin/python tools/tg_login.py`. |
-| `IBO_CHAT_ID is not set` | Put `@ibrokhimel` (or the id) in `.env`. |
+| `session not authorized` | Run `.venv/bin/python tools/tg_login.py`. (First confirm the handshake itself works — `tg_probe.py` — vs. a real network/Python failure.) |
+| `ALLOWLIST is not set` | Put one or more owners (numeric ids or `@usernames`, comma-separated) in `ALLOWLIST` in `.env`. The legacy `IBO_CHAT_ID` key also works. |
 | ibo questions not answered | No model key — set `OPENROUTER_API_KEY` (or `AGENT_API_KEY`). |
 | `folder 'Farms' not found` | Check the folder name/`WATCH_FOLDER_ID`; see `list_folders`. |
 | Agent can't resolve a bot by name | It should use ids from `get_folder`; try naming the bot's `@username`. |

@@ -96,8 +96,7 @@ The relaunch is a same-launch via `sys.argv` + `sys.executable`.
 A self-edit by [[The Agent]] records `{path_abs, backup}` into `self_edits.json`, then a restart request flows through `request_restart` → `validate` → rollback-until-importable → detach `restart_helper` → SIGTERM/KILL the old pid → relaunch → wait for `mark_healthy()` to touch `watcher_health_path`. If the new process never becomes healthy, the supervisor restores the backups and relaunches the previous code.
 
 > [!warning]
-> Fresh-checkout reminder: there is no `data/` directory yet, so `data/self_edits.json`, `data/watcher_healthy`, and `data/restart_spec.json` are all created at runtime on first write. (Also note the stale "412 tests" claim in [[README]]/[[DOCUMENTATION]] — the real count is 302; see [[Testing]].)
-
+> Fresh-checkout reminder: there is no `data/` directory yet, so `data/self_edits.json`, `data/watcher_healthy`, and `data/restart_spec.json` are all created at runtime on first write.
 ## State files
 
 - `data/self_edits.json` — the edit journal (backups for rollback).

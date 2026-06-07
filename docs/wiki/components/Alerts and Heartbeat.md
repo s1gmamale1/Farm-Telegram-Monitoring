@@ -49,19 +49,21 @@ Severity maps to an emoji via `_SEVERITY_EMOJI`; excerpts are tail-truncated to 
 
 In the supported path, alerts are delivered by two helpers in `watcherdog/mcp_watcher.py`:
 
-- `_send` (`mcp_watcher.py:167`) — the dry-run-aware text sender; truncates to 4000 chars and can attach a skill-6 sticker.
-- `_alert` (`mcp_watcher.py:184`) — prefers the **bot DM** via `state["notifier"]` and falls back to the user account.
+- `_send` (`mcp_watcher.py:168`) — the dry-run-aware text sender; truncates to 4000 chars, can attach a skill-6 sticker, and accepts a single entity OR a list (it loops the allow-list).
+- `_alert` (`mcp_watcher.py:193`) — delivers ONE proactive alert to **ALL allowed users** (`cfg.ibo_chat_ids`). `target` may be a single entity or a list. The bot DM via `state["notifier"]` is tried only for the **PRIMARY** (first) recipient; everyone else is always reached via the user account, so no allowed user is skipped.
 
 ```mermaid
 flowchart TD
-  A[incident / silence / recovery] --> B["_alert(state, ...)"]
+  A[incident / silence / recovery] --> B["_alert(state, ..., target=ALL allowed)"]
   B --> C{state['notifier'] set?}
-  C -->|yes & succeeds| D[Bot DM to owner]
-  C -->|missing or fails| E["_send via user account"]
+  C -->|yes & succeeds| D[Bot DM to PRIMARY owner]
+  C -->|missing or fails| E["_send to primary via user account"]
+  D --> F["_send REST of allow-list via user account"]
+  E --> F
 ```
 
-> [!tip] Bot DM is the PREFERRED alert channel
-> `state["notifier"]` is wired only when `cfg.bot_alerts` is true AND the owner has pressed Start in the bot DM. A bot can only DM users who started it; `notify_owner` returns `False` (never raises) so the monitor silently falls back to the user account. Neither README nor DOCUMENTATION mentions this preference order.
+> [!tip] Bot DM is the PREFERRED channel — but only for the primary
+> `state["notifier"]` is wired only when `cfg.bot_alerts` is true AND the **primary** owner has pressed Start in the bot DM. A bot can only DM users who started it, so it only DMs the primary; `notify_owner` returns `False` (never raises) so the monitor silently falls back to the user account. The REST of the allow-list is always DMed by the user account. Neither README nor DOCUMENTATION mentions either the preference order or the multi-recipient fan-out.
 
 ## Silence and recovery detection (inline)
 

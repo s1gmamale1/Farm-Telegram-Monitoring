@@ -104,8 +104,7 @@ Runtime-created state (see [[Data and State]]): `data/bot_access.json`, `data/se
 > The only third-party dependency across `agent.py`, `tg_tools.py`, and `tg_actions.py` is `telethon>=1.36`. OpenRouter is reached with stdlib `urllib` — no OpenAI SDK, no `requests`.
 
 > [!warning]
-> This is a fresh checkout: there is NO `data/` directory yet. Every `data/*` path above is created on first write at runtime. Stale test counts also apply — [[README]] line 265 and [[DOCUMENTATION]] line 278 claim 412 tests, but the verified count is 302 across 29 files. See [[Testing]].
-
+> This is a fresh checkout: there is NO `data/` directory yet. Every `data/*` path above is created on first write at runtime.
 The `save_fix` tool the agent uses to teach itself a new fix is literally `learned_fixes.append_fix` (`agent.py:741`); there is no function actually named `save_fix` in `learned_fixes.py`. Details in [[The Learned-Fixes Brain]].
 
 ## See also

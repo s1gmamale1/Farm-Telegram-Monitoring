@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - reference
   - data
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -23,6 +23,8 @@ WatcherDog keeps almost all of its state under a single `data/` directory (resol
 
 | File (default path) | Owner / config key | Format | Purpose |
 |---|---|---|---|
+| `data/watcher.session` | Telethon (`TELEGRAM_SESSION`) | SQLite (Telethon) | the user account's authorized MTProto session, written by `tools/tg_login.py` |
+| `data/bot.session` | Telethon (`BOT_SESSION`) | SQLite (Telethon) | the talking bot's own MTProto session ([[The Bot Front-End]]) |
 | `data/watcherdog.db` / `data/incidents.db` | `IncidentStore` (`DB_PATH`) | SQLite | incident history + dedupe + recurring-error grouping |
 | `data/farms.json` | `_farms_cache_path` | JSON | cached watch roster (folder lookup fallback) |
 | `data/farmer_pc_map.json` | `roster.load_pc_map` | JSON | bot-number → PC mapping for reports |
@@ -40,6 +42,17 @@ WatcherDog keeps almost all of its state under a single `data/` directory (resol
 | `agent_chat_log` | `cfg.agent_chat_log` | text | ibo conversation transcript |
 | `data/hermes/drop_stats/<YYYY-Www>.json` | `write_buffer` (`DROP_STATS_DIR`) | JSON | per-week drop-stats buffer |
 | `data/hermes/drop_stats/credentials.json` | `GSHEETS_CREDENTIALS` | JSON | Google service-account key (not committed) |
+
+## The Telethon session (file vs string)
+
+The user account authorizes once (via `tools/tg_login.py`, see [[Entry Points]]) and the credentials persist in `data/watcher.session`. From then on the watcher reconnects silently. `make_client` (in `telegram_source.py`) picks the source, and `_resolve_session_string` decides which:
+
+1. If `TELEGRAM_SESSION_STRING` is set in `.env`, an in-memory `StringSession` is used (no file needed) — handy for reuse on another machine (`tg_login.py --print-session` prints one).
+2. Otherwise, if **no** watcher file session exists, it reuses the **telegram-mcp's** `TELEGRAM_SESSION_STRING` from `TELEGRAM_MCP_DIR/.env`, so one MTProto login can serve both.
+3. Otherwise it uses the file session at `TELEGRAM_SESSION` (default `data/watcher.session`).
+
+> [!warning] A corrupt session file is the usual login mystery
+> Symptoms like *"Security error: wrong session ID"*, *"0 bytes read on … expected bytes"*, or no code ever arriving are almost always a **corrupted** `data/watcher.session`, not a Python/network/VPN fault. Move it aside (`mv data/watcher.session data/watcher.session.bak`) and re-run `tools/tg_probe.py`, then `tg_login.py`. See [[Troubleshooting]].
 
 ## The incident store (SQLite)
 

@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - operations
   - config
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -23,9 +23,10 @@ Part of [[Home]].
 
 | Step | Command | Why |
 |------|---------|-----|
-| Authorize the user session | `tools/tg_login.py` | Phone → code → 2FA; saves the Telethon session file the watcher reads as. See [[Entry Points]]. |
-| Find chat/folder ids | `tools/list_dialogs.py` | Lists groups/channels with ids to populate `WATCH_FOLDER` / `IBO_CHAT_ID`. |
-| Configure | edit `.env` | ~94 keys; only three are required for the watcher (below). See [[Configuration]]. |
+| (Optional) probe first | `tools/tg_probe.py` | Non-interactive health check — confirms the MTProto handshake works and whether you're already logged in, **without** touching your phone. Run this if a login ever misbehaves. See [[Entry Points]]. |
+| Authorize the user session | `tools/tg_login.py` | Phone → code → 2FA. The **transparent** login prints the handshake result and *which channel* (App / SMS / Call / Email) the code was sent to, and saves the Telethon session file (`data/watcher.session`). `--print-session` also emits a portable `StringSession`. See [[Entry Points]]. |
+| Find chat/folder ids | `tools/list_dialogs.py` | Lists groups/channels with ids to populate `WATCH_FOLDER` / the `ALLOWLIST`. |
+| Configure | edit `.env` | ~94 keys; only three things are required for the watcher (below). See [[Configuration]]. |
 
 > [!tip] The watcher can run without a separate login
 > `_resolve_session_string` reuses the **telegram-mcp** session string when the watcher has no file session of its own — so a single MTProto login can serve both. See [[Two Identities One Process]].
@@ -38,7 +39,7 @@ Part of [[Home]].
 |-----|---------|
 | `TELEGRAM_API_ID` | MTProto app id |
 | `TELEGRAM_API_HASH` | MTProto app hash |
-| `IBO_CHAT_ID` | the owner's chat the agent answers |
+| `ALLOWLIST` (aliases `ALLOW_LIST` / `ALLOWED_USERS`; legacy `IBO_CHAT_ID`) | comma-separated allow-list of users the watcher answers + alerts; the first ref is the primary. At least one is mandatory. See [[Configuration]]. |
 
 > [!warning] The bot token is NOT required to run the watcher
 > Unlike `validate()` / `validate_mtproto()`, `validate_watcher()` deliberately does **not** require `TELEGRAM_BOT_TOKEN` or a chat id — the watcher sends as the user account. The bot front-end is optional (`BOT_ENABLED`). See [[Configuration]] for the full validator table.
@@ -88,7 +89,7 @@ sequenceDiagram
 `main()` builds three system prompts via `_load_system_prompt` (loading `docs/hermes/` guides — see [[Hermes Skills]]): the default follows `AGENT_ACTIONS_ENABLED`, `bot_system_prompt` is forced read-only, `bot_action_prompt` is forced action-capable. It then opens [[Data and State|IncidentStore]] and runs the loop, closing the store in `finally`.
 
 > [!warning] Exit codes
-> `1` = config validation failed. `2` = Telethon not authorized (run `tools/tg_login.py`). `0` = clean (`--once` sweep, or graceful shutdown).
+> `1` = config validation failed. `2` = Telethon not authorized (run `tools/tg_login.py`; if a login keeps failing, run `tools/tg_probe.py` first to confirm the handshake itself works). `0` = clean (`--once` sweep, or graceful shutdown).
 
 ## Logs and the health beacon
 

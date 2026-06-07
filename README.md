@@ -57,8 +57,8 @@ running **two logins on one asyncio event loop** (`run_watcher.py` →
 | Can act on panels? | **Yes** — presses inline buttons | Only by relaying to the user account |
 
 The user account *owns* the bot (it created it). For the bot to DM you alerts,
-the alert owner (`IBO_CHAT_ID`) must press **Start** on the bot **once**;
-otherwise alerts quietly fall back to being sent by the user account.
+each owner in the allow-list (`ALLOWLIST`) must press **Start** on the bot
+**once**; otherwise alerts quietly fall back to being sent by the user account.
 
 > **Heads up:** that bot token was reclaimed from an old *OpenClaw* deployment.
 > If the bot ever behaves oddly or "fights" over updates, suspect a leftover
@@ -109,9 +109,9 @@ The knowledge base is a plain-Markdown file you can read and edit:
 ## 3. What you actually see
 
 - **Proactive alerts** — when a bot errors, gets banned, hits captcha/Steam
-  Guard, or goes **silent** past `SILENCE_THRESHOLD_MINUTES`, you get a DM (and a
-  "✅ back online" note when it recovers). De-duplicated so the same bug doesn't
-  spam you within `DEDUPE_WINDOW`.
+  Guard, or goes **silent** past `SILENCE_THRESHOLD_MINUTES`, **everyone in the
+  `ALLOWLIST`** gets a DM (and a "✅ back online" note when it recovers).
+  De-duplicated so the same bug doesn't spam you within `DEDUPE_WINDOW`.
 - **Inline confirm/action buttons** (`watcherdog/buttons.py`) — anything needing a
   yes shows tappable buttons, not a typed question:
   ```
@@ -163,7 +163,12 @@ files are your undo.
 ```bash
 cd ~/Documents/WatcherDogBot
 
-# 0. One-time: authorize the user-account session (phone + login code)
+# 0a. (optional) Check the MTProto handshake without logging in (sends nothing
+#     to your phone — just connect + is-authorized):
+.venv/bin/python tools/tg_probe.py
+
+# 0b. One-time: authorize the user-account session (phone + login code).
+#     Prints which channel Telegram used for the code and any flood-wait.
 .venv/bin/python tools/tg_login.py
 
 # 1. Make sure Ollama is up (used to triage farm messages) and a model is pulled
@@ -194,7 +199,7 @@ its default). The keys you'll touch most:
 |-----|---------|---------|
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | — | User-account MTProto creds (from https://my.telegram.org). |
 | `TELEGRAM_BOT_TOKEN` | — | The talking bot's token (BotFather). |
-| `IBO_CHAT_ID` | — | The owner — gets alerts and talks to the agent (`@username` or numeric id). |
+| `ALLOWLIST` | — | The owner allow-list — **comma-separated** refs (each a numeric Telegram user id like `1406109190` or an `@username`). The watcher answers any of them (in their own chat) and DMs proactive alerts to **all** of them. Aliases: `ALLOW_LIST`, `ALLOWED_USERS`; legacy `IBO_CHAT_ID` still works as a fallback. First non-empty wins; primary = the first ref. |
 | `WATCH_FOLDER` / `WATCH_FOLDER_ID` | `Farms` / `6` | The dialog folder of bots to monitor. |
 | `WATCH_POLL_INTERVAL` | `120` | Seconds between proactive sweeps. |
 | `MIN_SEVERITY` | `high` | Alert at/above `low`/`medium`/`high`/`critical`. |
@@ -250,9 +255,15 @@ hard-coded): `STRUCTURE.md` (the account/folder map), `SKILLS.md`, `TOOLS.md`, a
 drop-stats, stickers, self-improve).
 
 ### Tools `tools/`
-`tg_login.py` (authorize the user session), `list_dialogs.py` (find chat ids),
-`agent_probe.py` (ask the agent a question from the CLI), `simulate_error.py`
-(log-mode testing), `gui_probe.py` / `ax_probe.py` (legacy GUI debugging).
+`tg_login.py` (authorize the user session — transparent: prints the handshake
+result, the exact channel Telegram used for the login code (App/SMS/Email/Call),
+and any flood-wait; handles 2FA and `--print-session` to emit a portable
+StringSession), `tg_probe.py` (non-interactive MTProto health probe — connects +
+checks authorization only; sends NOTHING to your phone, telling a real
+handshake/network failure apart from a "just need to log in" state),
+`list_dialogs.py` (find chat ids), `agent_probe.py` (ask the agent a question
+from the CLI), `simulate_error.py` (log-mode testing), `gui_probe.py` /
+`ax_probe.py` (legacy GUI debugging).
 
 ---
 
@@ -263,7 +274,14 @@ drop-stats, stickers, self-improve).
 ```
 
 The suite (`tests/`) covers the router, learned fixes, buttons, fast commands,
-fan-out, progress/resume, and the config — **402 tests** at last count.
+fan-out, progress/resume, and the config — **700+ tests** (run `.venv/bin/python -m pytest` for the live count). The 4
+failures are pre-existing and unrelated to the watcher path: 2 legacy macOS GUI
+imports that need `pyobjc`/`Quartz` (`watcherdog.gui_mac`, `run_gui`) and 2
+timing-sensitive concurrency tests in `test_bot_interface`.
+
+WatcherDog runs on **Python 3.11–3.14** (entrypoints use `asyncio.run()`; the
+local venv is Python 3.14.3 + Telethon 1.43.2, and the MTProto handshake works
+fine there).
 
 ---
 

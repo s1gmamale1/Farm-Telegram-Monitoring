@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - operations
   - legacy
-updated: 2026-06-06
+updated: 2026-06-08
 status: legacy
 ---
 
@@ -48,7 +48,7 @@ Pure-stdlib, zero third-party PyPI deps. A bot writes to `logs/<bot>.log` (optio
 > `bot_logging.install(bot_name)` attaches a `FileHandler` to `<WATCHERDOG_LOG_DIR>/<bot_name>.log` and installs `sys.excepthook` + `threading.excepthook` so uncaught (incl. thread) exceptions land in that log. It imports **nothing** from `watcherdog`, so it can be copied into a separate bot project.
 
 > [!warning] "Zero dependencies" has an asterisk
-> [[README]] (line 286) / [[DOCUMENTATION]] (line 221) call `run.py` "zero dependencies / zero token cost". Accurate only as *no third-party PyPI packages* — `run.py` still calls `analyzer.analyze` (Ollama) unless `DISABLE_AI` is set. Also: `LogMonitor` treats a new file as read-from-start, so pointing `LOG_DIR` at a busy pre-existing log replays its whole backlog (the dedupe window only mitigates repeats).
+> `README.md` (line 286) / `DOCUMENTATION.md` (line 221) call `run.py` "zero dependencies / zero token cost". Accurate only as *no third-party PyPI packages* — `run.py` still calls `analyzer.analyze` (Ollama) unless `DISABLE_AI` is set. Also: `LogMonitor` treats a new file as read-from-start, so pointing `LOG_DIR` at a busy pre-existing log replays its whole backlog (the dedupe window only mitigates repeats).
 
 ## Group-watcher mode (`run_telegram.py` + `telegram_source.py`)
 
@@ -60,7 +60,7 @@ Logs in as a **user account** via Telethon (MTProto) so it can read other bots' 
 - `--once-test "<msg>"` classifies one string fully offline.
 
 > [!warning] Doc says "single group" — code watches many (or ALL)
-> [[README]] (appendix, line 281-282) calls `run_telegram.py` "an earlier MTProto reader of a single group". The code resolves a **list** of chats (`resolve_chat_ids` returns a set) and watches **every** chat when `WATCH_CHATS` is empty (logs a warning) — easy to over-monitor, and not single-group-only.
+> `README.md` (appendix, line 281-282) calls `run_telegram.py` "an earlier MTProto reader of a single group". The code resolves a **list** of chats (`resolve_chat_ids` returns a set) and watches **every** chat when `WATCH_CHATS` is empty (logs a warning) — easy to over-monitor, and not single-group-only.
 
 > [!warning] `HeartbeatMonitor` is legacy-only
 > The supported `run_watcher.py` path does silence/recovery **inline** in `monitor_once` and never imports `HeartbeatMonitor`. The class lives here (and in GUI mode), not in the current loop. See [[Alerts and Heartbeat]].

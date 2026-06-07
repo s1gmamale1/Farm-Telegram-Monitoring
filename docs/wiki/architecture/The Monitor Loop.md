@@ -27,7 +27,7 @@ sequenceDiagram
   RW->>R: asyncio.run(run, deliver=not dry_run)
   R->>TG: connect() + resolve session string
   TG-->>R: authorized? (else exit 2)
-  R->>R: resolve_ibo, build shared state{} + agent_lock
+  R->>R: resolve_ibos (allow-list), build shared state{} + agent_lock
   R->>B: start BotInterface (continuous + bot_enabled)
   B-->>R: state['post_card'], state['notifier']
   R->>R: flush_daily_report("startup catch-up")
@@ -41,7 +41,7 @@ sequenceDiagram
   end
 ```
 
-`run()` connects the Telethon client (reusing the telegram-mcp session string via `_resolve_session_string` when the watcher has no file session), **aborts with exit code 2 if not authorized**, resolves the ibo chat (`resolve_ibo`), and builds a shared `state` dict carrying the `system_prompt` and one `asyncio.Lock` (`agent_lock`) that serializes every agent call. In continuous mode with `cfg.bot_enabled` it starts [[The Bot Front-End|BotInterface]], records `state["post_card"]` and (if `cfg.bot_alerts` + owner resolved) `state["notifier"]`. It then runs `flush_daily_report(..., reason="startup catch-up")` to ship any [[Scheduled Reports|AI-fix log]] that survived a crash, loads the roster via `load_watch_chats`, and stores it as `state["watch"]`.
+`run()` connects the Telethon client (reusing the telegram-mcp session string via `_resolve_session_string` when the watcher has no file session), **aborts with exit code 2 if not authorized**, resolves the allow-list chats (`resolve_ibos` for every allowed ref, `resolve_ibo` for the primary), and builds a shared `state` dict carrying the `system_prompt` and one `asyncio.Lock` (`agent_lock`) that serializes every agent call. In continuous mode with `cfg.bot_enabled` it starts [[The Bot Front-End|BotInterface]], records `state["post_card"]` and (if `cfg.bot_alerts` + owner resolved) `state["notifier"]`. It then runs `flush_daily_report(..., reason="startup catch-up")` to ship any [[Scheduled Reports|AI-fix log]] that survived a crash, loads the roster via `load_watch_chats`, and stores it as `state["watch"]`.
 
 > [!warning] `--once` does a single `monitor_once` sweep and returns 0 WITHOUT starting the bot, listeners, or any scheduled task. The bot/notifier are only wired up in continuous mode. See [[Running WatcherDog]].
 
@@ -68,7 +68,7 @@ sequenceDiagram
 
 In continuous mode `run()` registers two `events.NewMessage` handlers, both serialized by the shared `agent_lock`:
 
-- `register_ibo_listener` (`mcp_watcher.py:425`): incoming from ibo → mark-read, then route `drop stats` → `drop_stats.run_weekly` ([[Drop-Stats Pipeline]]), `commands.static_reply`, `commands.fast_parse` → `fast_commands.handle`, else `commands.expand` → `agent.answer`. Conversational replies get `sticker_ok=True`.
+- `register_ibo_listener` (`mcp_watcher.py:425`): incoming from **any allowed user** (the `ALLOWLIST` / `cfg.ibo_chat_ids`, not just the primary ibo) → mark-read, then route `drop stats` → `drop_stats.run_weekly` ([[Drop-Stats Pipeline]]), `commands.static_reply`, `commands.fast_parse` → `fast_commands.handle`, else `commands.expand` → `agent.answer`. Each allowed sender is **answered in their own chat**. Conversational replies get `sticker_ok=True`. See the allow-list model in [[Configuration]].
 - `register_special_forces_listener` (`mcp_watcher.py:575`): @-mention auto-reply in the UNTRUSTED Special Forces group, agent always `execute=False` with an anti-prompt-injection `_SF_PREAMBLE`. Skipped when the bot already owns that group.
 
 ## Scheduled side-jobs
@@ -90,7 +90,7 @@ Finally `self_restart.mark_healthy(cfg)` writes the health beacon telling the [[
 
 `load_watch_chats` (`mcp_watcher.py:95`) resolves the watch FOLDER via `GetDialogFiltersRequest` matched by `WATCH_FOLDER_ID` or name, caches to `farms.json`, and falls back to that cache on ANY folder-API error — a transient failure won't blank the roster. The same roster feeds [[Roster and Health Scan|roster.scan]] for hourly reports and fast commands.
 
-> [!warning] Doc accuracy: README/DOCUMENTATION claim "412 tests" (actual 302 across 29 files). `run_watcher.py` docstring names the agent backend "deepseek via OpenRouter"; the actual model is `cfg.agent_model` (`AGENT_MODEL`), not hard-coded. The "24 SinFermera bots" figure is environment-driven, not enforced in code.
+> [!warning] Doc accuracy: `run_watcher.py` docstring names the agent backend "deepseek via OpenRouter"; the actual model is `cfg.agent_model` (`AGENT_MODEL`), not hard-coded. The "24 SinFermera bots" figure is environment-driven, not enforced in code.
 
 ## See also
 - [[Script-First AI-Last]] — the cost ladder `_evaluate_bot` walks.

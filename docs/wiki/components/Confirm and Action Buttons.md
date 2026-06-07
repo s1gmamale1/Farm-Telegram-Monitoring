@@ -95,8 +95,7 @@ flowchart TD
 
 The monitor stores `state["post_card"]` at startup so the incident handler can post cards; see [[The Monitor Loop]] and [[Confirm and Action Buttons]]'s consumer in [[The Bot Front-End]].
 
-> [!warning] Test count is stale in the root docs
-> `README.md` line 265 / `DOCUMENTATION.md` line 278 claim "412 tests"; ground truth is 302 test functions across 29 files. See [[Testing]].
+> [!info] Test count: large and growing — run `pytest` for the live number; see [[Testing]].
 
 ## See also
 

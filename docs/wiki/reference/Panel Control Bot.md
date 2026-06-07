@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - reference
   - telegram
-updated: 2026-06-07
+updated: 2026-06-08
 status: current
 ---
 
@@ -80,7 +80,7 @@ Buttons as shown in the bot's `/start` menu, top to bottom. ✅ = used by recove
 | ⛔ **Shutdown PC** | Shuts the PC down | ⚠ confirm |
 
 > [!warning] Match buttons by label prefix, re-read live
-> Labels can change/truncate. The action layer ([[Telegram Tools and Actions]]) should resolve a button by prefix from a live read of the inline keyboard, not a hard-coded index — same discipline as `docs/hermes/skills/00-panels.md` ([[00-panels]]).
+> Labels can change/truncate. The action layer ([[Telegram Tools and Actions]]) resolves a button by exact → prefix → substring match from a live read of the inline keyboard (`tg_actions.press_button`), not a hard-coded index — same discipline as the `docs/hermes/skills/00-panels.md` skill guide. The named wrappers and their `BTN_*` label constants live in `panel_actions.py` ([[Module Reference]]).
 
 ## See also
 - [[Monitoring and Recovery Rules]] — the deterministic rules that consume this vocabulary

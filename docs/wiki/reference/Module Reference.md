@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - reference
   - component
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -16,8 +16,8 @@ Part of [[Home]].
 
 This is the map from filename to responsibility. It is organized by tier — the **supported** [[Script-First AI-Last]] path that [[The Monitor Loop]] runs, then the shared library modules, then the [[Legacy Modes]] modules that predate `run_watcher.py`. For the configuration keys each module reads, see [[Configuration]]; for the files they write at runtime, see [[Data and State]]; for term definitions, see [[Glossary]].
 
-> [!warning] Stale test count
-> `README.md` line 265 and `DOCUMENTATION.md` line 278 both claim **412 tests**. Verified ground truth is **302 test functions across 29 files** in `tests/` (28 `test_*.py` modules + `conftest.py`). Treat "412" anywhere in the docs as wrong. See [[Testing]].
+> [!warning] Test count grows — verify, don't trust the docs
+> The suite is large (**700+ `def test_` functions** across 40+ `test_*.py` modules) and grows constantly — don't hard-code a number here; run `.venv/bin/python -m pytest` for the live count. There are 4 pre-existing, unrelated failures. See [[Testing]].
 
 ## Entry points (root scripts)
 
@@ -45,6 +45,16 @@ This is the map from filename to responsibility. It is organized by tier — the
 | `agent.py` | [[The Agent]] | `answer` (the OpenRouter tool-calling loop, line 907), `_chat_completion` (851), `build_tools` (291), `_dispatch` (678), self-edit helpers (`_apply_code_change`, `_safe_project_path`, `_backup_file`, `_python_syntax_error`, `_update_setting`), `_dispatch_bots`/`_resolve_targets` (fan-out). |
 | `tg_tools.py` | [[Telegram Tools and Actions]] | Strictly **read-only** Telethon helpers: `list_folders` (45), `folder_chats` (72), `read_history` (98), `find_chats` (146), `latest_message`. |
 | `tg_actions.py` | [[Telegram Tools and Actions]] | The **write** layer: `is_destructive` (31), `DESTRUCTIVE` (25), `press_button` (72, needs `confirmed=True`), `panel_menu` (59), `send_command` (116), `screenshot` (124). |
+
+## Deterministic panel engine (R1–R6)
+
+The script-first recovery engine that drives FSM [[Panel Control Bot|panels]] without a model. `mcp_watcher._evaluate_panel` parses each panel's status, asks `panel_rules` for a `Decision`, then executes it via `panel_actions`. See [[Monitoring and Recovery Rules]].
+
+| Module | Subsystem note | Key symbols / role |
+|--------|----------------|--------------------|
+| `farm_stats.py` | [[Panel Control Bot]], [[Monitoring and Recovery Rules]] | Pure deterministic parser of the "FSM Panel - Main menu" status message → typed `PanelStatus`/`Account` (`parse_panel_status`, `launched_from_alert`). Never raises; unknown fields stay `None` (never guesses a number). No model, no Telegram. |
+| `panel_rules.py` | [[Monitoring and Recovery Rules]] | The **R1–R6 decision engine** (pure — no I/O, no model): `observe(status, state, …)` advances per-panel timers; `decide(status, status_age, state, …)` returns a `Decision` (`kind`, `actions`, `destructive`, `cold_case`). `PanelState` holds per-panel latches/timers. R4 (black screenshot) is a caller-side follow-up in `mcp_watcher`. |
+| `panel_actions.py` | [[Monitoring and Recovery Rules]], [[Telegram Tools and Actions]] | High-level named actions over `tg_actions.press_button` (no decisions, just execution): `kill_all`, `select_unfarmed`, `start_selected`, `make_lobbies`, `drop_stats`, `run_activity_booster`, `restart_panel`, `run_sequence`; plus `screenshot_is_black`/`screenshot_black` (the cold-case RDP detector). `BTN_*` label constants. |
 
 ## The bot front-end
 
@@ -95,10 +105,10 @@ This is the map from filename to responsibility. It is organized by tier — the
 
 ## tools/ scripts
 
-`tools/tg_login.py` (one-time Telethon login), `tools/list_dialogs.py` (list chat ids for `WATCH_CHATS`), `tools/agent_probe.py` (exercise the current `agent.answer` path), `tools/simulate_error.py` (write a fake traceback for the legacy pipeline), `tools/gui_probe.py` / `tools/ax_probe.py` (legacy GUI debug), `tools/demo_learned_fix.py` (learned-fixes demo, `execute=False`). See [[Legacy Modes]] and [[Entry Points]].
+`tools/tg_probe.py` (non-interactive MTProto health probe — handshake + authorization check, nothing sent to your phone), `tools/tg_login.py` (one-time **transparent** Telethon login: prints the handshake + which channel the code went to, handles 2FA/flood-wait, `--print-session`), `tools/list_dialogs.py` (list chat ids for `WATCH_FOLDER` / the allow-list), `tools/agent_probe.py` (exercise the current `agent.answer` path), `tools/simulate_error.py` (write a fake traceback for the legacy pipeline), `tools/gui_probe.py` / `tools/ax_probe.py` (legacy GUI debug), `tools/demo_learned_fix.py` (learned-fixes demo, `execute=False`). See [[Legacy Modes]] and [[Entry Points]].
 
 > [!info] Third-party footprint
-> `requirements.txt` pins only `telethon>=1.36`; `requirements-dev.txt` adds only `pytest>=8.0`. Ollama and OpenRouter are reached via pure-stdlib `urllib` (no SDK). `gspread` + `google-auth` (used by `drop_sheets.py`) and `pyobjc` (used by the GUI modules) are **unpinned / optional** — absent from `requirements.txt`. See [[Configuration]] and [[Drop-Stats Pipeline]].
+> `requirements.txt` pins `telethon>=1.36` and `Pillow>=10.0` (the latter only sharpens `panel_actions.screenshot_is_black`; a file-size heuristic is used without it); `requirements-dev.txt` adds only `pytest>=8.0`. Ollama and OpenRouter are reached via pure-stdlib `urllib` (no SDK). `gspread` + `google-auth` (used by `drop_sheets.py`) and `pyobjc` (used by the GUI modules) are **unpinned / optional** — absent from `requirements.txt`. The local venv runs **Python 3.14.3 + Telethon 1.43.2** (the project runs on 3.11–3.14). See [[Configuration]], [[Testing]], and [[Drop-Stats Pipeline]].
 
 ## See also
 - [[Configuration]] — the `.env` keys every module above reads

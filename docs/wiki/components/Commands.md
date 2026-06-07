@@ -83,8 +83,7 @@ flowchart LR
 - AI-backed commands become prompts for [[The Agent]], which reads Telegram via the user account ([[Telegram Tools and Actions]]).
 - META commands read `task_store` (the persistence layer in [[The Bot Front-End]]).
 
-> [!warning] Test count is stale in the root docs
-> `README.md` line 265 and `DOCUMENTATION.md` line 278 both claim "412 tests"; the verified ground truth is 302 test functions across 29 files in `tests/`. See [[Testing]] and [[README]].
+> [!info] Test count: large and growing — run `pytest` for the live number; see [[Testing]].
 
 > [!info] BotFather menu vs help text differ slightly
 > `DOCUMENTATION.md`'s command table lists only `/job` under meta, but `build_jobs`/`static_reply` also handle `/jobs`. The installed BotFather menu (`build_bot_commands`) and `build_help` are built from overlapping but not identical sets — `/improve` is help-only.

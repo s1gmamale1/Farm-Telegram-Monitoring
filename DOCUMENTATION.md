@@ -20,12 +20,18 @@ One Python process, one asyncio event loop, **two Telegram logins**:
   farm bots (a bot legally cannot), sweeps the watch folder, and drives panels /
   presses inline buttons.
 - **BOT** — `@sherlock_homeless_chigga_bot`, Bot API over Telethon. The human-
-  facing talker: answers commands + questions in the group/DMs and DMs the owner
-  proactive alerts. **Always read-only** — every answer runs the agent with
-  `execute=False`. It performs reads through the user account's connection.
+  facing talker: answers commands + questions in the group/DMs and DMs proactive
+  alerts to **every owner in the `ALLOWLIST`**. **Always read-only** — every
+  answer runs the agent with `execute=False`. It performs reads through the user
+  account's connection.
 
 `run_watcher.py` is a thin launcher: it loads config, builds three system prompts
 (read-only, action, and the bot's), and calls `asyncio.run(mcp_watcher.run(...))`.
+
+> **Python 3.11–3.14.** Entrypoints use `asyncio.run()` and coroutines use
+> `asyncio.get_running_loop()` (the removed `get_event_loop()` is gone), so the
+> project runs cleanly on 3.14. The local venv is Python 3.14.3 + Telethon
+> 1.43.2; the MTProto handshake works fine there.
 
 ---
 
@@ -42,7 +48,7 @@ One Python process, one asyncio event loop, **two Telegram logins**:
  │           (one agent.answer turn; it applies a fix and save_fix()es it)      │
  │ 3. heartbeat: a bot quiet past the threshold → silence alert (recovery note  │
  │    when it speaks again)                                                      │
- │ 4. Alerts go out as a BOT DM to the owner (fallback: user account)           │
+ │ 4. Alerts go out as a BOT DM to every ALLOWLIST owner (fallback: user acct)  │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -208,7 +214,7 @@ and the fast commands.
 
 | Module | Responsibility |
 |--------|----------------|
-| `config.py` | Parses `.env` into a typed `Config`; `validate_watcher()` checks the keys `run_watcher.py` needs. Every tunable + its default is documented here. |
+| `config.py` | Parses `.env` into a typed `Config`; `validate_watcher()` checks the keys `run_watcher.py` needs (API id/hash + a non-empty owner allow-list). The owner allow-list is `ALLOWLIST` (aliases `ALLOW_LIST` / `ALLOWED_USERS`; legacy `IBO_CHAT_ID` is the fallback — first non-empty wins): a **comma-separated** list of refs (numeric user ids or `@usernames`) parsed into `cfg.ibo_chat_ids`, with `cfg.ibo_chat_id` = the first (primary) ref. Each ref is stripped of surrounding whitespace, JSON-array brackets `[](){}` and quotes (so `ALLOWLIST=[111, "222"]` works), but leading `-` and `@` are preserved. Every tunable + its default is documented here. |
 | `classifier.py` | `classify(text)` → `error` / `normal` / `unknown`; `bot_name_from(text)`. Cheap prefilter so Ollama isn't spent on routine spam. |
 | `analyzer.py` | Ollama `/api/chat`. `analyze_message()` → `{is_error, severity, summary, root_cause, fix}` for chat messages; `analyze()` for tracebacks (log mode). |
 | `heartbeat.py` | Silence detection. Bots auto-learned on first post; clocks reset on restart so downtime never floods false "silent" alerts. |
@@ -245,13 +251,20 @@ and the fast commands.
 ## 9. Debugging checklist
 
 1. **"config: … is not set" on startup** — `validate_watcher()` failed. You need
-   `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `IBO_CHAT_ID`.
-2. **`session not authorized`** — run `.venv/bin/python tools/tg_login.py`.
+   `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and a non-empty owner allow-list
+   (`ALLOWLIST`, or the legacy `IBO_CHAT_ID`).
+2. **`session not authorized`** — run `.venv/bin/python tools/tg_login.py`. To
+   tell a real handshake/network failure apart from a "just need to log in" state
+   without touching your phone, run `.venv/bin/python tools/tg_probe.py` first —
+   it does only `connect()` + `is_user_authorized()` and prints
+   `PROBE handshake=OK` then `AUTHORIZED` / `NOT_AUTHORIZED`, or
+   `PROBE result=HANDSHAKE_FAILED …`.
 3. **ibo questions not answered** — no model key. Set `AGENT_API_KEY` /
    `OPENROUTER_API_KEY` (or put it in `~/.hermes/.env`).
-4. **Bot can't DM alerts** — the owner must press **Start** on the bot once; until
-   then alerts fall back to the user account. Also: a bot needs a **numeric** group
-   id (`BOT_GROUPS`) — it can't resolve a group by title.
+4. **Bot can't DM alerts** — each owner in `ALLOWLIST` must press **Start** on the
+   bot once; until then alerts to that user fall back to the user account. Also: a
+   bot needs a **numeric** group id (`BOT_GROUPS`) — it can't resolve a group by
+   title.
 5. **"Tools aren't working" / dry-run errors** — check the startup `ACTIONS:` line.
    Talking to the *bot* is read-only unless `BOT_ACTIONS_ENABLED=true` **and** the
    sender is in `BOT_ACTION_USERS`. The watcher itself needs
@@ -275,5 +288,8 @@ and the fast commands.
 
 `tests/` (run with `pytest` or `./scripts/run_tests.sh`) covers the router, learned
 fixes, buttons, fast commands, fan-out, progress/resume, the agent loop, and
-config — **402 tests**. `pytest.ini` sets discovery; dev deps in
+config — **700+ tests** (run `.venv/bin/python -m pytest` for the live count). The 4 failures are pre-existing and unrelated
+to the watcher path: 2 legacy macOS GUI imports needing `pyobjc`/`Quartz`
+(`watcherdog.gui_mac`, `run_gui`) and 2 timing-sensitive concurrency tests in
+`test_bot_interface`. `pytest.ini` sets discovery; dev deps in
 `requirements-dev.txt`.

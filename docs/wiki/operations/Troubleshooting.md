@@ -3,7 +3,7 @@ title: Troubleshooting
 tags:
   - watcherdog
   - operations
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -19,8 +19,8 @@ This note covers operational failures of [[Running WatcherDog|run_watcher.py]] a
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Exits with code **1**, logs `config: …` lines | `cfg.validate_watcher()` found missing keys | Set `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `IBO_CHAT_ID` in `.env`. See [[Configuration]]. |
-| Exits with code **2** | Telethon client not authorized | Run `tools/tg_login.py` (phone → code → 2FA). See [[Entry Points]]. |
+| Exits with code **1**, logs `config: …` lines | `cfg.validate_watcher()` found missing keys | Set `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `ALLOWLIST` (or legacy `IBO_CHAT_ID`) in `.env`. The allow-list error reads *"ALLOWLIST is not set …"*. See [[Configuration]]. |
+| Exits with code **2** | Telethon client not authorized | Run `tools/tg_probe.py` to confirm the handshake works, then `tools/tg_login.py` (phone → code → 2FA). See [[Entry Points]]. |
 | `No agent API key found` warning, then continues | No `AGENT_API_KEY` / `OPENROUTER_API_KEY` / `~/.hermes/.env` key | Agent can't answer novel questions; deterministic [[The Learned-Fixes Brain|router]] still works. Add a key to enable AI fallback. |
 | `Could not open log file …` on stderr | `gui_run_log` dir unwritable | Logging falls back to stderr only; fix dir permissions. |
 
@@ -29,8 +29,28 @@ This note covers operational failures of [[Running WatcherDog|run_watcher.py]] a
 
 ## Connectivity and authorization
 
+> [!tip] Probe BEFORE you blame Python / network / VPN
+> Run `tools/tg_probe.py` — it runs only the MTProto handshake + an authorization check, nothing sent to your phone:
+> - `handshake=OK` + `AUTHORIZED` → the connection and login are both fine.
+> - `handshake=OK` + `NOT_AUTHORIZED` → network/Python are fine; just run `tg_login.py`.
+> - `HANDSHAKE_FAILED` → it really is the connection (network / Python / env) — fix that first.
+> This separates a network/handshake problem from a "just log in" state in one command. See [[Entry Points]].
+
+> [!warning] "wrong session ID" / "0 bytes read" / no code = a CORRUPT session file
+> Symptoms like *"Security error: wrong session ID"*, *"0 bytes read on … 8 expected bytes"*, or a login where **no code ever arrives** are almost always a **corrupted `data/watcher.session`** — NOT a Python-3.14, network, or VPN fault (the handshake works fine on 3.14). Fix: move it aside and re-probe before changing anything else:
+> ```
+> mv data/watcher.session data/watcher.session.bak
+> .venv/bin/python tools/tg_probe.py     # expect handshake=OK, NOT_AUTHORIZED
+> .venv/bin/python tools/tg_login.py     # fresh login
+> ```
+
+> [!warning] No login code arriving (email / flood-wait)
+> The transparent `tg_login.py` prints *which channel* Telegram sent the code to. Two common gotchas it now surfaces:
+> - **A configured Login Email** makes Telegram send the code to that **EMAIL** (`SentCodeTypeEmailCode`), not in-app or SMS. Check the inbox shown under *Settings → Privacy & Security → Login Email* (or remove/replace that email).
+> - **Repeated attempts trigger a flood-wait** that silently suppresses delivery. `tg_login.py` catches `FloodWaitError` and prints the exact wait seconds; do NOT retry before then — each attempt resets the timer.
+
 > [!tip] Reusing the telegram-mcp session
-> If the watcher has no file session of its own, `_resolve_session_string` reuses the **telegram-mcp** session string. A "not authorized" (exit 2) despite a prior login usually means neither a watcher session file nor an mcp session string was found.
+> If the watcher has no file session of its own, `_resolve_session_string` reuses the **telegram-mcp** session string (`TELEGRAM_SESSION_STRING` from `TELEGRAM_MCP_DIR/.env`), or `TELEGRAM_SESSION_STRING` set directly in the watcher's `.env`. A "not authorized" (exit 2) despite a prior login usually means neither a watcher session file nor any session string was found. See [[Data and State]].
 
 ## Alerts not arriving
 
@@ -50,7 +70,7 @@ flowchart TD
 | Bot never DMs anyone | `notify_owner` returns False (never raises) | Same as above; the monitor silently falls back to the user account. |
 
 > [!info] Bot DM is the *preferred* channel
-> `_alert` tries `state['notifier']` (the bot DM) first and falls back to the user account. Neither [[README]] nor [[DOCUMENTATION]] surfaces this preference; only that the owner must press Start.
+> `_alert` tries `state['notifier']` (the bot DM) first and falls back to the user account. Neither `README.md` nor `DOCUMENTATION.md` surfaces this preference; only that the owner must press Start.
 
 ## Silence / recovery oddities
 
@@ -61,6 +81,11 @@ flowchart TD
 
 > [!warning] The current loop does NOT use `heartbeat.py`
 > Silence/recovery in the supported path is implemented **inline** in `monitor_once` via per-bot `state[name+"::silent"]` flags. `HeartbeatMonitor` (`watcherdog/heartbeat.py`) is used only by [[Legacy Modes|legacy]] `run_telegram.py`/`run_gui.py`. Docs that present `heartbeat.py` as the live detector are stale. See [[Alerts and Heartbeat]].
+
+## Python version
+
+> [!info] Runs on Python 3.11–3.14
+> Entrypoints use `asyncio.run()` and coroutines use `asyncio.get_running_loop()` (not the removed-in-3.14 `get_event_loop()` outside a loop), so the watcher runs cleanly on 3.11 through 3.14. The local venv is **Python 3.14.3 + Telethon 1.43.2**, and the MTProto handshake is verified working there — so "no login code" is a corrupt-session problem (above), not a 3.14 incompatibility. See [[Testing]].
 
 ## Empty or wrong roster
 

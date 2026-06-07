@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - reference
   - operations
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -51,7 +51,7 @@ The `ACTIONS:` log line resolves to one of **READ-ONLY / DRY-RUN / LIVE**.
 
 `main()` runs `cfg.validate_watcher()` and bails with exit code 1 on config problems. It warns (but continues) if no `agent_api_key` is set, unless `--once`.
 
-> [!info] `validate_watcher()` requires ONLY `telegram_api_id`, `telegram_api_hash`, and `ibo_chat_id` — deliberately NOT the bot token, because the watcher sends as the user account ([[Two Identities One Process]]). The stricter `validate()` and `validate_mtproto()` are used by legacy entry points. See [[Configuration]].
+> [!info] `validate_watcher()` requires ONLY `telegram_api_id`, `telegram_api_hash`, and a non-empty allow-list (`ibo_chat_ids` — from `ALLOWLIST`/aliases/legacy `IBO_CHAT_ID`) — deliberately NOT the bot token, because the watcher sends as the user account ([[Two Identities One Process]]). The stricter `validate()` and `validate_mtproto()` are used by legacy entry points. See [[Configuration]].
 
 ### The three prompts
 
@@ -71,11 +71,38 @@ Before `run_watcher.py` can connect, the user account needs a session (or it reu
 
 | Script | Purpose |
 |--------|---------|
-| `tools/tg_login.py` | one-time interactive Telethon login (phone → code → 2FA); saves the session file |
-| `tools/list_dialogs.py` | lists groups/channels with ids to populate `WATCH_CHATS` |
+| `tools/tg_probe.py` | **non-interactive health probe** — `connect()` + `is_user_authorized()` only (no phone, no code, nothing sent). Run this **first** to tell a broken handshake from a "just log in" state. See below and [[Troubleshooting]]. |
+| `tools/tg_login.py` | one-time **transparent** interactive Telethon login (phone → code → 2FA); prints the handshake result and which channel the code was sent to; saves the session file. `--print-session` also emits a portable `StringSession`. See below. |
+| `tools/list_dialogs.py` | lists groups/channels with ids to populate `WATCH_FOLDER` / the allow-list |
 | `tools/agent_probe.py` | runs the current `agent.answer()` path and prints (or `--send`) the reply |
 | `tools/simulate_error.py` | writes a fake traceback / ERROR line for the legacy `run.py` pipeline |
 | `tools/demo_learned_fix.py` | demos [[The Learned-Fixes Brain]] (ask once, auto-apply on repeat) |
+
+### `tools/tg_probe.py` — non-interactive health probe
+
+A read-only smoke test that **never touches your phone**. It runs only the MTProto auth-key handshake and an authorization check, printing one of:
+
+| Output | Meaning |
+|--------|---------|
+| `PROBE handshake=OK` then `PROBE result=AUTHORIZED` | connected and the session is logged in — nothing to do |
+| `PROBE handshake=OK` then `PROBE result=NOT_AUTHORIZED` | network/Python are fine; you just need to run `tg_login.py` |
+| `PROBE result=HANDSHAKE_FAILED error=…` | the connection itself failed (network / Python / env) — fix that before logging in |
+| `PROBE result=CONFIG_MISSING` | `TELEGRAM_API_ID`/`HASH` not set in `.env` |
+
+It also prints `PROBE python=<version>`. Use it to **separate a network/handshake problem from a login problem** before blaming Python or the network. See [[Troubleshooting]].
+
+### `tools/tg_login.py` — transparent interactive login
+
+Unlike `client.start()`, this surfaces exactly what Telegram does at each step:
+
+- prints `✅ handshake OK` once connected; **early-exits** if the session is already authorized;
+- sanitizes the phone (`+998 77 …` → `+998770…`, leading `+` and digits only);
+- after `send_code_request`, prints **which channel** the code went to via the `SentCodeType` — App / SMS / Phone Call / Flash Call / **Email** (`SentCodeTypeEmailCode`) / email-setup-required — plus the likely resend channel;
+- catches `FloodWaitError` and prints the exact wait seconds (~min/h) with "do NOT retry before then";
+- handles 2FA (`SessionPasswordNeededError` → prompts for the password) and invalid/expired codes (`PhoneCodeInvalidError` / `PhoneCodeExpiredError`);
+- `--print-session` prints a portable `StringSession` (secret — full account access) for reuse on another machine.
+
+Exit codes: `0` ok, `1` missing api creds, `3` flood-wait, `4` invalid phone, `5` wrong code, `6` expired code. See [[Running WatcherDog]] and [[Troubleshooting]].
 
 ## Legacy entry points
 

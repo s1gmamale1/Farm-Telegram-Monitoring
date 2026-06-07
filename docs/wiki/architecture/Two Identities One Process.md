@@ -52,11 +52,11 @@ Both identities live in the same `asyncio` loop. A single `asyncio.Lock` — `st
 
 > [!info] The lock is acquired LAZILY inside `agent.answer` — only the moment it first presses a panel button. Read-only turns (status, reports, questions) never queue; only real panel-driving serializes. See [[The Agent]].
 
-## Alerts prefer the bot DM
+## Alerts prefer the bot DM (for the primary)
 
-When the bot starts successfully, `run()` records `state["post_card"]` (for inline-button cards) and, if `cfg.bot_alerts` and an owner id resolved, `state["notifier"]` so proactive alerts are DMed by the bot. The `_alert` helper prefers `state["notifier"]` and silently falls back to the user account if the bot notifier is missing or fails. See [[Alerts and Heartbeat]].
+When the bot starts successfully, `run()` records `state["post_card"]` (for inline-button cards) and, if `cfg.bot_alerts` and an owner id resolved, `state["notifier"]` so proactive alerts are DMed by the bot. The `_alert` helper delivers each proactive alert to the **whole allow-list** (`cfg.ibo_chat_ids`): it prefers `state["notifier"]` for the **primary** recipient and silently falls back to the user account if the bot notifier is missing or fails; every other allowed user is always reached via the user account. See [[Alerts and Heartbeat]] and the allow-list model in [[Configuration]].
 
-> [!warning] A bot can only DM a user who has pressed Start. `notify_owner` returns `False` (never raises) so the monitor falls back to the user account. Neither README nor DOCUMENTATION mentions that the bot DM is the PREFERRED alert channel — DOCUMENTATION only notes the owner must press Start.
+> [!warning] A bot can only DM a user who has pressed Start. The bot notifier only DMs the **primary** owner; `notify_owner` returns `False` (never raises) so the monitor falls back to the user account, and the rest of the allow-list is always DMed by the user account. Neither README nor DOCUMENTATION mentions that the bot DM is the PREFERRED channel for the primary, nor the multi-recipient fan-out — DOCUMENTATION only notes the owner must press Start.
 
 ## Session reuse
 

@@ -41,7 +41,7 @@ flowchart LR
 
 > [!warning] Verified doc-vs-code drift (corrected throughout this vault)
 > The hand-written [[README]] / [[DOCUMENTATION]] carry a few stale claims that the deep-dive caught:
-> - **Test count:** the docs once said *412*; the suite now has **402 test functions** across 31 files (511 passing cases) → see [[Testing]].
+> - **Test count:** large and growing — run `pytest` for the live number; the 4 known failures are pre-existing (legacy GUI imports + concurrency timing) → see [[Testing]].
 > - **"Router runs before any LLM":** the **local Ollama triage runs *first***; the router is "first" only relative to the *OpenRouter* agent → see [[Script-First AI-Last]].
 > - **A 5th router status, `needs_confirm`,** exists beyond the four documented → see [[Script-First AI-Last]] and [[Confirm and Action Buttons]].
 > - **Unpinned deps:** `gspread`/`google-auth` ([[Drop-Stats Pipeline]]) and `pyobjc` ([[Legacy Modes]]) are **not in `requirements.txt`** (only `telethon`) → see [[Configuration]].
@@ -73,9 +73,10 @@ flowchart LR
 
 ## 📚 Reference & Operations
 
-- [[Configuration]] — every `.env` key, grouped.
+- [[Configuration]] — every `.env` key, grouped (incl. the `ALLOWLIST` multi-user allow-list).
 - [[Data and State]] — the runtime files under `data/`.
 - [[Running WatcherDog]] · [[Troubleshooting]] · [[Testing]] · [[Legacy Modes]].
+- **Login & diagnostic tools** — `tools/tg_login.py` (now a transparent one-shot authorizer) and `tools/tg_probe.py` (a non-interactive MTProto handshake/auth health probe that distinguishes a network/Python fault from a just-need-to-log-in state). Full usage lives in [[Running WatcherDog]] and [[Troubleshooting]].
 
 ## 🛠️ The agent's own guides (Hermes)
 

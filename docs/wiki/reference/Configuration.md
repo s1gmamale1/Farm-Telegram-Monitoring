@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - reference
   - config
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -17,7 +17,7 @@ Part of [[Home]].
 `watcherdog/config.py` is the single source of truth for runtime settings. `load_config()` reads the project-root `.env` via `_parse_env_file` (a minimal `KEY=VALUE` parser that ignores blank/`#` lines and strips matching surrounding quotes) and builds a `Config`. Inside `Config.__init__`, a nested `get(key, default)` makes **environment variables override file values**, and `resolve_path()` makes relative paths absolute against `_project_root()` (one level above the package). [[The Monitor Loop]] consumes this `Config`; [[The Agent]], [[The Bot Front-End]], and [[Drop-Stats Pipeline]] all read keys from it. For where the resulting files land, see [[Data and State]].
 
 > [!warning] `validate_watcher()` does NOT need the bot token
-> Three validators return human-readable problem lists. `validate()` checks bot token + chat id; `validate_mtproto()` adds api id/hash; but **`validate_watcher()` — the one `run_watcher.py` uses (exit 1 on any problem) — requires ONLY `telegram_api_id`, `telegram_api_hash`, and `ibo_chat_id`**, deliberately NOT the bot token, because the watcher sends as the user account ([[Two Identities One Process]]). See [[Entry Points]] and [[Running WatcherDog]].
+> Three validators return human-readable problem lists. `validate()` checks bot token + chat id; `validate_mtproto()` adds api id/hash; but **`validate_watcher()` — the one `run_watcher.py` uses (exit 1 on any problem) — requires ONLY `telegram_api_id`, `telegram_api_hash`, and a non-empty allow-list (`ibo_chat_ids`)**, deliberately NOT the bot token, because the watcher sends as the user account ([[Two Identities One Process]]). See [[Entry Points]] and [[Running WatcherDog]].
 
 ## Telegram identity & connection
 
@@ -25,11 +25,30 @@ Part of [[Home]].
 |-----|-------|
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | MTProto app creds. Required by `validate_watcher()`. |
 | `TELEGRAM_SESSION` | Telethon file-session path (default `data/watcher.session`). |
-| `TELEGRAM_SESSION_STRING` | In-memory StringSession alternative. The watcher reuses the telegram-mcp session string when it has no file session of its own (`_resolve_session_string`). |
-| `TELEGRAM_MCP_DIR` | Where the telegram-mcp session lives, for reuse. |
+| `TELEGRAM_SESSION_STRING` | In-memory `StringSession` alternative (set in `.env`). When blank **and** no file session exists, `_resolve_session_string` reuses the telegram-mcp's `TELEGRAM_SESSION_STRING` (from `TELEGRAM_MCP_DIR/.env`) so a single MTProto login serves both. See [[Data and State]]. |
+| `TELEGRAM_MCP_DIR` | Path to the telegram-mcp install whose `.env` session is reused (default `~/Documents/telegram-mcp`). |
 | `TELEGRAM_BOT_TOKEN` | Bot login. `bot_token` is an **alias** of this (no separate `BOT_TOKEN` key is read). |
 | `TELEGRAM_CHAT_ID` / `TELEGRAM_THREAD_ID` | Default alert chat / forum topic. `hourly_report_chat` and `alert_chat_id` fall back to `telegram_chat_id`. |
-| `IBO_CHAT_ID` | The owner's DM chat the watcher answers. Required by `validate_watcher()`. See [[Commands]]. |
+| `ALLOWLIST` (aliases `ALLOW_LIST`, `ALLOWED_USERS`; legacy `IBO_CHAT_ID`) | **Comma-separated allow-list** of users the watcher answers and alerts. Required by `validate_watcher()`. See the dedicated section below and [[Commands]]. |
+
+## The allow-list (who the watcher talks to)
+
+The chats that receive proactive alerts **and** whose messages are routed to [[The Agent|the agent]] are a single comma-separated allow-list. `config.py` resolves it from the **first non-empty** of these keys (in order):
+
+`ALLOWLIST` → `ALLOW_LIST` → `ALLOWED_USERS` → `IBO_CHAT_ID` (legacy fallback).
+
+Each ref is a numeric user id (e.g. `1406109190`) or an `@username`. The watcher **responds to any user in the list** (in that user's own chat — it replies to the *sender*, not a fixed target) and **DMs every proactive alert to ALL of them**.
+
+| Resolved attribute | Meaning |
+|---|---|
+| `cfg.ibo_chat_ids` | the full list of refs (e.g. `["111", "@two", "333"]`) |
+| `cfg.ibo_chat_id` | the **primary** = first ref (so single-recipient code and a single configured value behave exactly as before) |
+
+> [!info] The parser is forgiving
+> Each ref is split on `,` then stripped of surrounding **whitespace, JSON-array/brace wrapping `[](){}`, and quotes `"'`** — so `ALLOWLIST=[111, "222"]` resolves to `111, 222` (not `[111` / `222]`). Leading `-` (negative channel ids) and `@` (usernames) are **preserved**; blank refs are dropped. Covered by `test_config.py` (`test_ibo_chat_ids_*`) and `test_multi_user.py`.
+
+> [!warning] An empty allow-list fails startup
+> `validate_watcher()` appends a problem when `ibo_chat_ids` is empty, so `run_watcher.py` exits 1 with: *"ALLOWLIST is not set … legacy key IBO_CHAT_ID also works"*. At least one ref is mandatory.
 
 ## Watch roster & poll cadence
 

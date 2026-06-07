@@ -15,7 +15,10 @@ status: current
 
 Part of [[Home]].
 
-This is WatcherDog's governing philosophy ([[Architecture Overview]]). Four modules implement it: `classifier.py`, `analyzer.py`, `auto_fix.py`, and [[The Learned-Fixes Brain|learned_fixes.py]]. The whole point is to keep the model spend near zero for the errors WatcherDog has seen before.
+This is WatcherDog's governing philosophy ([[Architecture Overview]]). Four modules implement the error-escalation ladder: `classifier.py`, `analyzer.py`, `auto_fix.py`, and [[The Learned-Fixes Brain|learned_fixes.py]]. The whole point is to keep the model spend near zero for the errors WatcherDog has seen before.
+
+> [!info] Panel monitoring & recovery is fully deterministic — no AI at all
+> Beyond the error ladder below, the per-panel watch/recover path (`panel_rules.py` + `panel_actions.py`, gated by `PANEL_RULES_ENABLED`) is a pure decision engine (rules R1–R6) that reads each panel's parsed status and presses recovery buttons with **zero model calls** — the Telegram port of the on-PC `Watchdog.exe`. The OpenRouter agent is reserved for genuinely novel errors and free-form questions; the routine "is this panel healthy / how do I recover it" loop never touches AI. See [[Monitoring and Recovery Rules]].
 
 ## The four tiers
 
@@ -78,6 +81,7 @@ Only on `None`/`failed`/unposted-confirm does control fall through to the OpenRo
 > [!warning] "Once — then it remembers" (README:6-7) and "a known error costs zero tokens" (README:72) are accurate for the OpenRouter agent. But the local Ollama triage still runs per message first (no API tokens, but a model call). `classify()` + `find_fix()` are the only stages that touch no model at all.
 
 ## See also
+- [[Monitoring and Recovery Rules]] — the parallel, fully-deterministic panel watch/recover engine (R1–R6, no AI).
 - [[The Learned-Fixes Brain]] — the Markdown memory that makes Tier 3 a one-time cost.
 - [[The Agent]] — the Tier 3 OpenRouter escalation that writes new fixes.
 - [[The Monitor Loop]] — where `_evaluate_bot` wires the four tiers together.

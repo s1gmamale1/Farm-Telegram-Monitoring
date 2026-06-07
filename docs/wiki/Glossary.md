@@ -20,7 +20,8 @@ Use this as the index of *vocabulary*. Each entry links to the [[Module Referenc
 
 - **Watcher / user account** — the MTProto Telethon client `mcp_watcher.run` connects as the **owner's personal Telegram user**, so it can read other bots' messages (the Bot API forbids a bot reading another bot). It is the supported runtime. See [[Two Identities One Process]], [[The Monitor Loop]].
 - **Bot front-end** — a *separate* Telethon **bot** client (`BotInterface`) on the same event loop. It cannot read farm bots, so it reads and acts via the injected `user_client`. See [[The Bot Front-End]].
-- **ibo** — the owner's DM chat (`IBO_CHAT_ID`). Incoming ibo messages route through the static → fast → expand command layers or the agent, serialized by the shared `agent_lock`. See [[Commands]].
+- **allow-list (`ALLOWLIST`)** — the comma-separated set of trusted refs (numeric user ids or `@username`) that the watcher both **responds to** (each in their own chat) and **DMs proactive alerts to** (ALL of them). The key is `ALLOWLIST`; aliases `ALLOW_LIST` / `ALLOWED_USERS` and the legacy single-value `IBO_CHAT_ID` all work (first non-empty wins, parsed into `cfg.ibo_chat_ids`). See [[Configuration]].
+- **ibo** — the **PRIMARY (first)** ref in the allow-list (`cfg.ibo_chat_id = cfg.ibo_chat_ids[0]`), kept so single-recipient code paths behave exactly as before. Historically "ibo" meant the single owner DM; today it is just the first allowed user. Incoming messages from ANY allowed user route through the static → fast → expand command layers or the agent — answered in **that sender's own chat** — serialized by the shared `agent_lock`. See [[Commands]], [[The Monitor Loop]].
 - **Special Forces** — the **untrusted** group where the bot only auto-replies to @-mentions; the agent always runs `execute=False` and gets an anti-prompt-injection preamble (`_SF_PREAMBLE`). See [[The Agent]].
 - **agent_lock** — the single shared `asyncio.Lock` (`state["agent_lock"]`) serializing **every** agent invocation across the monitor handler, ibo listener, Special Forces listener, and bot — only one agent question runs at a time. The bot acquires it **lazily** (only on first panel press) so read-only turns never queue. See [[The Bot Front-End]].
 
@@ -117,8 +118,7 @@ See [[Commands]].
 > [!info] Three system prompts
 > `run_watcher.py` builds three prompts via `_load_system_prompt`: the default one follows `AGENT_ACTIONS_ENABLED`; `bot_system_prompt` is forced read-only; `bot_action_prompt` is forced action-capable. Each loads a preamble (`_PREAMBLE_READONLY` / `_PREAMBLE_ACTIONS`) plus the `docs/hermes/` guides. See [[Entry Points]].
 
-> [!warning] Stale test count
-> "412 tests" in `README.md`/`DOCUMENTATION.md` is wrong; ground truth is **302 test functions across 29 files**. See [[Testing]].
+> [!info] Test count: large and growing — run `pytest` for the live number; see [[Testing]].
 
 ## See also
 - [[Module Reference]] — the file/symbol behind each term
