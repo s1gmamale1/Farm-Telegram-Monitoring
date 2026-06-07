@@ -134,6 +134,49 @@ def test_validate_watcher_ok():
     assert cfg.validate_watcher() == []
 
 
+# --- IBO_CHAT_ID allow-list (multi-user) ------------------------------------
+
+def test_ibo_chat_ids_parsed_as_list():
+    cfg = Config({"IBO_CHAT_ID": "a,b,c"})
+    assert cfg.ibo_chat_ids == ["a", "b", "c"]
+    assert cfg.ibo_chat_id == "a"  # primary is the first ref
+
+
+def test_ibo_chat_ids_strips_and_drops_blanks():
+    cfg = Config({"IBO_CHAT_ID": " 111 , @two ,, 333 "})
+    assert cfg.ibo_chat_ids == ["111", "@two", "333"]
+    assert cfg.ibo_chat_id == "111"
+
+
+def test_ibo_chat_id_single_value_backward_compatible():
+    cfg = Config({"IBO_CHAT_ID": "1406109190"})
+    assert cfg.ibo_chat_ids == ["1406109190"]
+    assert cfg.ibo_chat_id == "1406109190"  # unchanged single-recipient behaviour
+
+
+def test_ibo_chat_id_blank_is_empty_list():
+    cfg = Config({"IBO_CHAT_ID": "   "})
+    assert cfg.ibo_chat_ids == []
+    assert cfg.ibo_chat_id == ""
+
+
+def test_validate_watcher_fails_when_ibo_blank():
+    cfg = Config({"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "x", "IBO_CHAT_ID": "  "})
+    problems = cfg.validate_watcher()
+    assert any("IBO_CHAT_ID" in p for p in problems)
+
+
+def test_validate_watcher_ok_with_multiple_ibos():
+    cfg = Config(
+        {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "deadbeef",
+            "IBO_CHAT_ID": "1406109190, @second",
+        }
+    )
+    assert cfg.validate_watcher() == []
+
+
 # --- load_config ------------------------------------------------------------
 
 def test_load_config_reads_given_env_file(tmp_path):

@@ -122,9 +122,15 @@ class Config:
         self.watch_folder = get("WATCH_FOLDER", "Farms").strip()
         wf_id = get("WATCH_FOLDER_ID", "").strip()
         self.watch_folder_id = int(wf_id) if wf_id.lstrip("-").isdigit() else 0
-        # The chat that receives proactive alerts AND whose messages are routed to
-        # Hermes. A numeric user id (e.g. 1406109190) or an @username.
-        self.ibo_chat_id = get("IBO_CHAT_ID", "").strip()
+        # The chat(s) that receive proactive alerts AND whose messages are routed
+        # to Hermes. A COMMA-SEPARATED allow-list of refs, each a numeric user id
+        # (e.g. 1406109190) or an @username. The watcher RESPONDS to any user in
+        # the list (in their own chat) and DMs proactive ALERTS to ALL of them.
+        # `ibo_chat_id` keeps the primary (first) ref so single-recipient code and
+        # a single configured value behave exactly as before.
+        raw_ibo = get("IBO_CHAT_ID", "").strip()
+        self.ibo_chat_ids = [u.strip() for u in raw_ibo.split(",") if u.strip()]
+        self.ibo_chat_id = self.ibo_chat_ids[0] if self.ibo_chat_ids else ""
         # Seconds between proactive monitor sweeps of the watch folder.
         self.watch_poll_interval = float(get("WATCH_POLL_INTERVAL", "120"))
         # After reading a chat (monitor sweep or agent), acknowledge it as read
@@ -487,7 +493,7 @@ class Config:
             problems.append("TELEGRAM_API_ID is not set (get it from https://my.telegram.org)")
         if not self.telegram_api_hash:
             problems.append("TELEGRAM_API_HASH is not set (get it from https://my.telegram.org)")
-        if not self.ibo_chat_id:
+        if not self.ibo_chat_ids:
             problems.append("IBO_CHAT_ID is not set (the chat that gets alerts / talks to Hermes)")
         return problems
 

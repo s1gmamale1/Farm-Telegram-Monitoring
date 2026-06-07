@@ -353,6 +353,14 @@ async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
 
 # --- orchestration + scheduler ---------------------------------------------
 async def _send(client, target, text, deliver=True):
+    # `target` may be a single entity OR a list/tuple — when it's a list we send
+    # to EACH (best-effort: one failure doesn't abort the rest) so the scheduled
+    # weekly job reaches every allowed user. Returns True only if all sent.
+    if isinstance(target, (list, tuple)):
+        if not target:
+            return False
+        results = [await _send(client, t, text, deliver) for t in target]
+        return all(results)
     if not deliver:
         log.info("[DRY-RUN] would send: %s", " ".join((text or "").split())[:160])
         return True

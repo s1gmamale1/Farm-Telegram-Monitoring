@@ -166,9 +166,17 @@ async def _maybe_send_sticker(client, target, cfg):
 
 
 async def _send(client, target, text, deliver=True, *, cfg=None, sticker_ok=False):
-    """Send a text message to `target`. When `sticker_ok` (a conversational reply,
-    not an alert/needs-you/report) and `cfg` is given, maybe append a sticker per
-    skill 6."""
+    """Send a text message to `target`. `target` may be a single entity OR a
+    list/tuple of entities — when it's a list we send to EACH (best-effort: one
+    failure doesn't abort the rest) and return True only if all sent. When
+    `sticker_ok` (a conversational reply, not an alert/needs-you/report) and `cfg`
+    is given, maybe append a sticker per skill 6."""
+    if isinstance(target, (list, tuple)):
+        if not target:
+            return False
+        results = [await _send(client, t, text, deliver, cfg=cfg, sticker_ok=sticker_ok)
+                   for t in target]
+        return all(results)
     if not deliver:
         log.info("[DRY-RUN] would send: %s", " ".join((text or "").split())[:160])
         return True
@@ -184,22 +192,43 @@ async def _send(client, target, text, deliver=True, *, cfg=None, sticker_ok=Fals
 
 async def _alert(state, client, target, text, deliver=True, *, cfg=None):
     """Deliver a one-way proactive ALERT (error/silence/recovery/recurring/daily/
-    digest). Prefers the BOT DMing the owner — that's the configured talking
-    channel — and falls back to sending as the user account if no bot notifier is
-    registered or the bot send fails (e.g. the owner never pressed Start)."""
+    digest) to ALL allowed users. `target` may be a single entity OR a list/tuple.
+
+    Prefers the BOT DMing the owner — that's the configured talking channel — for
+    the PRIMARY (first) recipient, and falls back to the user account if no bot
+    notifier is registered or the bot send fails (e.g. the owner never pressed
+    Start). The bot only DMs the single configured owner, so a successful bot
+    notify must NOT suppress delivery to the rest of the allow-list: the remaining
+    recipients are always reached via the user-account `_send`. Single-recipient
+    behaviour is unchanged (one entity -> bot-or-fallback, no extras)."""
+    targets = list(target) if isinstance(target, (list, tuple)) else [target]
+    if not targets:
+        return False
+    primary, rest = targets[0], targets[1:]
+
     notifier = (state or {}).get("notifier")
+    primary_ok = None  # None = notifier not used / unresolved; True/False = result
     if notifier is not None:
         if not deliver:
             log.info("[DRY-RUN] would alert owner via bot: %s",
                      " ".join((text or "").split())[:160])
-            return True
-        try:
-            if await notifier(text):
-                return True
-            log.warning("bot alert delivery failed; falling back to user account.")
-        except Exception:  # noqa: BLE001
-            log.exception("bot alert delivery raised; falling back to user account.")
-    return await _send(client, target, text, deliver, cfg=cfg)
+            primary_ok = True
+        else:
+            try:
+                if await notifier(text):
+                    primary_ok = True
+                else:
+                    log.warning("bot alert delivery failed; falling back to user account.")
+            except Exception:  # noqa: BLE001
+                log.exception("bot alert delivery raised; falling back to user account.")
+
+    # The bot only DMs the configured owner (the primary). If it didn't deliver
+    # the primary, the user account does. Either way the REST of the allow-list
+    # is always reached via the user account so no allowed user is skipped.
+    if primary_ok is True:
+        rest_ok = await _send(client, rest, text, deliver, cfg=cfg) if rest else True
+        return rest_ok
+    return await _send(client, targets, text, deliver, cfg=cfg)
 
 
 # --- proactive monitoring ---------------------------------------------------
@@ -555,14 +584,22 @@ def _append_chat_log(path, user_text, answer):
 _DROP_STATS_RE = re.compile(r"\bdrops?\s+stats\b", re.I)
 
 
-def register_ibo_listener(client, cfg, target, system_prompt, state, deliver=True):
-    """Answer every NEW message FROM ibo with the self-contained agent and send
-    the reply back. Serialized with a lock (one in-flight question at a time).
-    incoming-only + from_users=ibo is the loop guard."""
-    lock = state.get("agent_lock") or asyncio.Lock()
+def register_ibo_listener(client, cfg, targets, system_prompt, state, deliver=True):
+    """Answer every NEW message FROM any allowed ibo user with the self-contained
+    agent and send the reply back TO THAT SENDER (their own chat), so each allowed
+    user is answered where they wrote. Serialized with a lock (one in-flight
+    question at a time). incoming-only + from_users=<allow-list> is the loop guard.
 
-    @client.on(events.NewMessage(incoming=True, from_users=target))
+    `targets` is the resolved allow-list (a list of entities); a single entity is
+    accepted too for backward compatibility."""
+    lock = state.get("agent_lock") or asyncio.Lock()
+    from_users = list(targets) if isinstance(targets, (list, tuple)) else [targets]
+
+    @client.on(events.NewMessage(incoming=True, from_users=from_users))
     async def _on_ibo(event):  # noqa: ANN001
+        # Reply to the SENDER (the user who messaged us), not a fixed recipient,
+        # so each allowed user is answered in their own chat.
+        target = event.chat_id
         # Never leave ibo on unread: acknowledge their message as read the moment
         # we see it (even if it's empty / a sticker), so the chat shows no badge.
         try:
@@ -574,11 +611,11 @@ def register_ibo_listener(client, cfg, target, system_prompt, state, deliver=Tru
             return
         log.info("ibo → %r", text[:80])
         # Skill 5 on demand: "drop stats" runs the full weekly job (the agent is
-        # read-only and can't drive panels), reporting straight back to ibo.
+        # read-only and can't drive panels), reporting straight back to the sender.
         if _DROP_STATS_RE.search(text):
             async with lock:
                 try:
-                    # Show "typing…" to ibo while the (slow) weekly job runs.
+                    # Show "typing…" to the sender while the (slow) weekly job runs.
                     async with client.action(target, "typing"):
                         await drop_stats.run_weekly(client, cfg, target, deliver=deliver)
                 except Exception:  # noqa: BLE001
@@ -950,12 +987,31 @@ async def connect(cfg):
     return client
 
 
-async def resolve_ibo(client, cfg):
-    """Resolve IBO_CHAT_ID (numeric id or @username) to an entity."""
-    ref = cfg.ibo_chat_id
+async def _resolve_ibo_ref(client, ref):
+    """Resolve one IBO ref (numeric id or @username) to an entity."""
+    ref = (ref or "").strip()
     if ref.lstrip("-").isdigit():
         ref = int(ref)
     return await client.get_entity(ref)
+
+
+async def resolve_ibo(client, cfg):
+    """Resolve the PRIMARY IBO_CHAT_ID (numeric id or @username) to an entity.
+    Kept for code that needs exactly one entity."""
+    return await _resolve_ibo_ref(client, cfg.ibo_chat_id)
+
+
+async def resolve_ibos(client, cfg):
+    """Resolve EVERY ref in the IBO_CHAT_ID allow-list to an entity. Skips (and
+    logs) any ref that fails to resolve; never raises. Returns a list of entities
+    in config order — the first is the primary. Empty if none resolved."""
+    out = []
+    for ref in cfg.ibo_chat_ids:
+        try:
+            out.append(await _resolve_ibo_ref(client, ref))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("IBO ref %r did not resolve; skipping: %s", ref, exc)
+    return out
 
 
 # --- daily AI-fix report (skill 2) ------------------------------------------
@@ -1011,8 +1067,14 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         return 2
     bot_iface = None
     try:
-        ibo = await resolve_ibo(client, cfg)
-        log.info("Alert/conversation chat: %s (id=%s)", tg_tools.entity_name(ibo), get_peer_id(ibo))
+        # The allow-list: the watcher responds to ALL of these (in their own chat)
+        # and DMs proactive alerts to ALL of them. `ibo` is the PRIMARY (first) —
+        # used where exactly one entity is required (e.g. typing actions).
+        ibos = await resolve_ibos(client, cfg)
+        ibo = ibos[0] if ibos else await resolve_ibo(client, cfg)
+        log.info("Alert/conversation chat(s): %s (primary id=%s, %d total)",
+                 ", ".join(tg_tools.entity_name(e) for e in ibos) or tg_tools.entity_name(ibo),
+                 get_peer_id(ibo), len(ibos))
 
         # Shared by the monitor's incident handler, the ibo listener, and the bot
         # so they use one agent lock and never run the agent concurrently.
@@ -1042,8 +1104,8 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
             else:
                 bot_iface = None
 
-        # Skill 2: if the AI-fix log survived a crash/reboot, report it now.
-        await flush_daily_report(client, cfg, ibo, deliver=deliver,
+        # Skill 2: if the AI-fix log survived a crash/reboot, report it now (to all).
+        await flush_daily_report(client, cfg, ibos, deliver=deliver,
                                  reason="startup catch-up", state=state)
         watch = await load_watch_chats(client, cfg)
         # Shared with the bot's deterministic /status,/problems,/silent commands.
@@ -1054,10 +1116,10 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
                         cfg.watch_folder)
 
         if once:
-            await monitor_once(client, cfg, store, state, watch, ibo, deliver)
+            await monitor_once(client, cfg, store, state, watch, ibos, deliver)
             return 0
 
-        register_ibo_listener(client, cfg, ibo, system_prompt, state, deliver)
+        register_ibo_listener(client, cfg, ibos, system_prompt, state, deliver)
 
         # Special Forces @-mention auto-reply by the USER account — but skip it
         # when the BOT already serves that group, so we never double-answer.
@@ -1074,23 +1136,23 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         async def _monitor_loop():
             while True:
                 try:
-                    await monitor_once(client, cfg, store, state, watch, ibo, deliver)
+                    await monitor_once(client, cfg, store, state, watch, ibos, deliver)
                 except Exception:  # noqa: BLE001
                     log.exception("monitor sweep failed; continuing")
                 await asyncio.sleep(cfg.watch_poll_interval)
 
         client.loop.create_task(_monitor_loop())
-        # Skill 5: weekly drop-stats job, fired every Wednesday 00:00.
-        client.loop.create_task(drop_stats.weekly_loop(client, cfg, ibo, deliver=deliver))
-        # Skill 2: end-of-day AI-fix summary at DAILY_REPORT_TIME.
-        client.loop.create_task(daily_report_loop(client, cfg, ibo, deliver=deliver, state=state))
-        # Recurring-error watchdog: every 15 min, flag errors that keep repeating.
+        # Skill 5: weekly drop-stats job, fired every Wednesday 00:00 (to all).
+        client.loop.create_task(drop_stats.weekly_loop(client, cfg, ibos, deliver=deliver))
+        # Skill 2: end-of-day AI-fix summary at DAILY_REPORT_TIME (to all).
+        client.loop.create_task(daily_report_loop(client, cfg, ibos, deliver=deliver, state=state))
+        # Recurring-error watchdog: every 15 min, flag errors that keep repeating (to all).
         if cfg.recurring_error_enabled:
-            client.loop.create_task(_recurring_loop(client, cfg, store, ibo, state, deliver))
-        # Auto weekly digest: a /weekly report to ibo on Sunday evening.
+            client.loop.create_task(_recurring_loop(client, cfg, store, ibos, state, deliver))
+        # Auto weekly digest: a /weekly report to all allowed users on Sunday evening.
         if cfg.weekly_digest_enabled:
             client.loop.create_task(
-                _weekly_digest_loop(client, cfg, ibo, system_prompt, state, deliver))
+                _weekly_digest_loop(client, cfg, ibos, system_prompt, state, deliver))
         if cfg.hourly_report_enabled:
             client.loop.create_task(_hourly_report_loop(client, cfg, watch, deliver))
             log.info("Hourly farm report: topic=%s in chat=%s",
