@@ -199,3 +199,17 @@ def test_panel_rule_defaults(monkeypatch):
     assert cfg.panel_overlaunch_minutes == 15.0
     assert cfg.panel_auto_recover is True
     assert cfg.panel_auto_destructive is False
+
+
+def test_allowlist_key_and_aliases(monkeypatch):
+    for k in ("ALLOWLIST", "ALLOW_LIST", "ALLOWED_USERS", "IBO_CHAT_ID"):
+        monkeypatch.delenv(k, raising=False)
+    from watcherdog.config import Config
+    # ALLOWLIST preferred over the legacy IBO_CHAT_ID
+    c = Config({"ALLOWLIST": "@a,@b", "IBO_CHAT_ID": "@legacy"})
+    assert c.ibo_chat_ids == ["@a", "@b"] and c.ibo_chat_id == "@a"
+    # aliases
+    assert Config({"ALLOW_LIST": "@x"}).ibo_chat_ids == ["@x"]
+    assert Config({"ALLOWED_USERS": "@y,@z"}).ibo_chat_ids == ["@y", "@z"]
+    # legacy fallback still works
+    assert Config({"IBO_CHAT_ID": "@only"}).ibo_chat_ids == ["@only"]

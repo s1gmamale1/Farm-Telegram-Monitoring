@@ -126,9 +126,16 @@ class Config:
         # to Hermes. A COMMA-SEPARATED allow-list of refs, each a numeric user id
         # (e.g. 1406109190) or an @username. The watcher RESPONDS to any user in
         # the list (in their own chat) and DMs proactive ALERTS to ALL of them.
+        # Preferred key: ALLOWLIST (aliases ALLOW_LIST / ALLOWED_USERS); the legacy
+        # IBO_CHAT_ID still works as a fallback. First non-empty wins.
         # `ibo_chat_id` keeps the primary (first) ref so single-recipient code and
         # a single configured value behave exactly as before.
-        raw_ibo = get("IBO_CHAT_ID", "").strip()
+        raw_ibo = next((v for v in (
+            get("ALLOWLIST", "").strip(),
+            get("ALLOW_LIST", "").strip(),
+            get("ALLOWED_USERS", "").strip(),
+            get("IBO_CHAT_ID", "").strip(),
+        ) if v), "")
         self.ibo_chat_ids = [u.strip() for u in raw_ibo.split(",") if u.strip()]
         self.ibo_chat_id = self.ibo_chat_ids[0] if self.ibo_chat_ids else ""
         # Seconds between proactive monitor sweeps of the watch folder.
@@ -494,7 +501,8 @@ class Config:
         if not self.telegram_api_hash:
             problems.append("TELEGRAM_API_HASH is not set (get it from https://my.telegram.org)")
         if not self.ibo_chat_ids:
-            problems.append("IBO_CHAT_ID is not set (the chat that gets alerts / talks to Hermes)")
+            problems.append("ALLOWLIST is not set (comma-separated users that get "
+                            "alerts / talk to Hermes; legacy key IBO_CHAT_ID also works)")
         return problems
 
 
