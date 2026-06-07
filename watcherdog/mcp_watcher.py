@@ -495,7 +495,7 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
 
     On the FIRST sweep, silence flags are only SEEDED (no alert) so a restart or
     bots quiet overnight don't trigger a flood."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     now = time.time()
     first = not state.get("_seeded")
     threshold_min = cfg.silence_threshold / 60.0

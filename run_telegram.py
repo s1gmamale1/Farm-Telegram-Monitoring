@@ -85,7 +85,7 @@ def process_message(text, cfg, store, alerter):
 
 
 async def amain(cfg):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     store = IncidentStore(cfg.db_path)
     client = make_client(cfg.telegram_api_id, cfg.telegram_api_hash, cfg.telegram_session)
 
@@ -140,7 +140,7 @@ async def amain(cfg):
             cfg.silence_threshold / 60, cfg.silence_check_interval,
         )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
 
     def enqueue(chat_id, text):
@@ -226,7 +226,7 @@ def main(argv=None):
         return 2
 
     try:
-        return asyncio.get_event_loop().run_until_complete(amain(cfg))
+        return asyncio.run(amain(cfg))
     except KeyboardInterrupt:
         log.info("Interrupted.")
         return 0

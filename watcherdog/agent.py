@@ -533,7 +533,7 @@ async def _apply_code_change(cfg, rel, instruction):
         {"role": "user", "content": f"FILE: {rel}\nINSTRUCTION: {instruction}\n\n"
                                     f"--- CURRENT CONTENT ---\n{original}"},
     ]
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     msg = await loop.run_in_executor(None, _chat_completion, cfg, messages, None)
     new = _strip_code_fence((msg or {}).get("content") or "")
     if not new.strip():
@@ -783,7 +783,7 @@ async def _dispatch(client, name, args, cfg=None, *, execute=True, can_grant=Fal
         if name == "update_setting":
             return _update_setting(cfg, args.get("key", ""), args.get("value", ""))
         if name == "restart_watcher":
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, self_restart.request_restart, cfg)
         return {"error": f"unknown tool {name!r}"}
     except KeyError as exc:
@@ -936,7 +936,7 @@ async def answer(cfg, client, user_text, *, system_prompt, history=None, execute
     messages.append({"role": "user", "content": user_text})
 
     tools = build_tools(cfg, can_grant=can_grant, can_edit=can_edit, allow_fanout=allow_fanout)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     final = None
     held_lock = False  # whether we've acquired action_lock for this turn
     try:
