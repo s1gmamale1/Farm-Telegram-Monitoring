@@ -121,3 +121,49 @@ def test_build_report_and_clear_roundtrip(tmp_path):
 
 def test_clear_log_missing_file_is_noop(tmp_path):
     daily_report.clear_log(str(tmp_path / "nope.jsonl"))  # must not raise
+
+
+# --- entries_since ----------------------------------------------------------
+
+def test_entries_since_filters_by_timestamp(tmp_path):
+    p = tmp_path / "daily.jsonl"
+    daily_report.record(str(p), panel="P1", error="old", fix="f", ts="2026-06-04T10:00:00")
+    daily_report.record(str(p), panel="P2", error="new", fix="f", ts="2026-06-04T12:00:00")
+    entries = daily_report.entries_since(str(p), "2026-06-04T11:00:00")
+    assert len(entries) == 1
+    assert entries[0]["panel"] == "P2"
+
+
+def test_entries_since_empty_since_returns_all(tmp_path):
+    p = tmp_path / "daily.jsonl"
+    daily_report.record(str(p), panel="P1", error="e", fix="f", ts="2026-06-04T09:00:00")
+    daily_report.record(str(p), panel="P2", error="e", fix="f", ts="2026-06-04T10:00:00")
+    entries = daily_report.entries_since(str(p), "")
+    assert len(entries) == 2
+
+
+def test_entries_since_missing_file(tmp_path):
+    assert daily_report.entries_since(str(tmp_path / "nope.jsonl"), "2026-06-04T00:00:00") == []
+
+
+# --- summary_since: max_items overflow --------------------------------------
+
+def test_summary_since_truncates_at_max_items(tmp_path):
+    p = tmp_path / "daily.jsonl"
+    since = "2026-06-04T12:00:00"
+    for i in range(20):
+        daily_report.record(str(p), panel=f"SF{i}", error=f"err{i}", fix="f",
+                            ts="2026-06-04T12:30:00")
+    line = daily_report.summary_since(str(p), since, max_items=5)
+    assert line is not None
+    assert "+15 more" in line  # 20 - 5 overflow items
+
+
+# --- build_report: cleared=False omits footer --------------------------------
+
+def test_build_report_cleared_false_has_no_footer(tmp_path):
+    p = tmp_path / "daily.jsonl"
+    daily_report.record(str(p), panel="P1", error="e", fix="f")
+    out = daily_report.build_report(str(p), cleared=False)
+    assert out is not None
+    assert "(file cleared)" not in out

@@ -32,6 +32,50 @@ def test_unreadable_access_file_is_empty(tmp_path):
     assert bot_access.list_users(p) == []
 
 
+# --- corrupt / malformed JSON falls back to empty ---------------------------
+
+def test_corrupt_json_returns_empty(tmp_path):
+    p = str(tmp_path / "corrupt.json")
+    (tmp_path / "corrupt.json").write_text("{not valid json", encoding="utf-8")
+    assert bot_access.granted_ids(p) == set()
+    assert bot_access.list_users(p) == []
+
+
+def test_wrong_schema_json_returns_empty(tmp_path):
+    p = str(tmp_path / "bad_schema.json")
+    (tmp_path / "bad_schema.json").write_text('["just", "a", "list"]', encoding="utf-8")
+    assert bot_access.granted_ids(p) == set()
+
+
+# --- negative user ids (supergroup/channel ids) -----------------------------
+
+def test_granted_ids_handles_negative_ids(tmp_path):
+    p = str(tmp_path / "access.json")
+    bot_access.grant(p, -100200300, "group-user")
+    ids = bot_access.granted_ids(p)
+    assert -100200300 in ids
+
+
+# --- grant without label uses id as label -----------------------------------
+
+def test_grant_no_label_uses_id_string(tmp_path):
+    p = str(tmp_path / "access.json")
+    bot_access.grant(p, 555)
+    users = {u["id"]: u["label"] for u in bot_access.list_users(p)}
+    assert users[555] == "555"
+
+
+# --- list_users ordering (newest last) --------------------------------------
+
+def test_list_users_newest_last(tmp_path):
+    p = str(tmp_path / "access.json")
+    bot_access.grant(p, 1, "first")
+    bot_access.grant(p, 2, "second")
+    bot_access.grant(p, 3, "third")
+    ids = [u["id"] for u in bot_access.list_users(p)]
+    assert ids == [1, 2, 3]  # insertion order preserved (newest appended last)
+
+
 # --- self-edit path safety --------------------------------------------------
 
 def _cfg(root):

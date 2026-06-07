@@ -110,3 +110,94 @@ def test_analyze_message_fallback_is_conservative(monkeypatch):
     _patch_urlopen(monkeypatch, exc=urllib.error.URLError("down"))
     out = analyze_message("weird", bot_name="bot", ollama_url="http://x", model="m")
     assert out["is_error"] is True
+
+
+# --- analyze: generic Exception (not URLError) ------------------------------
+
+def test_analyze_falls_back_on_generic_exception(monkeypatch):
+    """Any non-URLError exception from urlopen must still produce a fallback."""
+    _patch_urlopen(monkeypatch, exc=OSError("socket error"))
+    out = analyze("boom", bot_name="bot", ollama_url="http://x", model="m")
+    assert out["severity"] == "high"
+    assert out["_fallback"] is True
+
+
+# --- analyze: Ollama body missing 'message' key entirely --------------------
+
+def test_analyze_falls_back_when_no_message_key(monkeypatch):
+    _patch_urlopen(monkeypatch, body=json.dumps({"status": "ok"}))
+    out = analyze("boom", bot_name="bot", ollama_url="http://x", model="m")
+    assert out["_fallback"] is True
+
+
+# --- analyze: error text truncated to 6000 chars in the request payload -----
+
+def test_analyze_truncates_long_error_text(monkeypatch):
+    """analyze() should cap the user-prompt at 6000 chars, not crash."""
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        import json as _json
+        captured["body"] = _json.loads(req.data.decode())
+        return _FakeResp(_ollama_body(
+            {"severity": "high", "summary": "ok", "root_cause": "", "fix": ""}
+        ))
+
+    monkeypatch.setattr(analyzer.urllib.request, "urlopen", fake_urlopen)
+    long_text = "E" * 10_000
+    out = analyze(long_text, bot_name="b", ollama_url="http://x", model="m")
+    # The error text must be capped at 6000 chars (analyzer.py uses [:6000]);
+    # only a small fixed template wrapper is added around it.
+    user_content = captured["body"]["messages"][1]["content"]
+    assert "E" * 6000 in user_content       # the [:6000] slice is kept verbatim
+    assert "E" * 6001 not in user_content    # ...and not one char more
+    assert len(user_content) < 6100          # only a small fixed wrapper is added
+
+
+# --- analyze_message: invalid severity coerced to high ----------------------
+
+def test_analyze_message_normalizes_bogus_severity(monkeypatch):
+    _patch_urlopen(
+        monkeypatch,
+        body=_ollama_body({"is_error": True, "severity": "CATASTROPHIC", "summary": "s"}),
+    )
+    out = analyze_message("err", bot_name="b", ollama_url="http://x", model="m")
+    assert out["severity"] == "high"
+
+
+# --- analyze_message: body has no "message" key -----------------------------
+
+def test_analyze_message_falls_back_when_no_message_key(monkeypatch):
+    """When Ollama returns a body without a 'message' key, conservatively treat
+    the pre-filtered text as an error (is_error=True) and mark as fallback."""
+    _patch_urlopen(monkeypatch, body=json.dumps({"status": "ok"}))
+    out = analyze_message("weird message", bot_name="b", ollama_url="http://x", model="m")
+    assert out["is_error"] is True
+    assert out.get("_fallback") is True
+
+
+# --- analyze: strips extra whitespace from summary/root_cause/fix -----------
+
+def test_analyze_strips_whitespace_in_fields(monkeypatch):
+    _patch_urlopen(monkeypatch, body=_ollama_body({
+        "severity": "low",
+        "summary": "  trailing space  ",
+        "root_cause": "\tlead tab",
+        "fix": "fix it\n",
+    }))
+    out = analyze("err", bot_name="b", ollama_url="http://x", model="m")
+    assert out["summary"] == "trailing space"
+    assert out["root_cause"] == "lead tab"
+    assert out["fix"] == "fix it"
+
+
+# --- analyze_message: empty message text is handled gracefully --------------
+
+def test_analyze_message_empty_text(monkeypatch):
+    """analyze_message with empty/blank text must not crash."""
+    _patch_urlopen(
+        monkeypatch,
+        body=_ollama_body({"is_error": False, "severity": "low", "summary": ""}),
+    )
+    out = analyze_message("", bot_name="b", ollama_url="http://x", model="m")
+    assert "is_error" in out

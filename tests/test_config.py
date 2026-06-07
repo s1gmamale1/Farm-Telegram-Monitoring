@@ -143,3 +143,16 @@ def test_load_config_reads_given_env_file(tmp_path):
     assert cfg.telegram_bot_token == "999:zzz"
     assert cfg.telegram_chat_id == "42"
     assert cfg.validate() == []
+
+
+def test_panel_rule_defaults(monkeypatch):
+    for k in ("PANEL_RULES_ENABLED", "PANEL_TARGET_ACCOUNTS", "PANEL_OVERLAUNCH_MINUTES",
+              "PANEL_AUTO_DESTRUCTIVE"):
+        monkeypatch.delenv(k, raising=False)
+    from watcherdog.config import Config
+    cfg = Config({})
+    assert cfg.panel_rules_enabled is True
+    assert cfg.panel_target_accounts == 4
+    assert cfg.panel_overlaunch_minutes == 15.0
+    assert cfg.panel_auto_recover is True
+    assert cfg.panel_auto_destructive is False

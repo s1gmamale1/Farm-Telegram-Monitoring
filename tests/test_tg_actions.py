@@ -143,3 +143,144 @@ def test_press_button_no_match_returns_buttons(monkeypatch):
     out = asyncio.run(tg_actions.press_button(FakeClient(), "@p1", "does not exist"))
     assert "error" in out
     assert out["buttons"] == PANEL_LABELS
+
+
+# --- send_command -----------------------------------------------------------
+
+def test_send_command_returns_reply(monkeypatch):
+    """send_command() should send text to the chat and return its reply."""
+
+    async def fake_send(ent, text):
+        return SimpleNamespace(id=200)
+
+    async def fake_await(client, ent, after_id, *, need_buttons=False,
+                         timeout=20.0, poll=1.5):
+        return SimpleNamespace(message="pong")
+
+    monkeypatch.setattr(tg_actions, "_await_reply", fake_await)
+
+    class _Client(FakeClient):
+        async def send_message(self, ent, text):
+            return SimpleNamespace(id=200)
+
+    out = asyncio.run(tg_actions.send_command(_Client(), "@p1", "/status"))
+    assert out["sent"] == "/status"
+    assert out["result"] == "pong"
+
+
+def test_send_command_no_reply_returns_empty(monkeypatch):
+    async def fake_await(client, ent, after_id, **kw):
+        return None
+
+    monkeypatch.setattr(tg_actions, "_await_reply", fake_await)
+
+    class _Client(FakeClient):
+        async def send_message(self, ent, text):
+            return SimpleNamespace(id=201)
+
+    out = asyncio.run(tg_actions.send_command(_Client(), "@p1", "/status"))
+    assert out["result"] == ""
+
+
+# --- press_button: exact-match priority over prefix/substring ---------------
+
+def test_press_button_exact_match_wins_over_prefix(monkeypatch):
+    """When 'Kill' is both an exact match and a prefix, exact must win."""
+    labels = ["Kill", "Kill All CS & Steam"]
+    menu = FakeMenu(labels)
+    _patch_menu(monkeypatch, menu)
+    # Pressing "kill" (lowercase) should match "Kill" exactly, not "Kill All..."
+    out = asyncio.run(tg_actions.press_button(FakeClient(), "@p1", "kill", confirmed=True))
+    assert out.get("pressed", "").lower() == "kill"
+
+
+# --- _labels with no buttons attribute --------------------------------------
+
+def test_labels_with_no_buttons_attr():
+    msg = SimpleNamespace()  # no .buttons attribute
+    assert tg_actions._labels(msg) == []
+
+
+def test_labels_with_none_buttons():
+    msg = SimpleNamespace(buttons=None)
+    assert tg_actions._labels(msg) == []
+
+
+# --- press_button: menu returns None (no /start reply) ----------------------
+
+def test_press_button_when_menu_none_returns_error(monkeypatch):
+    async def none_menu(client, ent, *, timeout=20.0):
+        return None
+
+    monkeypatch.setattr(tg_actions, "_open_menu", none_menu)
+    out = asyncio.run(tg_actions.press_button(FakeClient(), "@p1", "Start selected accounts"))
+    assert "error" in out
+    assert out["error"] == "no /start menu reply"
+
+
+# --- is_destructive: additional DESTRUCTIVE keyword coverage ----------------
+
+@pytest.mark.parametrize("label,expected", [
+    ("power off the machine", True),
+    ("Shut down PC", True),
+    ("S...own PC", True),   # another truncated Shutdown form
+    ("Sel...10 accs", False),
+])
+def test_is_destructive_extra_labels(label, expected):
+    assert tg_actions.is_destructive(label) is expected
+
+
+# --- screenshot: full function coverage ------------------------------------
+
+def _patch_screenshot(monkeypatch, menu, reply=None):
+    async def fake_open_menu(client, ent, *, timeout=20.0):
+        return menu
+
+    async def fake_await_reply(client, ent, after_id, *, need_buttons=False,
+                               timeout=20.0, poll=1.5):
+        return reply
+
+    monkeypatch.setattr(tg_actions, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(tg_actions, "_await_reply", fake_await_reply)
+
+
+def test_screenshot_no_menu_returns_error(monkeypatch):
+    """screenshot() must return an error dict when /start yields no menu."""
+    async def none_menu(client, ent, *, timeout=20.0):
+        return None
+
+    monkeypatch.setattr(tg_actions, "_open_menu", none_menu)
+    out = asyncio.run(tg_actions.screenshot(FakeClient(), "@p1"))
+    assert out.get("error") == "no /start menu reply"
+
+
+def test_screenshot_no_screenshot_button_returns_error(monkeypatch):
+    """When the menu has no Screenshot button, screenshot() must say so."""
+    menu = FakeMenu(["Start selected accounts", "Kill All CS & Steam"])
+    _patch_screenshot(monkeypatch, menu)
+    out = asyncio.run(tg_actions.screenshot(FakeClient(), "@p1"))
+    assert "error" in out
+    assert "Screenshot" in out["error"] or "buttons" in out
+
+
+def test_screenshot_no_reply_returns_error(monkeypatch):
+    """No reply after pressing Screenshot → screenshot() returns an error."""
+    menu = FakeMenu(["Screenshot", "Start selected accounts"])
+    _patch_screenshot(monkeypatch, menu, reply=None)
+    out = asyncio.run(tg_actions.screenshot(FakeClient(), "@p1"))
+    assert out.get("error") == "no screenshot reply"
+
+
+def test_screenshot_reply_without_media_returns_note(monkeypatch, tmp_path):
+    """A reply with no media must return a note about it, not crash."""
+    menu = FakeMenu(["Screenshot", "Start selected accounts"])
+    reply = SimpleNamespace(message="screenshot taken", media=None, id=300)
+    _patch_screenshot(monkeypatch, menu, reply=reply)
+
+    class _Cfg:
+        root = str(tmp_path)
+
+    out = asyncio.run(tg_actions.screenshot(FakeClient(), "@p1", cfg=_Cfg()))
+    assert out.get("downloaded") is None
+    assert "no media" in (out.get("note") or "").lower()
+    assert out.get("caption") == "screenshot taken"

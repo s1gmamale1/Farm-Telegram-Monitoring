@@ -159,6 +159,77 @@ def test_seconds_until_later_wednesday_rolls_to_next_week():
     assert secs == 7 * 24 * 3600 - 60
 
 
+# --- collect_week: activity booster runs AFTER drop stats -------------------
+
+def test_collect_week_runs_activity_booster_after_drop_stats(monkeypatch):
+    """Operator rule: per panel the activity booster fires after drop stats."""
+    import asyncio
+
+    calls = []
+
+    async def fake_stop_farm(client, ent):
+        calls.append(("stop_farm", ent))
+        return True
+
+    async def fake_request_drop_stats(client, ent, **kw):
+        calls.append(("drop_stats", ent))
+        return "312 drops"
+
+    async def fake_run_activity_booster(client, ent):
+        calls.append(("activity_booster", ent))
+        return True
+
+    monkeypatch.setattr(drop_stats, "stop_farm", fake_stop_farm)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", fake_request_drop_stats)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", fake_run_activity_booster)
+
+    panels = [("Panel 1", "ent1"), ("Panel 2", "ent2")]
+    rows = asyncio.run(
+        drop_stats.collect_week(None, Config({}), panels, week="2026-W23", date="2026-06-03")
+    )
+
+    # Two panels, three presses each, in the right order.
+    assert calls == [
+        ("stop_farm", "ent1"), ("drop_stats", "ent1"), ("activity_booster", "ent1"),
+        ("stop_farm", "ent2"), ("drop_stats", "ent2"), ("activity_booster", "ent2"),
+    ]
+    # For each panel, drop_stats must come before its activity_booster.
+    for ent in ("ent1", "ent2"):
+        order = [name for name, e in calls if e == ent]
+        assert order.index("drop_stats") < order.index("activity_booster")
+    assert len(rows) == 2
+
+
+def test_collect_week_dry_run_presses_nothing(monkeypatch):
+    """deliver=False must press NO buttons (not even Kill all) — just dry-run rows."""
+    import asyncio
+
+    calls = []
+
+    async def boom_stop(client, ent):
+        calls.append("stop_farm")
+
+    async def boom_drops(client, ent, **kw):
+        calls.append("drop_stats")
+        return "x"
+
+    async def boom_boost(client, ent):
+        calls.append("activity_booster")
+
+    monkeypatch.setattr(drop_stats, "stop_farm", boom_stop)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", boom_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", boom_boost)
+
+    panels = [("Panel 1", "ent1"), ("Panel 2", "ent2")]
+    rows = asyncio.run(
+        drop_stats.collect_week(None, Config({}), panels, week="2026-W23",
+                                date="2026-06-03", deliver=False)
+    )
+    assert calls == []                       # nothing pressed
+    assert len(rows) == 2
+    assert all(r["notes"] == "dry-run" for r in rows)
+
+
 # --- env bridge + push (drop_sheets stays as-is) ----------------------------
 
 def test_push_to_sheets_not_configured_keeps_buffer(monkeypatch):
@@ -181,3 +252,57 @@ def test_bridge_sheets_env_mirrors_config(monkeypatch, tmp_path):
     assert os.environ["GSHEETS_CREDENTIALS"] == str(creds)
     assert os.environ["GSHEETS_SHEET_ID"] == "sheet-123"
     assert os.environ["GSHEETS_TAB"] == "DropStats"
+
+
+# --- drop_sheets.is_configured edge cases -----------------------------------
+
+from watcherdog import drop_sheets
+
+
+def test_drop_sheets_not_configured_when_no_sheet_id(monkeypatch, tmp_path):
+    creds = tmp_path / "creds.json"
+    creds.write_text("{}")
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(creds))
+    monkeypatch.delenv("GSHEETS_SHEET_ID", raising=False)
+    assert drop_sheets.is_configured() is False
+
+
+def test_drop_sheets_not_configured_when_creds_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(tmp_path / "nonexistent.json"))
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+    assert drop_sheets.is_configured() is False
+
+
+def test_drop_sheets_not_configured_when_creds_empty(monkeypatch):
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", "")
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+    assert drop_sheets.is_configured() is False
+
+
+def test_drop_sheets_append_week_empty_rows_returns_ok():
+    result = drop_sheets.append_week([])
+    assert result == {"ok": True, "written": 0}
+
+
+def test_drop_sheets_append_week_not_configured(monkeypatch):
+    monkeypatch.delenv("GSHEETS_SHEET_ID", raising=False)
+    result = drop_sheets.append_week([{"week": "2026-W23"}])
+    assert result["ok"] is False
+    assert result["reason"] == "not configured"
+
+
+def test_drop_sheets_append_week_no_gspread(monkeypatch, tmp_path):
+    """When gspread is not installed, append_week must return a clean error."""
+    creds = tmp_path / "creds.json"
+    creds.write_text("{}")
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(creds))
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+
+    # Simulate gspread not being installed.
+    def boom(*a, **kw):
+        raise ModuleNotFoundError("No module named 'gspread'")
+
+    monkeypatch.setattr(drop_sheets, "_open_worksheet", boom)
+    result = drop_sheets.append_week([{"week": "2026-W23"}])
+    assert result["ok"] is False
+    assert "gspread" in result["reason"]

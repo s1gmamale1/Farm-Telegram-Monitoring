@@ -37,6 +37,7 @@ farm control panels on command, and posts an hourly health report.
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Developer internals — module-by-module, data/state, debugging. |
 | [docs/OPTIMIZATION_PLAN.md](docs/OPTIMIZATION_PLAN.md) | Why/how the watcher became *script-first, AI-last*. |
 | [docs/hermes/](docs/hermes/) | The agent's own operating guides + the panel "skills" (00–07). |
+| [docs/wiki/](docs/wiki/) | **Obsidian knowledge base** — interlinked notes + a canvas map. Open the vault and start at `Home`. |
 
 ---
 
@@ -262,7 +263,7 @@ drop-stats, stickers, self-improve).
 ```
 
 The suite (`tests/`) covers the router, learned fixes, buttons, fast commands,
-fan-out, progress/resume, and the config — **412 tests** at last count.
+fan-out, progress/resume, and the config — **402 tests** at last count.
 
 ---
 

@@ -159,3 +159,68 @@ def test_failed_step_escalates(tmp_path, monkeypatch):
     assert out["status"] == "failed"
     from watcherdog import daily_report
     assert daily_report.load_entries(cfg.daily_errors_path)[0]["result"] == "failed"
+
+
+# --- format_fixed / format_human --------------------------------------------
+
+def test_format_fixed_includes_bot_and_signature():
+    outcome = {
+        "fix": {"signature": "proxy timeout"},
+        "summary": "Sel...10 accs -> Start selected accounts",
+    }
+    out = auto_fix.format_fixed("SF3", outcome)
+    assert "SF3" in out
+    assert "proxy timeout" in out
+    assert "✅" in out
+
+
+def test_format_fixed_missing_fields_does_not_crash():
+    out = auto_fix.format_fixed("SF1", {"fix": {}, "summary": ""})
+    assert "SF1" in out
+
+
+def test_format_human_includes_bot_and_fix_text():
+    outcome = {"fix": {"signature": "steam guard", "fix": "wait for human"}}
+    out = auto_fix.format_human("SF5", outcome)
+    assert "SF5" in out
+    assert "steam guard" in out
+
+
+def test_format_human_missing_fix_does_not_crash():
+    out = auto_fix.format_human("SF5", {"fix": {}})
+    assert "SF5" in out
+
+
+# --- multi-step: first step OK, second fails --------------------------------
+
+def test_fixed_multi_step_first_ok_second_fails(tmp_path, monkeypatch):
+    results = [
+        {"pressed": "ok", "result": "done"},   # first step succeeds
+        {"error": "no button"},                  # second step fails
+    ]
+    call_idx = [0]
+
+    async def mixed_recorder(client, chat, button, *, confirmed=False, timeout=20.0):
+        r = results[call_idx[0]]
+        call_idx[0] += 1
+        return r
+
+    monkeypatch.setattr(auto_fix.tg_actions, "press_button", mixed_recorder)
+    cfg = _cfg(tmp_path,
+               "## two-step\n- match: two step error\n- type: ai\n"
+               "- action: StepA -> StepB\n")
+    out = _run(auto_fix.try_auto_fix(None, cfg, "SF1", "ERROR: two step error"))
+    assert out["status"] == "failed"
+    assert len(out["results"]) == 2
+
+
+# --- chat=None defaults to bot name -----------------------------------------
+
+def test_chat_defaults_to_bot_when_none(tmp_path, monkeypatch):
+    rec = _Recorder()
+    monkeypatch.setattr(auto_fix.tg_actions, "press_button", rec)
+    cfg = _cfg(tmp_path,
+               "## accs\n- match: no accounts\n- type: ai\n- action: Start selected accounts\n")
+    _run(auto_fix.try_auto_fix(None, cfg, "SF7", "ERROR: no accounts", chat=None))
+    # chat=None -> target should be "SF7" (the bot name).
+    assert all(c["chat"] == "SF7" for c in rec.calls)

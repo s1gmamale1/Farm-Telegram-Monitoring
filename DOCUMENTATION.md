@@ -275,5 +275,5 @@ and the fast commands.
 
 `tests/` (run with `pytest` or `./scripts/run_tests.sh`) covers the router, learned
 fixes, buttons, fast commands, fan-out, progress/resume, the agent loop, and
-config — **412 tests**. `pytest.ini` sets discovery; dev deps in
+config — **402 tests**. `pytest.ini` sets discovery; dev deps in
 `requirements-dev.txt`.

@@ -353,6 +353,20 @@ class Config:
         self.agent_actions_enabled = get(
             "AGENT_ACTIONS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 
+        # --- Deterministic panel monitoring & recovery (panel_rules.py) -------
+        self.panel_rules_enabled = get(
+            "PANEL_RULES_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.panel_target_accounts = int(get("PANEL_TARGET_ACCOUNTS", "4"))
+        self.panel_overlaunch_minutes = float(get("PANEL_OVERLAUNCH_MINUTES", "15"))
+        self.panel_idle_minutes = float(get("PANEL_IDLE_MINUTES", "10"))
+        self.panel_stale_minutes = float(get("PANEL_STALE_MINUTES", "30"))
+        self.panel_action_debounce_seconds = float(get("PANEL_ACTION_DEBOUNCE_SECONDS", "180"))
+        self.panel_auto_recover = get(
+            "PANEL_AUTO_RECOVER", "true").strip().lower() in ("1", "true", "yes")
+        self.panel_auto_destructive = get(
+            "PANEL_AUTO_DESTRUCTIVE", "false").strip().lower() in ("1", "true", "yes")
+        self.panel_settle_seconds = float(get("PANEL_SETTLE_SECONDS", "4"))
+
         # --- Bot interface (the TALKING front-end; bot_interface.py) ----------
         # WatcherDog answers people through a Telegram BOT (logged in over MTProto
         # on the same event loop as the user account). The bot is what humans talk

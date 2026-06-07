@@ -36,6 +36,8 @@ log = logging.getLogger("watcherdog.drop_stats")
 # Button-label prefixes (labels are truncated in Telegram — match by prefix).
 STOP_BUTTONS = ("kill all cs", "kill all", "stop the farm", "stop farm", "stop")
 DROPS_BUTTONS = ("drops stats", "drop stats", "drops")
+# Operator rule: the activity booster must run AFTER drop stats are pulled.
+BOOSTER_BUTTONS = ("run activity booster", "activity booster")
 
 # Wednesday = weekday() 2 (Mon=0). Run at 00:00.
 RUN_WEEKDAY = 2
@@ -293,16 +295,39 @@ async def request_drop_stats(client, ent, *, timeout=25.0):
     return (reply.message or "") if reply else ""
 
 
-async def collect_week(client, cfg, panels, *, week, date=None):
+async def run_activity_booster(client, ent):
+    """Open the panel's menu and press *Run activity booster*. True if pressed.
+
+    Operator rule: this runs AFTER Drop Stats for the same panel.
+    """
+    menu = await _open_menu(client, ent)
+    if menu is None:
+        log.warning("%s: no /start menu — cannot run activity booster",
+                    tg_tools.entity_name(ent))
+        return False
+    pressed = await _press(menu, BOOSTER_BUTTONS)
+    if not pressed:
+        log.warning("%s: no activity booster button found", tg_tools.entity_name(ent))
+    return pressed
+
+
+async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
     """Stop each farm, pull its drops, and return one row per panel.
 
     One slow/dead panel never blocks the rest — failures are logged and that
-    panel still gets a (blank) row marked in its notes.
+    panel still gets a (blank) row marked in its notes. With ``deliver=False``
+    (a dry run) NO buttons are pressed — each panel just gets a 'dry-run' row.
     """
     rows = []
     for name, ent in panels:
         panel = panel_label(name)
         text = ""
+        if not deliver:
+            log.info("[DRY-RUN] %s: would stop farm -> drop stats -> activity booster", panel)
+            parsed = parse_drop_stats("")
+            parsed["notes"] = "dry-run"
+            rows.append(make_row(week, panel, parsed, date=date))
+            continue
         try:
             await stop_farm(client, ent)
         except Exception as exc:  # noqa: BLE001
@@ -311,6 +336,11 @@ async def collect_week(client, cfg, panels, *, week, date=None):
             text = await request_drop_stats(client, ent)
         except Exception as exc:  # noqa: BLE001
             log.warning("%s: drop-stats request failed: %s", panel, exc)
+        # Operator rule: run the activity booster AFTER drop stats for this panel.
+        try:
+            await run_activity_booster(client, ent)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: activity booster failed: %s", panel, exc)
         parsed = parse_drop_stats(text)
         if not text.strip():
             parsed["notes"] = "no reply"
@@ -346,7 +376,8 @@ async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
     panels = await load_panels(client, cfg)
     if not panels:
         log.warning("No panels resolved in folder %r; nothing to collect.", cfg.panels_folder)
-    rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat())
+    rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat(),
+                              deliver=deliver)
 
     path = buffer_path(cfg.drop_stats_dir, week)
     write_buffer(path, week, rows, generated=now.isoformat(timespec="seconds"))

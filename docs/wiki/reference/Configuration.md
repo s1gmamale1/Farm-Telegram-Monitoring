@@ -1,0 +1,164 @@
+---
+title: Configuration
+tags:
+  - watcherdog
+  - reference
+  - config
+updated: 2026-06-06
+status: current
+---
+
+# Configuration
+
+> All ~94 `.env` keys WatcherDog reads, how they are loaded (env wins over file, paths resolved to the project root), and which validator the supported entry point actually enforces.
+
+Part of [[Home]].
+
+`watcherdog/config.py` is the single source of truth for runtime settings. `load_config()` reads the project-root `.env` via `_parse_env_file` (a minimal `KEY=VALUE` parser that ignores blank/`#` lines and strips matching surrounding quotes) and builds a `Config`. Inside `Config.__init__`, a nested `get(key, default)` makes **environment variables override file values**, and `resolve_path()` makes relative paths absolute against `_project_root()` (one level above the package). [[The Monitor Loop]] consumes this `Config`; [[The Agent]], [[The Bot Front-End]], and [[Drop-Stats Pipeline]] all read keys from it. For where the resulting files land, see [[Data and State]].
+
+> [!warning] `validate_watcher()` does NOT need the bot token
+> Three validators return human-readable problem lists. `validate()` checks bot token + chat id; `validate_mtproto()` adds api id/hash; but **`validate_watcher()` — the one `run_watcher.py` uses (exit 1 on any problem) — requires ONLY `telegram_api_id`, `telegram_api_hash`, and `ibo_chat_id`**, deliberately NOT the bot token, because the watcher sends as the user account ([[Two Identities One Process]]). See [[Entry Points]] and [[Running WatcherDog]].
+
+## Telegram identity & connection
+
+| Key | Notes |
+|-----|-------|
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | MTProto app creds. Required by `validate_watcher()`. |
+| `TELEGRAM_SESSION` | Telethon file-session path (default `data/watcher.session`). |
+| `TELEGRAM_SESSION_STRING` | In-memory StringSession alternative. The watcher reuses the telegram-mcp session string when it has no file session of its own (`_resolve_session_string`). |
+| `TELEGRAM_MCP_DIR` | Where the telegram-mcp session lives, for reuse. |
+| `TELEGRAM_BOT_TOKEN` | Bot login. `bot_token` is an **alias** of this (no separate `BOT_TOKEN` key is read). |
+| `TELEGRAM_CHAT_ID` / `TELEGRAM_THREAD_ID` | Default alert chat / forum topic. `hourly_report_chat` and `alert_chat_id` fall back to `telegram_chat_id`. |
+| `IBO_CHAT_ID` | The owner's DM chat the watcher answers. Required by `validate_watcher()`. See [[Commands]]. |
+
+## Watch roster & poll cadence
+
+| Key | Default / notes |
+|-----|-----------------|
+| `WATCH_FOLDER` / `WATCH_FOLDER_ID` | The Telegram folder of farm bots; `load_watch_chats` resolves whichever points to the roster. See [[Roster and Health Scan]]. |
+| `WATCH_CHATS` | Legacy explicit chat list (group-watcher mode). See [[Legacy Modes]]. |
+| `WATCH_POLL_INTERVAL` | Sweep interval, default **120s**. |
+| `MARK_READ_AFTER_READ` | Mark messages read after reading. |
+
+> [!warning] "24 bots" is an environment fact, not code
+> `README.md` and `DOCUMENTATION.md` describe "24 SinFermera bots", but the code is folder-driven — `load_watch_chats` watches whatever `WATCH_FOLDER`/`WATCH_FOLDER_ID` resolves to. The count is not enforced anywhere.
+
+## Triage & severity gating
+
+| Key | Default / notes |
+|-----|-----------------|
+| `OLLAMA_URL` / `OLLAMA_TIMEOUT` | Local triage model endpoint (stdlib HTTP, no SDK). See [[Script-First AI-Last]]. |
+| `OLLAMA_MODEL` | Default `huihui_ai/gemma-4-abliterated:e4b` (config.py:70) — **not surfaced in the docs' config tables**. |
+| `DISABLE_AI` | When true, skips Ollama entirely and synthesizes `{is_error: True, severity: 'high'}` from raw text. The deterministic router still runs. |
+| `ANALYZE_UNKNOWN` | Whether `unknown`-bucket messages are escalated to the analyzer. |
+| `MIN_SEVERITY` | Validated against `SEVERITY_ORDER`; **unknown values coerce to `high`**. Below-threshold incidents are still recorded (`notified=False`). |
+| `DEDUPE_WINDOW` | Repeat-suppression window, default **300s** (checked in `_evaluate_bot` via `IncidentStore.last_seen`). |
+
+## Silence / heartbeat / recurring-error watchdogs
+
+| Key | Notes |
+|-----|-------|
+| `SILENCE_ENABLED`, `SILENCE_THRESHOLD_MINUTES`, `SILENCE_CHECK_INTERVAL_SECONDS` | Silence detection. In the supported path this is **inline in `monitor_once`**, not `HeartbeatMonitor`. See [[Alerts and Heartbeat]]. |
+| `HEARTBEAT_PATH`, `EXPECTED_BOTS`, `QUIET_THRESHOLD_MINUTES` | Used by the legacy `HeartbeatMonitor` and by `roster.classify_status`. |
+| `RECURRING_ERROR_ENABLED` | Gates `_recurring_loop`. |
+| `RECURRING_ERROR_INTERVAL` | Sweep cadence, default **900s**. |
+| `RECURRING_ERROR_WINDOW`, `RECURRING_ERROR_MIN_COUNT` | Alert errors whose hash repeats ≥ `min_count` in the window. |
+| `RECURRING_ERROR_COOLDOWN` | Per-hash cooldown (in-memory in `_recurring_loop`). |
+
+## Agent / model (OpenRouter)
+
+| Key | Default / notes |
+|-----|-----------------|
+| `AGENT_MODEL` | Default `deepseek/deepseek-v4-pro`. The actual model is **always `cfg.agent_model`**, not hard-coded. See accuracy note below. |
+| `AGENT_API_BASE` | OpenRouter / OpenAI-compatible base. |
+| `AGENT_API_KEY` / `OPENROUTER_API_KEY` | Resolved `AGENT_API_KEY` → `OPENROUTER_API_KEY` env → `~/.hermes/.env` via `_hermes_env_value`; the `.env` is never required to hold the key directly. |
+| `AGENT_MAX_STEPS` | Tool-call budget, default **12** (then a forced tools-less final pass). |
+| `AGENT_TIMEOUT`, `AGENT_HISTORY_TURNS`, `AGENT_CHAT_LOG` | Per-request timeout, history depth, transcript path. |
+| `AGENT_ACTIONS_ENABLED` | Master gate: when false the agent and router are read-only. See [[The Agent]]. |
+| `FANOUT_CONCURRENCY` | Sub-agent fan-out `Semaphore` size. |
+
+> [!warning] "deepseek" is configurable, not hard-coded
+> `run_watcher.py` docstring (line 9) and `README.md` (line 95) say the backend is "deepseek via OpenRouter". The actual model is `cfg.agent_model` (the `AGENT_MODEL` key). `deepseek/deepseek-v4-pro` is only the *default*. `DOCUMENTATION.md` and `README.md` even phrase the default differently from each other.
+
+## Bot front-end
+
+| Key | Notes |
+|-----|-------|
+| `BOT_ENABLED` | Start the talking bot in continuous mode. |
+| `BOT_SESSION` | Bot Telethon session file. |
+| `BOT_GROUPS` | Allowed group ids (`allowed_groups`). |
+| `BOT_TOPIC` | Forum-topic confinement. `bot_topic` is taken straight from this key; the in-module `_group_topic` is `None` (unrestricted) when blank (see accuracy note). |
+| `BOT_ANSWER_DMS` | Whether to answer DMs at all. |
+| `BOT_ALERTS` / `BOT_ALERT_USER_ID` | Route proactive alerts through the bot DM (the **preferred** channel). |
+| `BOT_SET_COMMANDS` | Install the BotFather menu via `setMyCommands`. |
+| `BOT_ACTIONS_ENABLED` | Gate on whether any bot turn may ACT. |
+| `BOT_ACTION_USERS` / `BOT_ADMIN_USERS` | Static action users / admins, unioned with live grants. See [[The Bot Front-End]]. |
+| `BOT_ACCESS_PATH` | Runtime grant store, re-read live each turn. See [[Data and State]]. |
+| `BOT_MAX_CONCURRENT` | Per-turn `Semaphore`. |
+| `BOT_PROGRESS_STATUS` | Live status-message editing. |
+| `BOT_TASK_PATH` / `BOT_TASK_MAX_RESUMES` | Task persistence + resume cap. See [[Safe Self-Restart]]. |
+| `ACTION_CARD_TTL` | Inline-button card expiry, default **900s**. See [[Confirm and Action Buttons]]. |
+
+> [!warning] BOT_TOPIC has no fallback to topic 7 in the module
+> `DOCUMENTATION.md` (167-168) / `README.md` (207) imply `BOT_TOPIC` "defaults to" the hourly-report topic id 7. In `bot_interface.py`, `_group_topic` comes straight from `cfg.bot_topic` with **no fallback** — it is `None` (unrestricted) when blank. Any `=7` default lives in `config.py`, not the bot module.
+
+## Self-edit & safe self-restart
+
+| Key | Notes |
+|-----|-------|
+| `BOT_SELF_EDIT_ENABLED` | Enables the agent's EDIT tools. See [[The Agent]]. |
+| `BOT_SELF_RESTART_ENABLED` | **Gate**: `request_restart` returns `{error:...}` immediately if false. See [[Safe Self-Restart]]. |
+
+> [!warning] self_edits_path & watcher_health_path are NOT independently configurable
+> They are derived from `os.path.dirname(self.db_path)` (the `data/` dir). Moving `DB_PATH` moves them too; any `SELF_EDITS_PATH` / `WATCHER_HEALTH_PATH` keys are **ignored**. Defaults: `data/self_edits.json` and `data/watcher_healthy`.
+
+## Reports & schedules
+
+| Key | Default / notes |
+|-----|-----------------|
+| `DAILY_REPORT_TIME` | End-of-day AI-fix rollup time, default **23:59**. |
+| `DAILY_ERRORS_PATH` | The auto-fix jsonl log (`data/hermes/daily_errors.jsonl`). See [[Scheduled Reports]]. |
+| `LEARNED_FIXES_PATH` | The Markdown brain (`data/hermes/learned_fixes.md`). See [[The Learned-Fixes Brain]]. |
+| `HOURLY_REPORT_ENABLED`, `HOURLY_REPORT_CHAT`, `HOURLY_REPORT_TOPIC` | Hourly per-PC status report. |
+| `WEEKLY_DIGEST_ENABLED` | Gates `_weekly_digest_loop`. |
+| `WEEKLY_DIGEST_WEEKDAY` / `WEEKLY_DIGEST_HOUR` | Default **6 (Sunday) / 18:00**. Configurable — the "Sunday evening" in the docs only matches because of these defaults. |
+| `SPECIAL_FORCES_ENABLED` / `SPECIAL_FORCES_CHAT` | The untrusted @-mention group. The agent runs `execute=False` there. See [[The Agent]]. |
+
+## Drop-stats & Google Sheets
+
+| Key | Default / notes |
+|-----|-----------------|
+| `PANELS_FOLDER` | Default `'Panels'`. |
+| `DROP_STATS_DIR` | Default `data/hermes/drop_stats`, resolved under root. |
+| `ACCOUNTS_PER_PANEL` | Skill 4 (config-adjacent). |
+| `STICKER_CHANCE` | Skill 6 sticker probability. |
+| `GSHEETS_CREDENTIALS` | Path to a Google **service-account JSON key** (not an API key). |
+| `GSHEETS_SHEET_ID` | Blank default → "not configured". |
+| `GSHEETS_TAB` | Default `'DropStats'`. |
+
+> [!warning] Sheets settings have two readers
+> `Config` reads `GSHEETS_*` into `cfg.gsheets_*`, but `drop_sheets._cfg()` reads `os.environ` **directly**. They only agree because `drop_stats.push_to_sheets()` → `_bridge_sheets_env()` copies the resolved Config values into the environment first. Calling `drop_sheets.append_week()` outside that path silently ignores Config. `is_configured()` also requires the creds file to actually exist on disk. See [[Drop-Stats Pipeline]].
+
+## Legacy GUI & Hermes-bridge keys
+
+The large `GUI_*` block (`GUI_SEND_ENABLED`, `GUI_ALERT_CHAT`, `GUI_POLL_INTERVAL`, `GUI_UNREAD_ONLY`, `GUI_RUN_LOG`, `GUI_PAUSE_KEYCODE`, …) drives the macOS OCR mode, and `HERMES_*` keys (`HERMES_ENABLED`, `HERMES_BIN`, `HERMES_SESSION`, `HERMES_CHAT_LOG`, …) drive the legacy `hermes` CLI bridge. Both are covered in [[Legacy Modes]]. The legacy log-file loop reads `LOG_DIR`, `DB_PATH`, `OFFSETS_PATH`, `LOG_GLOB`, `POLL_INTERVAL`, `FLUSH_IDLE_SECONDS`.
+
+## Defaulting & fallback rules to remember
+
+> [!tip] Quiet defaulting
+> - `alert_user` falls back to `'me'` (never an unintended contact).
+> - `alert_via` coerces any value other than `user`/`bot` to `user`.
+> - `min_severity` coerces unknown to `high`.
+> - `bot_token` aliases `telegram_bot_token`; `hourly_report_chat` / `alert_chat_id` fall back to `telegram_chat_id`.
+> - `validate()` (used by self-restart pre-flight) runs `python -c "import run_watcher"` with `cwd=root` using `sys.executable`, and reports only the **last 1500 chars** of stderr/stdout — long tracebacks are truncated.
+
+> [!warning] Fresh checkout has no `data/` directory
+> Every `data/*` path above is created at runtime on first write (`os.makedirs`). Doc tables in `DOCUMENTATION.md` that list concrete `data/` paths describe runtime-created files, not files present in a fresh clone. See [[Data and State]].
+
+## See also
+- [[Data and State]] — where each configured path actually writes
+- [[Module Reference]] — which module reads which keys
+- [[The Monitor Loop]] — how `validate_watcher()` gates startup
+- [[Running WatcherDog]] — setting these keys to boot the watcher
+- [[Safe Self-Restart]] — the `BOT_SELF_RESTART_ENABLED` gate and derived paths
+- [[Home]] — the knowledge-base index
