@@ -74,3 +74,48 @@ def test_escalate_removes_from_open(tracker):
     tracker.open("panel", "Bot1", "k", "high", "PC OFF", fixable=False, now=0.0)
     tracker.escalate("k", now=3600.0)
     assert tracker.open_list() == []
+
+
+from watcherdog.incident_tracker import incident_followup_step
+
+
+def _kinds(actions):
+    return [(a["kind"], a["row"]["bot"]) for a in actions]
+
+
+def test_planner_nags_non_fixable_at_interval(tracker):
+    tracker.open("silence", "Bot1", "silence:Bot1", "high", "quiet",
+                 fixable=False, now=0.0)
+    actions = incident_followup_step(tracker, now=900.0,
+                                     followup_interval_s=900,
+                                     giveup_s=3600, max_fix_retries=2)
+    assert _kinds(actions) == [("followup", "Bot1")]
+
+
+def test_planner_refixes_fixable_bot_error_with_budget(tracker):
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1:h", "high", "boom",
+                 fixable=True, raw_excerpt="boom", now=0.0)
+    actions = incident_followup_step(tracker, now=900.0,
+                                     followup_interval_s=900,
+                                     giveup_s=3600, max_fix_retries=2)
+    assert _kinds(actions) == [("refix", "Bot1")]
+
+
+def test_planner_falls_back_to_nag_when_retry_budget_spent(tracker):
+    tracker.open("bot_error", "Bot1", "k", "high", "boom",
+                 fixable=True, now=0.0)
+    tracker.note_fix_attempt("k", "x", now=1.0)
+    tracker.note_fix_attempt("k", "x", now=2.0)   # retries now == 2 == cap
+    actions = incident_followup_step(tracker, now=900.0,
+                                     followup_interval_s=900,
+                                     giveup_s=3600, max_fix_retries=2)
+    assert _kinds(actions) == [("followup", "Bot1")]
+
+
+def test_planner_giveup_wins_over_followup(tracker):
+    tracker.open("bot_error", "Bot1", "k", "high", "boom",
+                 fixable=True, now=0.0)
+    actions = incident_followup_step(tracker, now=3600.0,
+                                     followup_interval_s=900,
+                                     giveup_s=3600, max_fix_retries=2)
+    assert _kinds(actions) == [("giveup", "Bot1")]
