@@ -24,3 +24,12 @@ venv/
 .claude-flow/
 .swarm/
 ruvector.db
+
+# Test caches / coverage (regen-able)
+.coverage
+coverage.json
+.pytest_cache/
+
+# Local editor / MCP config (machine-local)
+.cursor/
+.mcp.json
