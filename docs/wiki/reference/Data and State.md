@@ -23,7 +23,7 @@ WatcherDog keeps almost all of its state under a single `data/` directory (resol
 
 | File (default path) | Owner / config key | Format | Purpose |
 |---|---|---|---|
-| `data/watcher.session` | Telethon (`TELEGRAM_SESSION`) | SQLite (Telethon) | the user account's authorized MTProto session, written by `tools/tg_login.py` |
+| `data/watcher.session` | Telethon (`TELEGRAM_SESSION`) | SQLite (Telethon) | the user account's authorized MTProto session, written by `tools/tg_login.py`; use `tools/tg_login.py --reset-session --legacy-start` when the file exists but `tg_probe.py` reports `NOT_AUTHORIZED` |
 | `data/bot.session` | Telethon (`BOT_SESSION`) | SQLite (Telethon) | the talking bot's own MTProto session ([[The Bot Front-End]]) |
 | `data/watcherdog.db` / `data/incidents.db` | `IncidentStore` (`DB_PATH`) | SQLite | incident history + dedupe + recurring-error grouping |
 | `data/farms.json` | `_farms_cache_path` | JSON | cached watch roster (folder lookup fallback) |
@@ -52,7 +52,7 @@ The user account authorizes once (via `tools/tg_login.py`, see [[Entry Points]])
 3. Otherwise it uses the file session at `TELEGRAM_SESSION` (default `data/watcher.session`).
 
 > [!warning] A corrupt session file is the usual login mystery
-> Symptoms like *"Security error: wrong session ID"*, *"0 bytes read on … expected bytes"*, or no code ever arriving are almost always a **corrupted** `data/watcher.session`, not a Python/network/VPN fault. Move it aside (`mv data/watcher.session data/watcher.session.bak`) and re-run `tools/tg_probe.py`, then `tg_login.py`. See [[Troubleshooting]].
+> Symptoms like *"Security error: wrong session ID"*, *"0 bytes read on … expected bytes"*, or no code ever arriving are usually stale session state, not a Python/network/VPN fault when the handshake works. Run `tools/tg_probe.py`, then `tools/tg_login.py --reset-session --legacy-start`. See [[Troubleshooting]].
 
 ## The incident store (SQLite)
 

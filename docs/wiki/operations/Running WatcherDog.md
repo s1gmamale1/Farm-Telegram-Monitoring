@@ -24,7 +24,7 @@ Part of [[Home]].
 | Step | Command | Why |
 |------|---------|-----|
 | (Optional) probe first | `tools/tg_probe.py` | Non-interactive health check — confirms the MTProto handshake works and whether you're already logged in, **without** touching your phone. Run this if a login ever misbehaves. See [[Entry Points]]. |
-| Authorize the user session | `tools/tg_login.py` | Phone → code → 2FA. The **transparent** login prints the handshake result and *which channel* (App / SMS / Call / Email) the code was sent to, and saves the Telethon session file (`data/watcher.session`). `--print-session` also emits a portable `StringSession`. See [[Entry Points]]. |
+| Authorize the user session | `tools/tg_login.py --reset-session --legacy-start` | Phone → code → 2FA using the original Telethon `client.start()` flow, after moving any stale session file aside. Plain `tools/tg_login.py` remains useful as the transparent diagnostic path: it prints the handshake result and *which channel* (App / SMS / Call / Email) Telegram selected. `--print-session` also emits a portable `StringSession`. See [[Entry Points]]. |
 | Find chat/folder ids | `tools/list_dialogs.py` | Lists groups/channels with ids to populate `WATCH_FOLDER` / the `ALLOWLIST`. |
 | Configure | edit `.env` | ~94 keys; only three things are required for the watcher (below). See [[Configuration]]. |
 
@@ -89,7 +89,7 @@ sequenceDiagram
 `main()` builds three system prompts via `_load_system_prompt` (loading `docs/hermes/` guides — see [[Hermes Skills]]): the default follows `AGENT_ACTIONS_ENABLED`, `bot_system_prompt` is forced read-only, `bot_action_prompt` is forced action-capable. It then opens [[Data and State|IncidentStore]] and runs the loop, closing the store in `finally`.
 
 > [!warning] Exit codes
-> `1` = config validation failed. `2` = Telethon not authorized (run `tools/tg_login.py`; if a login keeps failing, run `tools/tg_probe.py` first to confirm the handshake itself works). `0` = clean (`--once` sweep, or graceful shutdown).
+> `1` = config validation failed. `2` = Telethon not authorized (run `tools/tg_probe.py`; if it says `NOT_AUTHORIZED`, run `tools/tg_login.py --reset-session --legacy-start`). `0` = clean (`--once` sweep, or graceful shutdown).
 
 ## Logs and the health beacon
 

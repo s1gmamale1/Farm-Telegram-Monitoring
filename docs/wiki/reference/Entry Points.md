@@ -72,7 +72,7 @@ Before `run_watcher.py` can connect, the user account needs a session (or it reu
 | Script | Purpose |
 |--------|---------|
 | `tools/tg_probe.py` | **non-interactive health probe** — `connect()` + `is_user_authorized()` only (no phone, no code, nothing sent). Run this **first** to tell a broken handshake from a "just log in" state. See below and [[Troubleshooting]]. |
-| `tools/tg_login.py` | one-time **transparent** interactive Telethon login (phone → code → 2FA); prints the handshake result and which channel the code was sent to; saves the session file. `--print-session` also emits a portable `StringSession`. See below. |
+| `tools/tg_login.py` | one-time interactive Telethon login (phone → code → 2FA). Recommended recovery command: `tools/tg_login.py --reset-session --legacy-start`, which moves stale session files aside and uses the original Telethon `client.start()` flow. Plain `tools/tg_login.py` is the transparent diagnostic flow: it prints the handshake result and which channel Telegram selected. `--print-session` also emits a portable `StringSession`. See below. |
 | `tools/list_dialogs.py` | lists groups/channels with ids to populate `WATCH_FOLDER` / the allow-list |
 | `tools/agent_probe.py` | runs the current `agent.answer()` path and prints (or `--send`) the reply |
 | `tools/simulate_error.py` | writes a fake traceback / ERROR line for the legacy `run.py` pipeline |
@@ -85,15 +85,27 @@ A read-only smoke test that **never touches your phone**. It runs only the MTPro
 | Output | Meaning |
 |--------|---------|
 | `PROBE handshake=OK` then `PROBE result=AUTHORIZED` | connected and the session is logged in — nothing to do |
-| `PROBE handshake=OK` then `PROBE result=NOT_AUTHORIZED` | network/Python are fine; you just need to run `tg_login.py` |
+| `PROBE handshake=OK` then `PROBE result=NOT_AUTHORIZED` | network/Python are fine; run `tg_login.py --reset-session --legacy-start` if the local file session is stale or login codes do not arrive |
 | `PROBE result=HANDSHAKE_FAILED error=…` | the connection itself failed (network / Python / env) — fix that before logging in |
 | `PROBE result=CONFIG_MISSING` | `TELEGRAM_API_ID`/`HASH` not set in `.env` |
 
 It also prints `PROBE python=<version>`. Use it to **separate a network/handshake problem from a login problem** before blaming Python or the network. See [[Troubleshooting]].
 
-### `tools/tg_login.py` — transparent interactive login
+### `tools/tg_login.py` — interactive login
 
-Unlike `client.start()`, this surfaces exactly what Telegram does at each step:
+Recommended recovery command when `tg_probe.py` says `NOT_AUTHORIZED`, or when
+login codes do not arrive:
+
+```bash
+.venv/bin/python tools/tg_login.py --reset-session --legacy-start
+```
+
+`--reset-session` moves stale `data/watcher.session` files aside. `--legacy-start`
+uses Telethon's original `client.start()` login flow, which prompts for phone,
+code, and 2FA password and writes the authorized session file.
+
+Plain `tools/tg_login.py` is the transparent diagnostic path. Unlike
+`client.start()`, it surfaces exactly what Telegram does at each step:
 
 - prints `✅ handshake OK` once connected; **early-exits** if the session is already authorized;
 - sanitizes the phone (`+998 77 …` → `+998770…`, leading `+` and digits only);

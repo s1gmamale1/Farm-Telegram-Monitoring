@@ -20,7 +20,7 @@ This note covers operational failures of [[Running WatcherDog|run_watcher.py]] a
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Exits with code **1**, logs `config: …` lines | `cfg.validate_watcher()` found missing keys | Set `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `ALLOWLIST` (or legacy `IBO_CHAT_ID`) in `.env`. The allow-list error reads *"ALLOWLIST is not set …"*. See [[Configuration]]. |
-| Exits with code **2** | Telethon client not authorized | Run `tools/tg_probe.py` to confirm the handshake works, then `tools/tg_login.py` (phone → code → 2FA). See [[Entry Points]]. |
+| Exits with code **2** | Telethon client not authorized | Run `tools/tg_probe.py` to confirm the handshake works. If it says `NOT_AUTHORIZED`, run `.venv/bin/python tools/tg_login.py --reset-session --legacy-start` (phone → code → 2FA). See [[Entry Points]]. |
 | `No agent API key found` warning, then continues | No `AGENT_API_KEY` / `OPENROUTER_API_KEY` / `~/.hermes/.env` key | Agent can't answer novel questions; deterministic [[The Learned-Fixes Brain|router]] still works. Add a key to enable AI fallback. |
 | `Could not open log file …` on stderr | `gui_run_log` dir unwritable | Logging falls back to stderr only; fix dir permissions. |
 
@@ -32,16 +32,16 @@ This note covers operational failures of [[Running WatcherDog|run_watcher.py]] a
 > [!tip] Probe BEFORE you blame Python / network / VPN
 > Run `tools/tg_probe.py` — it runs only the MTProto handshake + an authorization check, nothing sent to your phone:
 > - `handshake=OK` + `AUTHORIZED` → the connection and login are both fine.
-> - `handshake=OK` + `NOT_AUTHORIZED` → network/Python are fine; just run `tg_login.py`.
+> - `handshake=OK` + `NOT_AUTHORIZED` → network/Python are fine; run `tg_login.py --reset-session --legacy-start` if the file session is stale or code delivery misbehaves.
 > - `HANDSHAKE_FAILED` → it really is the connection (network / Python / env) — fix that first.
 > This separates a network/handshake problem from a "just log in" state in one command. See [[Entry Points]].
 
-> [!warning] "wrong session ID" / "0 bytes read" / no code = a CORRUPT session file
-> Symptoms like *"Security error: wrong session ID"*, *"0 bytes read on … 8 expected bytes"*, or a login where **no code ever arrives** are almost always a **corrupted `data/watcher.session`** — NOT a Python-3.14, network, or VPN fault (the handshake works fine on 3.14). Fix: move it aside and re-probe before changing anything else:
+> [!warning] "wrong session ID" / "0 bytes read" / no code = stale session state
+> Symptoms like *"Security error: wrong session ID"*, *"0 bytes read on … 8 expected bytes"*, or a login where **no code ever arrives** are usually a stale/unauthorized `data/watcher.session` — NOT a Python-3.14, network, or VPN fault when the handshake works. Fix: let the login helper move it aside and use the original Telethon-managed login flow:
 > ```
-> mv data/watcher.session data/watcher.session.bak
-> .venv/bin/python tools/tg_probe.py     # expect handshake=OK, NOT_AUTHORIZED
-> .venv/bin/python tools/tg_login.py     # fresh login
+> .venv/bin/python tools/tg_probe.py
+> .venv/bin/python tools/tg_login.py --reset-session --legacy-start
+> .venv/bin/python run_watcher.py --once --dry-run --verbose
 > ```
 
 > [!warning] No login code arriving (email / flood-wait)

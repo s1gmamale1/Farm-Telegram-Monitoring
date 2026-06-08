@@ -168,8 +168,9 @@ cd ~/Documents/WatcherDogBot
 .venv/bin/python tools/tg_probe.py
 
 # 0b. One-time: authorize the user-account session (phone + login code).
-#     Prints which channel Telegram used for the code and any flood-wait.
-.venv/bin/python tools/tg_login.py
+#     If this machine has a stale/unauthorized session or no code arrives, use
+#     the original Telethon-managed login flow and move the stale file aside:
+.venv/bin/python tools/tg_login.py --reset-session --legacy-start
 
 # 1. Make sure Ollama is up (used to triage farm messages) and a model is pulled
 ollama list
@@ -255,10 +256,11 @@ hard-coded): `STRUCTURE.md` (the account/folder map), `SKILLS.md`, `TOOLS.md`, a
 drop-stats, stickers, self-improve).
 
 ### Tools `tools/`
-`tg_login.py` (authorize the user session — transparent: prints the handshake
-result, the exact channel Telegram used for the login code (App/SMS/Email/Call),
-and any flood-wait; handles 2FA and `--print-session` to emit a portable
-StringSession), `tg_probe.py` (non-interactive MTProto health probe — connects +
+`tg_login.py` (authorize the user session; recommended recovery command:
+`--reset-session --legacy-start`, while plain mode prints the handshake result,
+the exact channel Telegram selected for the login code, and any flood-wait;
+handles 2FA and `--print-session` to emit a portable StringSession),
+`tg_probe.py` (non-interactive MTProto health probe — connects +
 checks authorization only; sends NOTHING to your phone, telling a real
 handshake/network failure apart from a "just need to log in" state),
 `list_dialogs.py` (find chat ids), `agent_probe.py` (ask the agent a question

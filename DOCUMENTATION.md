@@ -241,7 +241,7 @@ and the fast commands.
 | `data/self_edits.json` | Journal of pending self-edits (path + backup) for rollback. |
 | `data/watcher_healthy` | Health beacon the restart supervisor waits on. |
 | `data/farmer_pc_map.json` | `{PC: [bot, ...]}` map used to group the hourly report by PC. |
-| `data/watcher.session` / `data/bot.session` | Telethon sessions (user account / bot). |
+| `data/watcher.session` / `data/bot.session` | Telethon sessions (user account / bot). If `tg_probe.py` says `NOT_AUTHORIZED` or login codes do not arrive, run `tools/tg_login.py --reset-session --legacy-start` to move stale watcher session files aside and use the original Telethon login flow. |
 | `data/gui_run.log` | Activity log (sweeps, detections, alerts). |
 | `data/agent_chat.log` | The live ibo conversation, tail-able. |
 | `<file>.bak.<unixtime>` | Self-edit backups (your undo). |
@@ -253,12 +253,12 @@ and the fast commands.
 1. **"config: … is not set" on startup** — `validate_watcher()` failed. You need
    `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and a non-empty owner allow-list
    (`ALLOWLIST`, or the legacy `IBO_CHAT_ID`).
-2. **`session not authorized`** — run `.venv/bin/python tools/tg_login.py`. To
-   tell a real handshake/network failure apart from a "just need to log in" state
-   without touching your phone, run `.venv/bin/python tools/tg_probe.py` first —
-   it does only `connect()` + `is_user_authorized()` and prints
-   `PROBE handshake=OK` then `AUTHORIZED` / `NOT_AUTHORIZED`, or
-   `PROBE result=HANDSHAKE_FAILED …`.
+2. **`session not authorized`** — run `.venv/bin/python tools/tg_probe.py` first
+   to tell a real handshake/network failure apart from a "just need to log in"
+   state without touching your phone. If it prints `PROBE handshake=OK` then
+   `NOT_AUTHORIZED`, run `.venv/bin/python tools/tg_login.py --reset-session
+   --legacy-start` to move stale session state aside and use the original
+   Telethon-managed login flow.
 3. **ibo questions not answered** — no model key. Set `AGENT_API_KEY` /
    `OPENROUTER_API_KEY` (or put it in `~/.hermes/.env`).
 4. **Bot can't DM alerts** — each owner in `ALLOWLIST` must press **Start** on the

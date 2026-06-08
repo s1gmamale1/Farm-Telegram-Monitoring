@@ -3,7 +3,7 @@ title: Home
 tags:
   - watcherdog
   - moc
-updated: 2026-06-06
+updated: 2026-06-08
 status: current
 ---
 
@@ -32,12 +32,12 @@ flowchart LR
   AGENT --> RESTART["[[Safe Self-Restart]]"]
 ```
 
-## 🚦 Current state (snapshot · 2026-06-06)
+## 🚦 Current state (snapshot · 2026-06-08)
 
-> [!info] This is a **fresh checkout that has never been run.**
-> - There is **no `data/` directory** yet — every runtime path in [[Data and State]] is created on first run.
-> - A `.env` exists (you created it) but is **secret and never read** by this vault. See [[Configuration]] for the ~94 keys.
-> - The codebase is the **script-first MTProto watcher** (`run_watcher.py`). The GUI/OCR and log-tailer paths are [[Legacy Modes|legacy]].
+> [!info] Current verified login/run state
+> - `tools/tg_login.py --reset-session --legacy-start` restored the original Telethon-managed phone → code → 2FA login flow and successfully authorized the user session.
+> - `run_watcher.py --once --dry-run --verbose` completed a Telethon sweep after login; observed result: `Sweep: 24 chats, 12 healthy`.
+> - The codebase remains the **script-first MTProto watcher** (`run_watcher.py`). The GUI/OCR and log-tailer paths are [[Legacy Modes|legacy]].
 
 > [!warning] Verified doc-vs-code drift (corrected throughout this vault)
 > The hand-written [[README]] / [[DOCUMENTATION]] carry a few stale claims that the deep-dive caught:
@@ -76,7 +76,7 @@ flowchart LR
 - [[Configuration]] — every `.env` key, grouped (incl. the `ALLOWLIST` multi-user allow-list).
 - [[Data and State]] — the runtime files under `data/`.
 - [[Running WatcherDog]] · [[Troubleshooting]] · [[Testing]] · [[Legacy Modes]].
-- **Login & diagnostic tools** — `tools/tg_login.py` (now a transparent one-shot authorizer) and `tools/tg_probe.py` (a non-interactive MTProto handshake/auth health probe that distinguishes a network/Python fault from a just-need-to-log-in state). Full usage lives in [[Running WatcherDog]] and [[Troubleshooting]].
+- **Login & diagnostic tools** — `tools/tg_login.py` (recommended recovery: `--reset-session --legacy-start`; plain mode is the transparent diagnostic authorizer) and `tools/tg_probe.py` (a non-interactive MTProto handshake/auth health probe that distinguishes a network/Python fault from a just-need-to-log-in state). Full usage lives in [[Running WatcherDog]] and [[Troubleshooting]].
 
 ## 🛠️ The agent's own guides (Hermes)
 

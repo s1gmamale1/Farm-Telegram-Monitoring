@@ -100,7 +100,7 @@ Project folder: `~/Documents/WatcherDogBot`
    ```bash
    cd ~/Documents/WatcherDogBot
    .venv/bin/python tools/tg_probe.py        # (optional) connect-only health check
-   .venv/bin/python tools/tg_login.py        # phone number + login code
+   .venv/bin/python tools/tg_login.py --reset-session --legacy-start
    ```
    `tg_probe.py` is **non-interactive**: it runs only the MTProto handshake +
    an authorization check (no phone, no code, nothing sent to your phone) and
@@ -108,11 +108,14 @@ Project folder: `~/Documents/WatcherDogBot`
    `PROBE result=HANDSHAKE_FAILED …` — so you can tell a network/Python problem
    apart from a "just need to log in" state before touching the phone.
 
-   `tg_login.py` is **transparent**: it prints the handshake result, **which
-   channel** Telegram sent the login code through (App / SMS / Email / Call), and
-   any flood-wait timer; it handles 2FA, sanitizes the phone (spaces ok), and
-   exits early if already authorized. Add `--print-session` to also emit a
-   portable `StringSession` (KEEP SECRET) for reuse on another machine.
+   `tg_login.py --legacy-start` uses the original Telethon `client.start()`
+   login flow (the path that worked reliably in testing). `--reset-session`
+   moves a stale `data/watcher.session` aside first; this is the right fix when
+   the probe says `NOT_AUTHORIZED` and no code arrives. Plain `tg_login.py`
+   keeps the transparent diagnostic flow: it prints the handshake result, which
+   channel Telegram selected (App / SMS / Email / Call), and any flood-wait.
+   Add `--print-session` to also emit a portable `StringSession` (KEEP SECRET)
+   for reuse on another machine.
 
    *Skip-able:* if you don't log in, the watcher reuses the `telegram-mcp`
    session string automatically — convenient, but don't hammer the MCP at the
@@ -209,7 +212,8 @@ launchctl load ~/Library/LaunchAgents/com.watcherdog.telegram.plist
 
 | Symptom | Fix |
 |---|---|
-| `session not authorized` | Run `.venv/bin/python tools/tg_login.py`. (First confirm the handshake itself works — `tg_probe.py` — vs. a real network/Python failure.) |
+| `session not authorized` | Run `.venv/bin/python tools/tg_probe.py`; if it says `NOT_AUTHORIZED`, run `.venv/bin/python tools/tg_login.py --reset-session --legacy-start`. |
+| Login says app/email/SMS code sent but no code arrives | Stale unauthorized `data/watcher.session`, or Telegram selected a channel unavailable to this client. Use `.venv/bin/python tools/tg_login.py --reset-session --legacy-start`, then verify with `.venv/bin/python run_watcher.py --once --dry-run --verbose`. |
 | `ALLOWLIST is not set` | Put one or more owners (numeric ids or `@usernames`, comma-separated) in `ALLOWLIST` in `.env`. The legacy `IBO_CHAT_ID` key also works. |
 | ibo questions not answered | No model key — set `OPENROUTER_API_KEY` (or `AGENT_API_KEY`). |
 | `folder 'Farms' not found` | Check the folder name/`WATCH_FOLDER_ID`; see `list_folders`. |
