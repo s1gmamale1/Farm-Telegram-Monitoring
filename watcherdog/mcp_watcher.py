@@ -366,14 +366,21 @@ async def _panel_responds(client, target_ref, cfg):
     return not menu.get("error")
 
 
-def _open_panel_incident(state, name, summary):
+def _open_panel_incident(state, name, summary, now=None):
     """Register a panel cold-case (needs-PC) as an open incident so the follow-up
     loop nags until power-on. The panel path already sends its own Fixed/Not
-    report, so the tracker stays silent on open/resolve. Inert when disabled."""
+    report, so the tracker stays silent on open/resolve. Inert when disabled.
+
+    One incident per panel EPISODE: the key is just ``panel:{name}`` (no cold-case
+    type), so a second cold-case type within the same episode won't refresh the
+    summary. That's fine — once a cold case is reported the panel path latches
+    ``coldcase_reported`` and returns early, so a second type can't fire this
+    episode anyway; the next episode starts only after a recovery resolves this row."""
     tracker = state.get("tracker")
     if tracker is None:
         return
-    tracker.open("panel", name, f"panel:{name}", "high", summary, fixable=False)
+    tracker.open("panel", name, f"panel:{name}", "high", summary,
+                 fixable=False, now=now)
 
 
 async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target, seed=False):
@@ -416,7 +423,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         ps.last_probe_ts = None
         tracker = state.get("tracker")
         if tracker is not None:
-            tracker.resolve_by_bot("panel", name, "self_healed")
+            tracker.resolve_by_bot("panel", name, "self_healed", now=now)
 
     if decision.kind == "noop":
         # Recovery: if a recovery episode was in flight and the panel is now
@@ -473,7 +480,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                 # Only a human/power-on fixes it: HIGH alert.
                 await _panel_report_pc_off(state, client, target, name, age,
                                            deliver=deliver, cfg=cfg)
-                _open_panel_incident(state, name, "PC OFF / unreachable — no /start reply")
+                _open_panel_incident(state, name, "PC OFF / unreachable — no /start reply", now=now)
                 log.info("[panel] %s silent AND no /start reply — PC off (HIGH)", name)
             else:
                 # Probing off (or dry-run): can't confirm PC-off, so keep the
@@ -495,7 +502,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                             extra=f" ({ps.recover_attempts} relaunches failed)")
         ps.coldcase_reported = True
         _open_panel_incident(state, name,
-                             f"{ps.episode_issue or 'issue'} — relaunches failed")
+                             f"{ps.episode_issue or 'issue'} — relaunches failed", now=now)
         return "cold-case: attempts exhausted"
 
     # R4 cold-case: a relaunch (select_unfarmed -> start_selected) we already
@@ -510,7 +517,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                                     extra=" (RDP frozen)")
                 ps.r2_attempted_ts = None
                 ps.coldcase_reported = True
-                _open_panel_incident(state, name, "black screen (RDP frozen)")
+                _open_panel_incident(state, name, "black screen (RDP frozen)", now=now)
                 return "R4 cold-case flagged"
 
     if not deliver:
@@ -966,6 +973,51 @@ async def _recurring_loop(client, cfg, store, target, state, deliver=True):
             log.exception("recurring-error check failed; continuing")
 
 
+async def _incident_followup_tick(client, cfg, tracker, target, state, now, deliver=True):
+    """ONE follow-up pass: plan this tick's actions and execute them (re-attempt
+    known fixes, nag on still-open incidents, escalate past the give-up window).
+    Split out from the loop so it can be unit-tested with an injected ``now``.
+
+    Dry-run safety: a re-fix presses REAL Telegram buttons (auto_fix has no
+    internal dry-run guard), so it only runs when ``deliver`` is True. Under a dry
+    run the refix degrades to a plain nag — no button press, no fix attempt recorded.
+    """
+    actions = incident_followup_step(
+        tracker, now,
+        followup_interval_s=cfg.incident_followup_interval,
+        giveup_s=cfg.incident_giveup_seconds,
+        max_fix_retries=cfg.incident_max_fix_retries)
+    for act in actions:
+        row = act["row"]
+        bot, key = row["bot"], row["key"]
+        elapsed = now - row["opened_ts"]
+        if act["kind"] == "giveup":
+            needs_pc = row["source"] == "panel"
+            await _alert(state, client, target,
+                         format_incident_escalated(
+                             bot, row["summary"], elapsed, needs_pc=needs_pc),
+                         deliver, cfg=cfg)
+            tracker.escalate(key, now=now)
+            log.info("ESCALATED %s after %.0fs", bot, elapsed)
+            continue
+        # Only press real buttons when actually delivering; a dry run nags only.
+        did_refix = act["kind"] == "refix" and deliver
+        if did_refix:
+            try:
+                outcome = await auto_fix.try_auto_fix(
+                    client, cfg, bot, row["raw_excerpt"] or row["summary"])
+            except Exception:  # noqa: BLE001
+                log.exception("incident re-fix raised for %s", bot)
+                outcome = None
+            tracker.note_fix_attempt(
+                key, (outcome or {}).get("status") or "retry")
+        await _alert(state, client, target,
+                     format_incident_followup(
+                         bot, row["summary"], elapsed, retrying=did_refix),
+                     deliver, cfg=cfg)
+        tracker.mark_followed_up(key, now=now)
+
+
 async def _incident_followup_loop(client, cfg, tracker, target, state, deliver=True):
     """Periodically re-attempt known fixes, nag on still-open incidents, and
     escalate after the give-up window. Mirrors _recurring_loop: each tick is
@@ -973,40 +1025,8 @@ async def _incident_followup_loop(client, cfg, tracker, target, state, deliver=T
     while True:
         await asyncio.sleep(cfg.incident_followup_interval)
         try:
-            now = time.time()
-            actions = incident_followup_step(
-                tracker, now,
-                followup_interval_s=cfg.incident_followup_interval,
-                giveup_s=cfg.incident_giveup_seconds,
-                max_fix_retries=cfg.incident_max_fix_retries)
-            for act in actions:
-                row = act["row"]
-                bot, key = row["bot"], row["key"]
-                elapsed = now - row["opened_ts"]
-                if act["kind"] == "giveup":
-                    needs_pc = row["source"] == "panel"
-                    await _alert(state, client, target,
-                                 format_incident_escalated(
-                                     bot, row["summary"], elapsed, needs_pc=needs_pc),
-                                 deliver, cfg=cfg)
-                    tracker.escalate(key, now=now)
-                    log.info("ESCALATED %s after %.0fs", bot, elapsed)
-                    continue
-                if act["kind"] == "refix":
-                    try:
-                        outcome = await auto_fix.try_auto_fix(
-                            client, cfg, bot, row["raw_excerpt"] or row["summary"])
-                    except Exception:  # noqa: BLE001
-                        log.exception("incident re-fix raised for %s", bot)
-                        outcome = None
-                    tracker.note_fix_attempt(
-                        key, (outcome or {}).get("status") or "retry")
-                await _alert(state, client, target,
-                             format_incident_followup(
-                                 bot, row["summary"], elapsed,
-                                 retrying=(act["kind"] == "refix")),
-                             deliver, cfg=cfg)
-                tracker.mark_followed_up(key, now=now)
+            await _incident_followup_tick(
+                client, cfg, tracker, target, state, time.time(), deliver)
         except Exception:  # noqa: BLE001
             log.exception("incident follow-up check failed; continuing")
 
