@@ -6,7 +6,7 @@ Read/match/append the human-readable Markdown knowledge base at
     ## CS2 frozen on launch
     - match: can't start/launch farm
     - type: ai
-    - fix: Kill All CS & Steam, wait 10s, Sel...10 accs, Start selected accounts
+    - fix: Kill All CS & Steam, wait 10s, Select 4/10 unfarmed, Start selected accounts
     - added: 2026-06-02 by ibo
     - notes: re-screenshot after to confirm 4 accounts up
 

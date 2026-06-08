@@ -184,6 +184,14 @@ def test_ibo_chat_ids_strips_brackets_without_spaces():
     assert cfg.ibo_chat_ids == ["111", "222"]
 
 
+def test_ibo_chat_ids_strips_spaces_inside_brackets():
+    # A space directly inside the brackets (valid JSON pretty-printing) must not
+    # leave whitespace on the refs — " 111"/"222 " would fail numeric resolution.
+    cfg = Config({"ALLOWLIST": "[ 111 , 222 ]"})
+    assert cfg.ibo_chat_ids == ["111", "222"]
+    assert cfg.ibo_chat_id == "111"
+
+
 def test_ibo_chat_ids_strips_surrounding_quotes():
     cfg = Config({"ALLOWLIST": '"111", \'@two\', 333'})
     assert cfg.ibo_chat_ids == ["111", "@two", "333"]

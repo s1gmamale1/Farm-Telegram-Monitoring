@@ -23,7 +23,7 @@ from watcherdog import tg_actions
     ("S..own PC", True),          # truncated Shutdown
     ("Start selected accounts", False),
     ("Screenshot", False),
-    ("Sel...10 accs", False),
+    ("Select 4/10 unfarmed", False),
 ])
 def test_is_destructive(label, expected):
     assert tg_actions.is_destructive(label) is expected
@@ -68,7 +68,7 @@ class FakeClient:
 
 
 PANEL_LABELS = ["Screenshot", "Start selected accounts", "Kill All CS & Steam",
-                "Sel...10 accs", "Reboot PC"]
+                "Select 4/10 unfarmed", "Select first 4/10 accs", "Reboot PC"]
 
 
 def _patch_menu(monkeypatch, menu, reply_text="done"):
@@ -132,8 +132,10 @@ def test_press_button_matches_prefix_and_presses(monkeypatch):
 def test_press_button_substring_match(monkeypatch):
     menu = FakeMenu(PANEL_LABELS)
     _patch_menu(monkeypatch, menu)
-    out = asyncio.run(tg_actions.press_button(FakeClient(), "@p1", "10 accs"))
-    assert out["pressed"] == "Sel...10 accs"
+    # the "unfarmed" discriminator must resolve to the canonical button and never
+    # the lookalike "Select first 4/10 accs".
+    out = asyncio.run(tg_actions.press_button(FakeClient(), "@p1", "unfarmed"))
+    assert out["pressed"] == "Select 4/10 unfarmed"
 
 
 def test_press_button_destructive_needs_confirm(monkeypatch):

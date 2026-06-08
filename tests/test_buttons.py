@@ -102,7 +102,12 @@ def test_relaunch_options_shape():
     opts = buttons.relaunch_options()
     keys = [o["key"] for o in opts]
     assert keys == ["relaunch", "screenshot", "skip"]
-    assert "Kill All CS & Steam" in opts[0]["steps"]
+    steps = opts[0]["steps"]
+    assert "Kill All CS & Steam" in steps
+    # the select step must target the canonical UNFARMED batch — never the
+    # forbidden "Select first 4/10 accs" (operator rule).
+    assert any("unfarmed" in s.lower() for s in steps)
+    assert not any("accs" in s.lower() for s in steps)
     assert opts[-1]["steps"] == []  # skip is a no-op
 
 
