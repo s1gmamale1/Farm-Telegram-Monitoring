@@ -34,7 +34,7 @@ Free-text match-search failures are deterministic too: `[SinFermeraN] Can't find
 
 | # | Condition | Action sequence | Notes |
 |---|-----------|-----------------|-------|
-| **R1** | `Launched > 4` sustained **> 15 min** | `Kill all CS & Steam` → `Select 4/10 unfarmed` → `Start selected accounts` | Replaces the unreliable per-PC 5-min relaunch script. Kill-all is less overhead than de-selecting. ⚠ destructive → confirm. |
+| **R1** | `Launched > 4` sustained **> 15 min** | `Kill all CS & Steam` → `Select 4/10 unfarmed` → `Start selected accounts` | Replaces the unreliable per-PC 5-min relaunch script. Kill-all is less overhead than de-selecting. Destructive — **auto-runs by default** (`PANEL_AUTO_DESTRUCTIVE=true`). |
 | **R2** | `Launched < 4` or not `LIVE` | `Select 4/10 unfarmed` → `Start selected accounts` | Restore to exactly 4. |
 | **R3** | `LIVE` but **not farming** (no/stale `Map`+`Score`) | `Make lobbies and search game` | Farm should auto-start but sometimes "sits there". |
 | **R3b** | `Can't find match in X minutes. Changing batch...` | `Screenshot` + alert account names from `/start` | Flags panels whose games may never be found even though the bot keeps speaking. |
@@ -56,11 +56,20 @@ flowchart TD
   D -->|"yes"| R6["per-PC API: relaunch / reboot"]
 ```
 
-> [!warning] Confirm before every destructive step
-> R1's `Kill all` (and any Restart/Reboot/Shutdown) is offered as a one-tap [[Confirm and Action Buttons|confirm button]], never fired blind — same gate the rest of WatcherDog uses.
+> [!info] Autonomous by default; confirm is opt-in
+> With `PANEL_AUTO_DESTRUCTIVE=true` (the default) R1's `Kill all`→relaunch executes autonomously and the bot reports the outcome (see below). Set `PANEL_AUTO_DESTRUCTIVE=false` to instead offer R1 as a one-tap [[Confirm and Action Buttons|confirm button]] that anyone in the group can tap.
 
 > [!tip] Confirm with a Screenshot before acting
 > Mirror the on-PC babysitter and `docs/hermes/skills/02-error-handling.md`: read a `Screenshot` between escalation steps so a destructive action isn't taken on a misread status.
+
+## How a recovery is reported
+
+Each recovery episode produces ONE concise line to the [[Configuration|allow-list]] — not per-sweep chatter:
+
+- `SinFermera13 | over-launch | Fixed ✅` — the panel returned healthy after an action.
+- `SinFermera15 | 0/4 launched | NOT fixed ❌ → needs PC (3 relaunches failed)` — escalated as a cold case.
+
+**Retry-cap → cold case.** A frozen RDP host can't be fixed from Telegram, so the engine never loops forever: after `PANEL_MAX_ATTEMPTS` (default 3) failed Kill→Start cycles it stops acting and escalates the panel as **needs PC**, then stays quiet until it recovers. **R4** (black screenshot) and **R6** (down/stale) escalate immediately via the same one-line format. The per-PC RDP tool (closes/reopens the frozen `wfreerdp` window) is what actually clears these — see R4/R6.
 
 ## See also
 - [[Panel Control Bot]] — the status format + button vocabulary these rules use
