@@ -308,6 +308,29 @@ _ACTION_LABELS = {
 }
 
 
+def _issue_label(decision, status, cfg):
+    """A short human issue tag for the `Panel | Issue | Fixed/Not` report."""
+    tgt = int(getattr(cfg, "panel_target_accounts", 4))
+    acts = decision.actions
+    if decision.cold_case:
+        return "panel/PC down"
+    if "kill_all" in acts:
+        return "over-launch"
+    if "make_lobbies" in acts:
+        return "idle / no match"
+    if "select_unfarmed" in acts or "start_selected" in acts:
+        if status is not None and status.launched is not None:
+            return f"{status.launched}/{tgt} launched"
+        return "not live"
+    return decision.reason
+
+
+async def _panel_report(state, client, target, name, issue, *, fixed, deliver, cfg, extra=""):
+    """Emit ONE concise line: `Panel | Issue | Fixed ✅` or `… | NOT fixed ❌ → needs PC`."""
+    verdict = "Fixed ✅" if fixed else f"NOT fixed ❌ → needs PC{extra}"
+    await _alert(state, client, target, f"{name} | {issue} | {verdict}", deliver, cfg=cfg)
+
+
 async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target):
     """Deterministic per-panel watch/recover (R1-R6). No model. Takes the panel's
     already-fetched latest status (text, date) — no extra read — advances timers,
@@ -343,7 +366,20 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         ps.flag_alerted = False
 
     if decision.kind == "noop":
+        # Recovery: if a recovery episode was in flight and the panel is now
+        # healthy, report it ONCE (Panel | Issue | Fixed ✅) and reset the episode.
+        if getattr(decision, "healthy", False) and ps.recover_attempts > 0:
+            await _panel_report(state, client, target, name, ps.episode_issue or "issue",
+                                fixed=True, deliver=deliver, cfg=cfg)
+            ps.recover_attempts = 0
+            ps.episode_issue = None
+            ps.coldcase_reported = False
         return None
+
+    # Already escalated this episode to a cold case (needs the PC) — stay quiet
+    # and stop the futile Telegram-side loop until the panel recovers.
+    if ps.coldcase_reported:
+        return "cold-case: awaiting PC"
 
     # Debounce: don't re-act on a panel we just acted on within the window.
     if (decision.kind == "sequence" and ps.last_action_ts is not None
@@ -351,24 +387,37 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         return None
 
     if decision.kind == "flag":
-        # Latch: alert ONCE per cold-case episode (until the panel recovers), not
-        # every sweep. Still counts as handled so the AI path is skipped.
+        # R6 cold case (panel/PC down or stale). Report ONCE per episode.
         if not ps.flag_alerted:
-            await _alert(state, client, target, f"🧰 {name}: {decision.reason}", deliver, cfg=cfg)
+            await _panel_report(state, client, target, name,
+                                _issue_label(decision, status, cfg),
+                                fixed=False, deliver=deliver, cfg=cfg)
             ps.flag_alerted = True
         return decision.reason
 
+    # Retry-cap: after N failed recovery attempts in one episode, stop the futile
+    # loop and escalate as a cold case — a frozen RDP host can't be fixed from
+    # Telegram. Report ONCE; then stay quiet (above) until the panel recovers.
+    if ps.recover_attempts >= getattr(cfg, "panel_max_attempts", 3):
+        await _panel_report(state, client, target, name,
+                            ps.episode_issue or _issue_label(decision, status, cfg),
+                            fixed=False, deliver=deliver, cfg=cfg,
+                            extra=f" ({ps.recover_attempts} relaunches failed)")
+        ps.coldcase_reported = True
+        return "cold-case: attempts exhausted"
+
     # R4 cold-case: a relaunch (select_unfarmed -> start_selected) we already
     # tried hasn't taken; after the debounce, screenshot to see if the host is
-    # black (RDP frozen) and, if so, flag for a per-PC restart.
+    # black (RDP frozen) and, if so, escalate for a per-PC restart.
     if decision.actions == ["select_unfarmed", "start_selected"] and ps.r2_attempted_ts:
         if (now - ps.r2_attempted_ts) >= cfg.panel_action_debounce_seconds and deliver:
             shot = await panel_actions.screenshot_black(client, target_ref, cfg)
             if shot["black"]:
-                await _alert(state, client, target,
-                             f"🧰 {name}: black screenshot — RDP host needs restart (per-PC API)",
-                             deliver, cfg=cfg)
+                await _panel_report(state, client, target, name, "black screen",
+                                    fixed=False, deliver=deliver, cfg=cfg,
+                                    extra=" (RDP frozen)")
                 ps.r2_attempted_ts = None
+                ps.coldcase_reported = True
                 return "R4 cold-case flagged"
 
     if not deliver:
@@ -405,6 +454,10 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     ps.last_action_ts = now
     if decision.actions[:2] == ["select_unfarmed", "start_selected"]:
         ps.r2_attempted_ts = now
+    # Track the recovery episode for the Fixed/Not report + the retry-cap.
+    if ps.recover_attempts == 0:
+        ps.episode_issue = _issue_label(decision, status, cfg)
+    ps.recover_attempts += 1
     ok = all(r.get("ok") for r in results)
     daily_report.record(cfg.daily_errors_path, panel=name, error=decision.reason,
                         fix=",".join(decision.actions), result="ok" if ok else "failed")

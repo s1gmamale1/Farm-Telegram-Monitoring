@@ -388,8 +388,12 @@ class Config:
         self.panel_auto_recover = get(
             "PANEL_AUTO_RECOVER", "true").strip().lower() in ("1", "true", "yes")
         self.panel_auto_destructive = get(
-            "PANEL_AUTO_DESTRUCTIVE", "false").strip().lower() in ("1", "true", "yes")
+            "PANEL_AUTO_DESTRUCTIVE", "true").strip().lower() in ("1", "true", "yes")
         self.panel_settle_seconds = float(get("PANEL_SETTLE_SECONDS", "4"))
+        # After this many failed recovery attempts in one episode, stop the futile
+        # Kill→Start loop and escalate the panel as a cold case (needs the per-PC
+        # tool — a frozen RDP host can't be fixed from Telegram).
+        self.panel_max_attempts = int(get("PANEL_MAX_ATTEMPTS", "3"))
 
         # --- Bot interface (the TALKING front-end; bot_interface.py) ----------
         # WatcherDog answers people through a Telegram BOT (logged in over MTProto

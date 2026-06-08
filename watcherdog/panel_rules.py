@@ -18,6 +18,11 @@ class PanelState:
     last_action_ts: float | None = None
     r2_attempted_ts: float | None = None
     flag_alerted: bool = False   # latch: a cold-case flag was already alerted
+    # Recovery-episode tracking: drives the `Panel | Issue | Fixed/Not` report
+    # and the retry-cap that escalates a futile loop to a cold case (needs PC).
+    recover_attempts: int = 0
+    episode_issue: str | None = None
+    coldcase_reported: bool = False
 
 
 @dataclass
@@ -27,6 +32,7 @@ class Decision:
     reason: str = ""
     destructive: bool = False
     cold_case: bool = False
+    healthy: bool = False   # set on the "healthy" noop so the caller can report a fix
 
 
 def _is_live(status):
@@ -90,4 +96,4 @@ def decide(status, status_age, state, now, cfg):
             return Decision("sequence", actions=["make_lobbies"],
                             reason=f"score unchanged >{idle_s/60:.0f}m")
 
-    return Decision("noop", reason="healthy")
+    return Decision("noop", reason="healthy", healthy=True)

@@ -233,7 +233,8 @@ def test_panel_rule_defaults(monkeypatch):
     assert cfg.panel_target_accounts == 4
     assert cfg.panel_overlaunch_minutes == 15.0
     assert cfg.panel_auto_recover is True
-    assert cfg.panel_auto_destructive is False
+    assert cfg.panel_auto_destructive is True   # auto-fix-all: destructive runs autonomously
+    assert cfg.panel_max_attempts == 3
 
 
 def test_allowlist_key_and_aliases(monkeypatch):

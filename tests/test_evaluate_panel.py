@@ -17,6 +17,7 @@ def _cfg(**kw):
                 panel_overlaunch_minutes=15, panel_idle_minutes=10,
                 panel_stale_minutes=30, panel_action_debounce_seconds=180,
                 panel_auto_recover=True, panel_auto_destructive=False,
+                panel_max_attempts=3,
                 panel_settle_seconds=0, daily_errors_path="/tmp/wd_test_panel.jsonl")
     base.update(kw)
     return SimpleNamespace(**base)
@@ -233,3 +234,73 @@ def test_r4_black_screenshot_flags_after_failed_relaunch(monkeypatch):
     assert ran == [["select_unfarmed", "start_selected"]]
     assert n2 == "R4 cold-case flagged"
     assert alerts and ("black" in alerts[0].lower() or "rdp" in alerts[0].lower())
+
+
+def test_destructive_auto_runs_when_enabled(monkeypatch):
+    # Owner chose "auto-fix all": with PANEL_AUTO_DESTRUCTIVE on, the Kill-all
+    # over-launch fix executes autonomously instead of offering a confirm card.
+    ran = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        ran.append(actions)
+        return [{"ok": True} for _ in actions]
+
+    async def fake_card(*a, **k):
+        raise AssertionError("auto-destructive must NOT offer a card")
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mcp_watcher, "_offer_card", fake_card)
+    monkeypatch.setattr(mcp_watcher.daily_report, "record", lambda *a, **k: None)
+    note = _run(_cfg(panel_overlaunch_minutes=0, panel_auto_destructive=True), OVER)
+    assert ran == [["kill_all", "select_unfarmed", "start_selected"]]
+    assert "-> ok" in note
+
+
+def test_fixed_report_on_recovery(monkeypatch):
+    # After a recovery attempt, when the panel returns healthy, emit ONE line.
+    alerts = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        return [{"ok": True} for _ in actions]
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.daily_report, "record", lambda *a, **k: None)
+    cfg = _cfg()
+    _run(cfg, UNDER)                       # attempt R2 (2/4 launched)
+    assert _run(cfg, HEALTHY) is None      # recovered -> Fixed report + reset
+    assert len(alerts) == 1
+    assert alerts[0] == "SinFermera7 | 2/4 launched | Fixed ✅"
+
+
+def test_cold_case_after_max_attempts(monkeypatch):
+    # A frozen-PC loop: after panel_max_attempts failed relaunches, stop the
+    # futile loop and escalate ONCE as a cold case, then stay quiet.
+    alerts = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        return [{"ok": True} for _ in actions]
+
+    async def fake_black(client, panel, cfg):
+        return {"black": False}            # not black -> let attempts climb to the cap
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mcp_watcher.panel_actions, "screenshot_black", fake_black)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.daily_report, "record", lambda *a, **k: None)
+    cfg = _cfg(panel_action_debounce_seconds=0, panel_max_attempts=2)
+    _run(cfg, UNDER)                       # attempt 1
+    _run(cfg, UNDER)                       # attempt 2
+    n3 = _run(cfg, UNDER)                  # cap hit -> cold-case escalation
+    n4 = _run(cfg, UNDER)                  # already escalated -> quiet
+    assert n3 == "cold-case: attempts exhausted"
+    assert n4 == "cold-case: awaiting PC"
+    assert len(alerts) == 1
+    assert "NOT fixed" in alerts[0] and "needs PC" in alerts[0]
+    assert "SinFermera7 | 2/4 launched" in alerts[0]
