@@ -329,3 +329,33 @@ def test_user_client_alerter_send_alert_formats_and_sends(running_loop):
     assert "SinFermera3" in sent[0]
     assert "CRITICAL" in sent[0]
     assert "raw excerpt" in sent[0]
+
+
+def test_incident_resolved_self_healed():
+    from watcherdog.alerter import format_incident_resolved
+    msg = format_incident_resolved("SinFermera19", 180, we_fixed=False)
+    assert "SinFermera19" in msg
+    assert "✅" in msg
+    assert "3 min" in msg
+    assert "on its own" in msg
+
+
+def test_incident_resolved_we_fixed():
+    from watcherdog.alerter import format_incident_resolved
+    msg = format_incident_resolved("SinFermera19", 60, we_fixed=True)
+    assert "WatcherDog" in msg
+
+
+def test_incident_followup_retrying():
+    from watcherdog.alerter import format_incident_followup
+    msg = format_incident_followup("SinFermera19", "launch error", 900, retrying=True)
+    assert "⏳" in msg
+    assert "still unresolved" in msg
+    assert "retry" in msg.lower()
+
+
+def test_incident_escalated_needs_pc():
+    from watcherdog.alerter import format_incident_escalated
+    msg = format_incident_escalated("SinFermera3", "PC OFF", 3600, needs_pc=True)
+    assert "❌" in msg
+    assert "needs PC" in msg

@@ -154,6 +154,34 @@ def format_recurring_alert(group, window_minutes):
     return "\n".join(lines)
 
 
+def format_incident_resolved(bot, elapsed_seconds, *, we_fixed):
+    """One-line closure when an open incident clears."""
+    how = "fixed by WatcherDog" if we_fixed else "recovered on its own"
+    return (f"✅ Resolved — {bot} is healthy again after "
+            f"{_fmt_duration(elapsed_seconds)} ({how}).")
+
+
+def format_incident_followup(bot, summary, elapsed_seconds, *, retrying):
+    """Periodic 'still broken' nag while an incident stays open."""
+    tail = "retrying the fix…" if retrying else "needs attention."
+    head = f"⏳ {bot} — still unresolved after {_fmt_duration(elapsed_seconds)}"
+    s = (summary or "").strip()
+    if s:
+        head += f"\n{s}"
+    return f"{head}\n{tail}"
+
+
+def format_incident_escalated(bot, summary, elapsed_seconds, *, needs_pc=False):
+    """Final give-up message: stop auto-retries and ask for a human."""
+    need = "needs PC (power on / RDP)" if needs_pc else "needs manual attention"
+    head = (f"❌ {bot} — unresolved after {_fmt_duration(elapsed_seconds)}, "
+            f"stopping auto-retries")
+    s = (summary or "").strip()
+    if s:
+        head += f"\n{s}"
+    return f"{head} — {need}."
+
+
 class TelegramAlerter:
     def __init__(self, bot_token, chat_id, thread_id=None, *, attempts=3):
         self.bot_token = bot_token
