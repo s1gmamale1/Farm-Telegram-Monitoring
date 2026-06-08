@@ -23,6 +23,7 @@ class PanelState:
     recover_attempts: int = 0
     episode_issue: str | None = None
     coldcase_reported: bool = False
+    last_probe_ts: float | None = None   # last R6 /start liveness probe (debounce)
 
 
 @dataclass
@@ -40,11 +41,21 @@ class Decision:
 # match; match/playing states are in-game. Anything else we can READ (e.g.
 # "OFFLINE") is treated as not operational and restores to four (R2).
 _OPERATIONAL_STATUS = ("live", "search", "match", "in game", "in-game", "playing")
+# Explicit DOWN markers WIN over any operational keyword — a readable down-state
+# like "Not live" / "Offline (was live)" contains "live" but must still relaunch.
+_DOWN_STATUS = ("offline", "not live", "stopped", "dead", "down", "error",
+                "crash", "frozen", "disconnect", "no connection")
 
 
 def _is_operational(status):
-    """The panel/accounts are up and working (LIVE, searching, or in a match)."""
+    """The panel/accounts are up and working (LIVE, searching, or in a match).
+
+    An explicit down-marker (OFFLINE, "not live", stopped, …) always wins — so a
+    readable down-state still relaunches (R2) even though its text happens to
+    contain a substring like "live"."""
     s = (status.status or "").lower()
+    if any(k in s for k in _DOWN_STATUS):
+        return False
     return status.in_match or any(k in s for k in _OPERATIONAL_STATUS)
 
 

@@ -347,15 +347,18 @@ async def _panel_report_pc_off(state, client, target, name, age, *, deliver, cfg
 async def _panel_responds(client, target_ref, cfg):
     """Active liveness check for a silent panel: /start it and watch for a reply.
 
-    A reply (the menu/status card) proves the panel bot AND its PC are alive —
-    Telegram silence alone is not death (a healthy panel can sit idle between
-    batches). No reply within the timeout means it's genuinely unreachable.
+    Three-state so a watcher-side hiccup never masquerades as a dead PC:
+      * True  — the panel replied (menu/status card): the bot AND its PC are alive.
+      * False — NO reply within the timeout: the app is unreachable → PC off.
+      * None  — the probe ITSELF failed (watcher-side network / FloodWait /
+                resolve error): INCONCLUSIVE, not proof the PC is off. The caller
+                must NOT escalate on None — it retries on a later sweep.
     Non-destructive: /start only opens the menu, it presses nothing."""
     timeout = float(getattr(cfg, "panel_probe_timeout", 15.0))
     try:
         menu = await tg_actions.panel_menu(client, target_ref, timeout=timeout)
     except Exception:  # noqa: BLE001
-        return False
+        return None
     return not menu.get("error")
 
 
@@ -389,9 +392,14 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         panel_rules.observe(status, ps, now, cfg)
     decision = panel_rules.decide(status, age, ps, now, cfg)
 
-    # Clear the cold-case latch as soon as the panel stops flagging.
+    # Clear the cold-case latch as soon as the panel stops flagging. If we had
+    # alerted a PC-off / silent cold case and the panel is speaking again, confirm
+    # it's back ONCE so the owner who powered it on gets closure.
     if decision.kind != "flag":
+        if ps.flag_alerted:
+            await _alert(state, client, target, f"✅ {name} | back online", deliver, cfg=cfg)
         ps.flag_alerted = False
+        ps.last_probe_ts = None
 
     if decision.kind == "noop":
         # Recovery: if a recovery episode was in flight and the panel is now
@@ -427,12 +435,25 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             return decision.reason
         if not ps.flag_alerted:
             probed = deliver and getattr(cfg, "panel_probe_enabled", True)
-            if probed and await _panel_responds(client, target_ref, cfg):
-                log.info("[panel] %s silent but answered /start — alive, not dead", name)
-                return "probe: alive"
             if probed:
-                # Probed and got NOTHING -> the panel app is unreachable -> the PC
-                # is off/crashed. Only a human/power-on can fix it: HIGH alert.
+                # Probe at most once per debounce window so an alive-but-idle
+                # panel isn't /start-ed every sweep and a transient failure isn't
+                # hammered.
+                debounce = getattr(cfg, "panel_action_debounce_seconds", 180)
+                if ps.last_probe_ts is not None and (now - ps.last_probe_ts) < debounce:
+                    return "probe: debounced"
+                ps.last_probe_ts = now
+                alive = await _panel_responds(client, target_ref, cfg)
+                if alive is True:
+                    log.info("[panel] %s silent but answered /start — alive, not dead", name)
+                    return "probe: alive"
+                if alive is None:
+                    # Probe itself failed (watcher-side) — inconclusive, NOT PC-off.
+                    log.warning("[panel] %s probe inconclusive (watcher-side error); "
+                                "will retry next window", name)
+                    return "probe: inconclusive"
+                # alive is False -> genuine no /start reply -> the PC is off/crashed.
+                # Only a human/power-on fixes it: HIGH alert.
                 await _panel_report_pc_off(state, client, target, name, age,
                                            deliver=deliver, cfg=cfg)
                 log.info("[panel] %s silent AND no /start reply — PC off (HIGH)", name)

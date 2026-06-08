@@ -224,6 +224,11 @@ def test_first_sweep_seeds_silence_without_alert_or_probe(monkeypatch):
     assert note is not None                       # but handled (AI path skipped)
 
 
+async def _menu_no_reply(client, panel, *, timeout=20.0):
+    # Probe runs but the panel never answers /start -> confirmed PC off.
+    return {"error": "no /start menu reply", "buttons": []}
+
+
 def test_stale_flags_cold_case(monkeypatch):
     alerts = []
 
@@ -231,6 +236,7 @@ def test_stale_flags_cold_case(monkeypatch):
         alerts.append(text)
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", _menu_no_reply)
     note = _run(_cfg(), HEALTHY, age=3600)   # 1h old > 30m stale
     assert note is not None and ("down" in note.lower() or "stale" in note.lower())
     assert alerts and "SinFermera7" in alerts[0]
@@ -245,6 +251,7 @@ def test_stale_label_reports_silence_duration(monkeypatch):
         alerts.append(text)
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", _menu_no_reply)
     _run(_cfg(), HEALTHY, age=4200)   # 70 min old > 30m stale → dead
     assert alerts and "silent" in alerts[0].lower() and "needs PC" in alerts[0]
     assert "70m" in alerts[0]
@@ -257,6 +264,7 @@ def test_flag_alert_latched_once(monkeypatch):
         alerts.append(text)
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", _menu_no_reply)
     cfg = _cfg()
     n1 = _run(cfg, HEALTHY, age=3600)
     n2 = _run(cfg, HEALTHY, age=3600)   # still stale next sweep
@@ -271,11 +279,55 @@ def test_flag_latch_clears_on_recovery(monkeypatch):
         alerts.append(text)
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", _menu_no_reply)
     cfg = _cfg()
-    _run(cfg, HEALTHY, age=3600)        # stale -> alert #1
-    assert _run(cfg, HEALTHY, age=1) is None   # recovered -> noop, clears latch
-    _run(cfg, HEALTHY, age=3600)        # stale again -> alert #2
-    assert len(alerts) == 2
+    _run(cfg, HEALTHY, age=3600)        # stale + no /start -> PC OFF alert #1
+    assert _run(cfg, HEALTHY, age=1) is None   # recovered -> back-online #2, clears latch
+    _run(cfg, HEALTHY, age=3600)        # stale again -> PC OFF alert #3
+    assert len(alerts) == 3
+    assert "PC OFF" in alerts[0].upper()
+    assert "back online" in alerts[1].lower()
+    assert "PC OFF" in alerts[2].upper()
+
+
+def test_probe_inconclusive_does_not_alert(monkeypatch):
+    # The probe ITSELF failing (watcher-side network/FloodWait) is inconclusive —
+    # it must NOT escalate a false "PC OFF" alert; it retries on a later sweep.
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        raise RuntimeError("FloodWaitError / network blip on the watcher side")
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    note = _run(_cfg(), HEALTHY, age=4200)
+    assert note == "probe: inconclusive"
+    assert alerts == []        # NO false PC-OFF alert on a watcher-side error
+
+
+def test_alive_probe_is_debounced(monkeypatch):
+    # An alive-but-idle panel must be /start-probed at most once per debounce
+    # window, not every sweep.
+    probes = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        pass
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        probes.append(panel)
+        return {"buttons": ["Screenshot"], "accounts": []}   # alive
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    cfg = _cfg()   # debounce 180s
+    n1 = _run(cfg, HEALTHY, age=4200)
+    n2 = _run(cfg, HEALTHY, age=4200)   # within debounce window
+    assert n1 == "probe: alive"
+    assert n2 == "probe: debounced"
+    assert len(probes) == 1             # probed only once
 
 
 def test_overlaunch_alert_wired_to_recovery(monkeypatch):

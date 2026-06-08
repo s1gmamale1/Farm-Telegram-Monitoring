@@ -138,9 +138,11 @@ class ActionRegistry:
 # --- option presets ---------------------------------------------------------
 # The documented recovery sequence (skill 0): Kill everything, re-select the
 # canonical UNFARMED batch (never "Select first 4/10 accs"), then start it.
-# Real panel-button labels, matched case-insensitively (exact/prefix/substring);
-# "unfarmed" is the discriminator that avoids the forbidden "first 4/10 accs".
-RELAUNCH_STEPS = ["Kill All CS & Steam", "Select 4/10 unfarmed", "Start selected accounts"]
+# Matched case-insensitively (exact/prefix/substring) against the live labels.
+# The select step uses the bare "unfarmed" discriminator (same as
+# panel_actions.BTN_SELECT_UNFARMED) — it uniquely picks "Select N/M unfarmed"
+# regardless of the account count and never the forbidden "first N/M accs".
+RELAUNCH_STEPS = ["Kill All CS & Steam", "unfarmed", "Start selected accounts"]
 
 
 def relaunch_options():

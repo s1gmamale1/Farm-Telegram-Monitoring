@@ -71,6 +71,19 @@ def test_searching_under_target_still_relaunches():
     assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).actions == ["select_unfarmed", "start_selected"]
 
 
+def test_down_marker_beats_operational_substring():
+    # A readable down-state like "Not live" contains the substring "live" but must
+    # NOT be read as operational — it relaunches (R2).
+    s = _status(launched=4, status="Not live")
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).actions == ["select_unfarmed", "start_selected"]
+
+
+def test_offline_was_live_relaunches():
+    # "Offline (was live 5m ago)" contains both "offline" and "live"; down wins.
+    s = _status(launched=4, status="Offline (was live 5m ago)")
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).actions == ["select_unfarmed", "start_selected"]
+
+
 def test_r3_idle_score_unchanged():
     s = _status(launched=4, status="LIVE", map="de_nuke", score="[1:0]", in_match=True)
     st = pr.observe(s, pr.PanelState(), 0.0, CFG)
