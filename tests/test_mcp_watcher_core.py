@@ -527,6 +527,116 @@ def test_bot_error_then_healthy_emits_one_resolved(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _incident_followup_tick — the only timer that ACTS on the world
+# ---------------------------------------------------------------------------
+
+def _followup_cfg(tmp_path):
+    return _cfg(tmp_path, {
+        "INCIDENT_FOLLOWUP_INTERVAL": "900",
+        "INCIDENT_GIVEUP_MINUTES": "60",   # 3600s
+        "INCIDENT_MAX_FIX_RETRIES": "2",
+    })
+
+
+def _capture_alerts(monkeypatch):
+    """Replace _alert with a capture stub; return the list it appends to."""
+    msgs = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        msgs.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    return msgs
+
+
+def test_followup_tick_giveup_escalates_panel_needs_pc(tmp_path, monkeypatch):
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "Panel1", "panel:Panel1", "high", "PC OFF",
+                 fixable=False, now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    called = []
+    async def spy_fix(*a, **k):
+        called.append(a)
+        return {"status": "failed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", spy_fix)
+
+    # now == giveup_s (3600) -> the incident is past the give-up window.
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 3600.0, deliver=True))
+
+    assert tracker.open_for_bot("panel", "Panel1") is None   # escalated → off open_list
+    assert tracker.open_list() == []
+    escalated = [m for m in msgs if "❌" in m]
+    assert len(escalated) == 1
+    assert "needs PC" in escalated[0]
+    assert called == []   # give-up never attempts a fix
+    tracker.close()
+
+
+def test_followup_tick_refix_attempts_fix_when_delivering(tmp_path, monkeypatch):
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1:h", "high", "boom",
+                 fixable=True, raw_excerpt="boom raw", now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    called = []
+    async def spy_fix(client_, cfg_, bot, text, **k):
+        called.append((bot, text))
+        return {"status": "failed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", spy_fix)
+
+    # now == followup interval (900), well before give-up (3600).
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 900.0, deliver=True))
+
+    assert len(called) == 1            # the known fix WAS re-attempted
+    assert called[0] == ("Bot1", "boom raw")
+    row = tracker.open_for_bot("bot_error", "Bot1")
+    assert row is not None             # still open (a refix nags, doesn't resolve)
+    assert row["fix_retries"] == 1     # bumped
+    followups = [m for m in msgs if "⏳" in m]
+    assert len(followups) == 1
+    assert "retry" in followups[0].lower()   # retrying=True copy
+    tracker.close()
+
+
+def test_followup_tick_refix_skips_fix_in_dry_run(tmp_path, monkeypatch):
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1:h", "high", "boom",
+                 fixable=True, raw_excerpt="boom raw", now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    called = []
+    async def spy_fix(*a, **k):
+        called.append(a)   # MUST NOT happen under dry-run
+        return {"status": "failed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", spy_fix)
+
+    # Same as above but deliver=False: no real buttons may be pressed.
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 900.0, deliver=False))
+
+    assert called == []                # the I1 fix: no fix attempt in dry-run
+    row = tracker.open_for_bot("bot_error", "Bot1")
+    assert row is not None
+    assert row["fix_retries"] == 0     # not bumped (no attempt recorded)
+    followups = [m for m in msgs if "⏳" in m]
+    assert len(followups) == 1         # still nags
+    tracker.close()
+
+
+# ---------------------------------------------------------------------------
 # flush_daily_report (integration with daily_report module)
 # ---------------------------------------------------------------------------
 
