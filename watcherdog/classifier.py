@@ -25,6 +25,7 @@ _ERROR_PATTERNS = [
     r"\bretry(ing)?\b", r"\brestart(ing|ed)?\b", r"\bstopped\b", r"\bstuck\b",
     r"\binvalid\b", r"\bexpired\b", r"\brate ?limit", r"\bproxy\b.*\b(dead|fail|bad)\b",
     r"\blogin\b.*\bfail", r"\bauth", r"\bnot ?responding\b",
+    r"\b(?:can['’]?t|cannot)\s+find\s+match\s+in\s+\d+\s+minutes?.*changing\s+batch",
     r"⚠", r"❌", r"🛑", r"‼", r"\bwarn(ing)?\b",
 ]
 

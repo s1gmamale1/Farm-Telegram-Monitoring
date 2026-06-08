@@ -306,3 +306,339 @@ def test_drop_sheets_append_week_no_gspread(monkeypatch, tmp_path):
     result = drop_sheets.append_week([{"week": "2026-W23"}])
     assert result["ok"] is False
     assert "gspread" in result["reason"]
+
+
+def test_drop_sheets_append_week_append_rows_failure(monkeypatch, tmp_path):
+    """append_rows raising returns ok=False with the error reason."""
+    creds = tmp_path / "creds.json"
+    creds.write_text("{}")
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(creds))
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+
+    fake_ws = type("WS", (), {"append_rows": lambda *a, **kw: (_ for _ in ()).throw(IOError("quota"))})()
+
+    monkeypatch.setattr(drop_sheets, "_open_worksheet", lambda: fake_ws)
+    result = drop_sheets.append_week([{"week": "2026-W23", "panel": "P1"}])
+    assert result["ok"] is False
+    assert "quota" in result["reason"]
+
+
+def test_drop_sheets_append_week_success(monkeypatch, tmp_path):
+    """append_week returns ok=True with written count when gspread succeeds."""
+    creds = tmp_path / "creds.json"
+    creds.write_text("{}")
+    monkeypatch.setenv("GSHEETS_CREDENTIALS", str(creds))
+    monkeypatch.setenv("GSHEETS_SHEET_ID", "sheet-xyz")
+
+    appended = []
+    fake_ws = type("WS", (), {"append_rows": lambda self, rows, **kw: appended.extend(rows)})()
+    monkeypatch.setattr(drop_sheets, "_open_worksheet", lambda: fake_ws)
+
+    rows = [{"week": "2026-W23", "panel": "Panel#1", "drops": "300"}]
+    result = drop_sheets.append_week(rows)
+    assert result["ok"] is True
+    assert result["written"] == 1
+    assert len(appended) == 1
+
+
+# --- _folder_ref ------------------------------------------------------------
+
+def test_folder_ref_numeric_string_returns_int():
+    assert drop_stats._folder_ref("42") == 42
+
+
+def test_folder_ref_negative_numeric_string():
+    assert drop_stats._folder_ref("-100123") == -100123
+
+
+def test_folder_ref_name_returns_string():
+    assert drop_stats._folder_ref("Farms") == "Farms"
+
+
+def test_folder_ref_already_int():
+    assert drop_stats._folder_ref(7) == 7
+
+
+# --- _await_reply (async) ---------------------------------------------------
+
+def test_await_reply_returns_first_incoming_message():
+    import asyncio
+    from types import SimpleNamespace
+
+    msg = SimpleNamespace(out=False, id=10, buttons=None, message="hello")
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return [msg]
+
+    result = asyncio.run(drop_stats._await_reply(_Client(), "ent", after_id=5, timeout=1.0))
+    assert result is msg
+
+
+def test_await_reply_skips_own_messages():
+    import asyncio
+    from types import SimpleNamespace
+
+    own = SimpleNamespace(out=True, id=10, buttons=None, message="my own")
+    incoming = SimpleNamespace(out=False, id=11, buttons=None, message="reply")
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return [incoming, own]
+
+    result = asyncio.run(drop_stats._await_reply(_Client(), "ent", after_id=5, timeout=1.0))
+    assert result is incoming
+
+
+def test_await_reply_times_out_when_no_message():
+    import asyncio
+    from types import SimpleNamespace
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return []
+
+    result = asyncio.run(drop_stats._await_reply(_Client(), "ent", after_id=None,
+                                                  timeout=0.05, poll=0.01))
+    assert result is None
+
+
+def test_await_reply_skips_stale_messages():
+    import asyncio
+    from types import SimpleNamespace
+
+    stale = SimpleNamespace(out=False, id=3, buttons=None, message="old")
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return [stale]
+
+    result = asyncio.run(drop_stats._await_reply(_Client(), "ent", after_id=5,
+                                                  timeout=0.05, poll=0.01))
+    assert result is None
+
+
+def test_await_reply_need_buttons_skips_buttonless():
+    import asyncio
+    from types import SimpleNamespace
+
+    no_buttons = SimpleNamespace(out=False, id=10, buttons=None, message="no buttons")
+    with_buttons = SimpleNamespace(out=False, id=11, buttons=[[]], message="has buttons")
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return [with_buttons, no_buttons]
+
+    result = asyncio.run(drop_stats._await_reply(_Client(), "ent", after_id=5,
+                                                  need_buttons=True, timeout=1.0))
+    assert result is with_buttons
+
+
+def test_await_reply_client_exception_returns_none():
+    import asyncio
+
+    class _BrokenClient:
+        async def get_messages(self, ent, limit=6):
+            raise OSError("disconnected")
+
+    result = asyncio.run(drop_stats._await_reply(_BrokenClient(), "ent",
+                                                  after_id=None, timeout=0.05, poll=0.01))
+    assert result is None
+
+
+# --- _press (async) ---------------------------------------------------------
+
+def test_press_clicks_matching_button():
+    import asyncio
+    from types import SimpleNamespace
+
+    clicked = []
+
+    class _Btn:
+        text = "Kill All CS"
+        async def click(self): clicked.append(self.text)
+
+    class _Msg:
+        buttons = [[_Btn()]]
+        async def click(self, text=None):
+            clicked.append(text)
+
+    msg = _Msg()
+    result = asyncio.run(drop_stats._press(msg, ("kill all",)))
+    assert result is True
+    assert clicked
+
+
+def test_press_no_matching_button_returns_false():
+    import asyncio
+    from types import SimpleNamespace
+
+    class _Btn:
+        text = "Some Other Button"
+
+    class _Msg:
+        buttons = [[_Btn()]]
+
+    result = asyncio.run(drop_stats._press(_Msg(), ("kill all",)))
+    assert result is False
+
+
+def test_press_no_buttons_returns_false():
+    import asyncio
+    from types import SimpleNamespace
+
+    class _Msg:
+        buttons = None
+
+    result = asyncio.run(drop_stats._press(_Msg(), ("any",)))
+    assert result is False
+
+
+# --- stop_farm / request_drop_stats / run_activity_booster ------------------
+
+def test_stop_farm_returns_false_when_no_menu(monkeypatch):
+    import asyncio
+
+    async def fake_open_menu(client, ent, **kw):
+        return None  # simulates no /start reply
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    result = asyncio.run(drop_stats.stop_farm(None, "ent"))
+    assert result is False
+
+
+def test_stop_farm_returns_false_when_no_stop_button(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]])  # menu exists but no stop button
+
+    async def fake_press(msg, prefixes):
+        return False
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    result = asyncio.run(drop_stats.stop_farm(None, "ent"))
+    assert result is False
+
+
+def test_request_drop_stats_returns_empty_when_no_menu(monkeypatch):
+    import asyncio
+
+    async def fake_open_menu(client, ent, **kw):
+        return None
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    result = asyncio.run(drop_stats.request_drop_stats(None, "ent"))
+    assert result == ""
+
+
+def test_request_drop_stats_returns_empty_when_no_drops_button(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=1)
+
+    async def fake_press(msg, prefixes):
+        return False
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    result = asyncio.run(drop_stats.request_drop_stats(None, "ent"))
+    assert result == ""
+
+
+def test_request_drop_stats_returns_reply_text(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+
+    async def fake_press(msg, prefixes):
+        return True
+
+    async def fake_await_reply(client, ent, after_id, **kw):
+        return SimpleNamespace(message="312 drops · $45")
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    result = asyncio.run(drop_stats.request_drop_stats(None, "ent"))
+    assert "312" in result
+
+
+def test_run_activity_booster_returns_false_when_no_menu(monkeypatch):
+    import asyncio
+
+    async def fake_open_menu(client, ent, **kw):
+        return None
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    result = asyncio.run(drop_stats.run_activity_booster(None, "ent"))
+    assert result is False
+
+
+# --- _send (multi-target) in drop_stats context ----------------------------
+
+def test_send_to_list_delivers_all():
+    import asyncio
+
+    sent = []
+
+    class _Client:
+        async def send_message(self, t, text, **kw):
+            sent.append(t)
+
+    result = asyncio.run(drop_stats._send(_Client(), ["a", "b"], "msg", deliver=True))
+    assert result is True
+    assert sent == ["a", "b"]
+
+
+def test_send_to_empty_list_returns_false():
+    import asyncio
+
+    class _Client:
+        async def send_message(self, *a, **kw): pass
+
+    result = asyncio.run(drop_stats._send(_Client(), [], "msg", deliver=True))
+    assert result is False
+
+
+def test_send_dry_run_does_not_call_send():
+    import asyncio
+
+    sent = []
+
+    class _Client:
+        async def send_message(self, *a, **kw):
+            sent.append(True)
+
+    result = asyncio.run(drop_stats._send(_Client(), "ibo", "msg", deliver=False))
+    assert result is True
+    assert sent == []
+
+
+# --- run_weekly (integration with mocks) ------------------------------------
+
+def test_run_weekly_returns_structure(monkeypatch, tmp_path):
+    import asyncio
+
+    async def fake_load_panels(client, cfg):
+        return [("Panel 1", "ent1")]
+
+    async def fake_collect(client, cfg, panels, *, week, date=None, deliver=True):
+        return [drop_stats.make_row(week, "Panel#1", {"drops": "10"}, date=date)]
+
+    monkeypatch.setattr(drop_stats, "load_panels", fake_load_panels)
+    monkeypatch.setattr(drop_stats, "collect_week", fake_collect)
+    monkeypatch.setattr(drop_stats, "push_to_sheets", lambda cfg, rows: {"ok": False, "reason": "not configured"})
+
+    cfg = Config({"DROP_STATS_DIR": str(tmp_path / "drop_stats")})
+    result = asyncio.run(drop_stats.run_weekly(None, cfg, target=None, deliver=False,
+                                                now=datetime(2026, 6, 3, 0, 0)))
+    assert result["week"] == "2026-W23"
+    assert len(result["rows"]) == 1
+    assert "path" in result

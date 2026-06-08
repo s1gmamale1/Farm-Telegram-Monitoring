@@ -59,6 +59,41 @@ def test_non_status_message_returns_none():
     assert _run(_cfg(), NON_STATUS) is None
 
 
+def test_cant_find_match_requests_screenshot_and_alerts_accounts(monkeypatch):
+    alerts = []
+    screenshots = []
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        return {"accounts": ["lilpro51", "nuggetgoat_irl8574"], "buttons": ["Screenshot"]}
+
+    async def fake_screenshot(client, panel, *, cfg=None, timeout=30.0):
+        screenshots.append(panel)
+        return {"downloaded": "/tmp/shot.png", "caption": "screen"}
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "screenshot", fake_screenshot)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+
+    note = _run(
+        _cfg(),
+        "[SinFermera4] Can't find match in 70 minutes. Changing batch...",
+        name="SinFermera4",
+        target="ibo",
+    )
+
+    assert note == "match-search issue flagged"
+    assert screenshots
+    assert alerts
+    assert "Can't find match" in alerts[0]
+    assert "lilpro51" in alerts[0]
+    assert "nuggetgoat_irl8574" in alerts[0]
+    assert "/tmp/shot.png" in alerts[0]
+
+
 def test_dry_run_does_not_press(monkeypatch):
     called = []
 

@@ -56,6 +56,17 @@ def test_config_defaults():
     assert cfg.disable_ai is False
 
 
+def test_disable_ai_forces_model_helpers_off():
+    cfg = Config({
+        "DISABLE_AI": "true",
+        "ANALYZE_UNKNOWN": "true",
+        "HERMES_ENABLED": "true",
+    })
+    assert cfg.disable_ai is True
+    assert cfg.analyze_unknown is False
+    assert cfg.hermes_enabled is False
+
+
 def test_env_overrides_file_value(monkeypatch):
     monkeypatch.setattr(os, "environ", {"MIN_SEVERITY": "low"})
     cfg = Config({"MIN_SEVERITY": "critical"})

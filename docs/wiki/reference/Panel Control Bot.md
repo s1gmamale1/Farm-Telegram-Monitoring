@@ -53,7 +53,7 @@ HWID: 914139A1...
 | `Accounts:` list + `Total: N` | per-account `id, name, LVL, XP, 🟩` | The launched roster. |
 | `Updated: HH:MM:SS` | time | Freshness of the status. |
 
-Free-text alerts also appear, e.g. `[SinFermera24] All 8 accounts launched!` — an explicit over-launch signal.
+Free-text alerts also appear. `[SinFermera24] All 8 accounts launched!` is an explicit over-launch signal. `[SinFermera4] Can't find match in 70 minutes. Changing batch...` is treated as a deterministic match-search failure: WatcherDog requests `Screenshot` and includes the account names parsed from the `/start` menu/status in the alert.
 
 ## The button menu (what we press)
 

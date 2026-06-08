@@ -57,7 +57,7 @@ flowchart TD
 
 `analyzer.py` is the ONLY one of the four modules that touches a model, and it is Ollama, NOT OpenRouter. It POSTs to `/api/chat` with `format=json`, `temperature=0`, `stream=False` using pure-stdlib `urllib`. `analyze_message(...)` returns `{is_error, severity, summary, root_cause, fix}`; `analyze(...)` is the traceback variant minus `is_error`. Both NEVER raise — `_fallback` returns a high-severity stub when Ollama is unreachable or emits non-JSON, so an error is never silently dropped.
 
-> [!info] `DISABLE_AI=true` bypasses the analyzer entirely, synthesizing `{is_error: True, severity: 'high'}` from the raw text. The deterministic router still runs; Ollama does not. Default model is `huihui_ai/gemma-4-abliterated:e4b` (`config.py:70`).
+> [!info] `DISABLE_AI=true` is fully model-free mode. It bypasses the analyzer, synthesizes `{is_error: True, severity: 'high'}` from the raw text, skips OpenRouter `agent.answer`, disables the legacy Hermes CLI bridge, and forces `ANALYZE_UNKNOWN=false`. The deterministic router still runs; unresolved incidents become plain alerts instead of agent turns. Default Ollama model, when enabled, is `huihui_ai/gemma-4-abliterated:e4b` (`config.py:70`).
 
 ## Tier 2 — the deterministic router
 
@@ -76,7 +76,7 @@ flowchart TD
 
 ## Tier 3 — the last resort
 
-Only on `None`/`failed`/unposted-confirm does control fall through to the OpenRouter agent ([[The Agent]]) via `_incident_via_agent` (or a one-way `format_alert`). The agent fixes the novel error and calls `save_fix` (which is literally `learned_fixes.append_fix`, `agent.py:741`) to write a runnable action — so the NEXT occurrence is handled router-only at Tier 2, never touching the model again. That virtuous loop is the entire payoff of [[The Learned-Fixes Brain]].
+Only on `None`/`failed`/unposted-confirm does control fall through to the OpenRouter agent ([[The Agent]]) via `_incident_via_agent` (or a one-way `format_alert`). When `DISABLE_AI=true`, that fall-through is blocked and the one-way alert path is used. With models enabled, the agent fixes the novel error and calls `save_fix` (which is literally `learned_fixes.append_fix`, `agent.py:741`) to write a runnable action — so the NEXT occurrence is handled router-only at Tier 2, never touching the model again. That virtuous loop is the entire payoff of [[The Learned-Fixes Brain]].
 
 > [!warning] "Once — then it remembers" (README:6-7) and "a known error costs zero tokens" (README:72) are accurate for the OpenRouter agent. But the local Ollama triage still runs per message first (no API tokens, but a model call). `classify()` + `find_fix()` are the only stages that touch no model at all.
 

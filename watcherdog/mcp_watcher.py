@@ -41,7 +41,7 @@ from telethon.utils import get_peer_id
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         daily_report, drop_stats, farm_stats, fast_commands,
                         panel_actions, panel_rules, roster, self_restart,
-                        tg_tools)
+                        tg_actions, tg_tools)
 from watcherdog.alerter import (
     format_alert,
     format_recovery_alert,
@@ -55,6 +55,11 @@ from watcherdog.monitor import error_hash
 from watcherdog.telegram_source import make_client
 
 log = logging.getLogger("watcherdog.mcp")
+
+_CANT_FIND_MATCH_RE = re.compile(
+    r"\b(?:can['’]?t|cannot)\s+find\s+match\s+in\s+(\d+)\s+minutes?.*changing\s+batch",
+    re.IGNORECASE,
+)
 
 
 # --- watch-folder roster (with on-disk cache fallback) ----------------------
@@ -311,6 +316,13 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     skips the AI incident path), else None — including when the latest message
     isn't a status card, so normal error/silence monitoring still runs."""
     target_ref = _panel_target(ent, name)
+    match_wait = _cant_find_match_minutes(text)
+    if match_wait is not None:
+        return await _handle_cant_find_match(
+            client, cfg, name, target_ref, match_wait, deliver=deliver,
+            state=state, target=target)
+    state[name + "::match_search_issue"] = False
+
     now = time.time()
     age = (now - date.timestamp()) if date else None
     status = farm_stats.parse_panel_status(text) if text else None
@@ -400,6 +412,51 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     return f"{decision.actions} -> {'ok' if ok else 'failed'}"
 
 
+def _cant_find_match_minutes(text):
+    m = _CANT_FIND_MATCH_RE.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+async def _handle_cant_find_match(client, cfg, name, target_ref, minutes, *, deliver, state, target):
+    """Flag long match-search failures with screenshot + current account roster."""
+    key = name + "::match_search_issue"
+    if state.get(key):
+        return "match-search issue already flagged"
+
+    menu, shot = {}, {}
+    if deliver:
+        try:
+            menu = await tg_actions.panel_menu(client, target_ref)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("could not read /start menu for %s", name)
+            menu = {"error": str(exc), "accounts": []}
+        try:
+            shot = await tg_actions.screenshot(client, target_ref, cfg=cfg)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("could not request screenshot for %s", name)
+            shot = {"error": str(exc)}
+
+    accounts = menu.get("accounts") or []
+    account_text = ", ".join(accounts) if accounts else "unknown from /start menu"
+    if shot.get("downloaded"):
+        shot_text = shot["downloaded"]
+    elif shot.get("error"):
+        shot_text = f"failed: {shot['error']}"
+    else:
+        shot_text = "requested" if deliver else "would request in live mode"
+
+    await _alert(
+        state, client, target,
+        f"🎯 {name}: Can't find match in {minutes} minutes; changing batch. "
+        f"Requested screenshot. Accounts from /start: {account_text}. "
+        f"Screenshot: {shot_text}",
+        deliver,
+        cfg=cfg,
+    )
+    state[key] = True
+    return "match-search issue flagged"
+
+
 async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
                         deliver=True, ent=None):
     """Classify + (Ollama) analyze one bot's latest message; alert on a real
@@ -480,9 +537,10 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
             # No bot to post the card -> fall through to the AI to ask.
         # status in (None, "failed", unposted needs_confirm) -> fall through to the AI.
 
-    # Skill 2: when the agent can act, route the incident through it (apply a
-    # saved fix or ask ibo). Otherwise fall back to the one-way alert.
-    if cfg.agent_actions_enabled and state.get("system_prompt"):
+    # Skill 2: when the agent can act and model calls are enabled, route the
+    # incident through it. In DISABLE_AI mode, stay deterministic: scripted
+    # fixes above may still run, but unresolved incidents become plain alerts.
+    if (not cfg.disable_ai) and cfg.agent_actions_enabled and state.get("system_prompt"):
         ok = await _incident_via_agent(client, cfg, state, target, bot, severity, text, deliver)
     else:
         ok = await _alert(state, client, target, format_alert(bot, severity, analysis, text), deliver)
@@ -647,6 +705,12 @@ def register_ibo_listener(client, cfg, targets, system_prompt, state, deliver=Tr
         # (e.g. /weekly, /problems, /check 5). Unknown commands fall through to
         # normal conversation so a stray "/" never gets swallowed.
         prompt = commands.expand(text, cfg)
+        if cfg.disable_ai:
+            answer = commands.no_ai_reply(text)
+            await _send(client, target, answer, deliver, cfg=cfg, sticker_ok=True)
+            _append_chat_log(cfg.agent_chat_log, text, answer)
+            log.info("answered ibo with no-AI fallback (%d chars)", len(answer))
+            return
         # ibo is the owner/admin: allow self-edit + access grants so "/improve …"
         # (skill 7) works straight from the owner's DM, gated by the capability.
         can_edit = bool(cfg.bot_self_edit_enabled) and deliver
@@ -761,6 +825,19 @@ def register_special_forces_listener(client, cfg, sf_entity, base_system_prompt,
         except Exception as exc:  # noqa: BLE001
             log.debug("mark-read in Special Forces failed: %s", exc)
         log.info("Special Forces mention → %r", text[:80])
+        if cfg.disable_ai:
+            answer = commands.no_ai_reply(text)
+            if not deliver:
+                log.info("[DRY-RUN] would reply in Special Forces: %s",
+                         " ".join(answer.split())[:160])
+                return
+            try:
+                await event.reply(answer[:4000])
+                log.info("replied in Special Forces with no-AI fallback (%d chars)",
+                         len(answer))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Special Forces reply failed: %s", exc)
+            return
         async with lock:
             async with client.action(sf_entity, "typing"):
                 answer, _ = await agent.answer(
@@ -783,6 +860,9 @@ def register_special_forces_listener(client, cfg, sf_entity, base_system_prompt,
 async def run_weekly_digest(client, cfg, target, system_prompt, state, deliver=True):
     """Compile the /weekly report via the agent and send it to ibo. Read-only —
     this does NOT stop farms (that's the Wednesday drop-stats job)."""
+    if cfg.disable_ai:
+        log.info("weekly digest skipped — DISABLE_AI=true.")
+        return
     if not cfg.agent_api_key:
         log.warning("weekly digest skipped — no agent API key configured.")
         return

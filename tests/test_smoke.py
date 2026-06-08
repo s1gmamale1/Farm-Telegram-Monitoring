@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 import py_compile
 
@@ -32,8 +33,8 @@ def test_python_file_compiles(path):
     py_compile.compile(path, doraise=True)
 
 
-# Modules safe to import on this macOS host (pyobjc + telethon are installed).
-# These cover the whole package plus every entry point.
+# Modules safe to import on this host. GUI/OCR modules are optional legacy code
+# and require PyObjC/Quartz; the supported autonomous watcher path is MTProto.
 _IMPORTABLE = [
     "watcherdog",
     "watcherdog.config",
@@ -54,7 +55,12 @@ _IMPORTABLE = [
     "run_gui",
 ]
 
+_GUI_MODULES = {"watcherdog.gui_mac", "run_gui"}
+_HAS_QUARTZ = importlib.util.find_spec("Quartz") is not None
+
 
 @pytest.mark.parametrize("modname", _IMPORTABLE)
 def test_module_imports(modname):
+    if modname in _GUI_MODULES and not _HAS_QUARTZ:
+        pytest.skip("legacy GUI/OCR mode requires optional PyObjC/Quartz")
     importlib.import_module(modname)

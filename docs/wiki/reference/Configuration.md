@@ -68,8 +68,8 @@ Each ref is a numeric user id (e.g. `1406109190`) or an `@username`. The watcher
 |-----|-----------------|
 | `OLLAMA_URL` / `OLLAMA_TIMEOUT` | Local triage model endpoint (stdlib HTTP, no SDK). See [[Script-First AI-Last]]. |
 | `OLLAMA_MODEL` | Default `huihui_ai/gemma-4-abliterated:e4b` (config.py:70) — **not surfaced in the docs' config tables**. |
-| `DISABLE_AI` | When true, skips Ollama entirely and synthesizes `{is_error: True, severity: 'high'}` from raw text. The deterministic router still runs. |
-| `ANALYZE_UNKNOWN` | Whether `unknown`-bucket messages are escalated to the analyzer. |
+| `DISABLE_AI` | Fully model-free mode. When true, skips Ollama, OpenRouter `agent.answer`, and legacy Hermes CLI calls; unresolved errors become raw high-severity alerts. Deterministic router/actions/cards/screenshots/commands still run. |
+| `ANALYZE_UNKNOWN` | Whether `unknown`-bucket messages are escalated to the analyzer. Forced off when `DISABLE_AI=true`. |
 | `MIN_SEVERITY` | Validated against `SEVERITY_ORDER`; **unknown values coerce to `high`**. Below-threshold incidents are still recorded (`notified=False`). |
 | `DEDUPE_WINDOW` | Repeat-suppression window, default **300s** (checked in `_evaluate_bot` via `IncidentStore.last_seen`). |
 

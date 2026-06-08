@@ -92,6 +92,23 @@ def test_panel_menu_lists_buttons(monkeypatch):
     assert out["menu_message_id"] == 100
 
 
+def test_panel_menu_extracts_account_names(monkeypatch):
+    menu = FakeMenu(PANEL_LABELS)
+    menu.message = (
+        "📊 Panel status:\n"
+        "├ 👥 Launched: 4 accounts\n"
+        "🎮 Accounts:\n"
+        "├54. lilpro51\n"
+        "├52. nuggetgoat_irl8574\n"
+        "└ ✅ Total: 2"
+    )
+    _patch_menu(monkeypatch, menu)
+
+    out = asyncio.run(tg_actions.panel_menu(FakeClient(), "@p1"))
+
+    assert out["accounts"] == ["lilpro51", "nuggetgoat_irl8574"]
+
+
 def test_panel_menu_no_reply(monkeypatch):
     async def none_menu(client, ent, *, timeout=20.0):
         return None

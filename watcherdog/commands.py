@@ -282,6 +282,15 @@ def build_help():
     return "\n".join(lines).rstrip()
 
 
+def no_ai_reply(text=None):
+    """Fallback for free-form/model-backed requests when DISABLE_AI=true."""
+    return (
+        "AI disabled. I can still run deterministic automation and commands: "
+        "/status, /problems, /silent, /fixes, /mode, /help. "
+        "For weekly drop collection, send: drop stats."
+    )
+
+
 # Friendly one-line titles for the live status message, per command. A bare
 # number after a command (e.g. /check 5) is folded into the title.
 _TITLES = {

@@ -54,6 +54,11 @@ def test_error_takes_priority_over_normal_lines():
     assert classify(text) == "error"
 
 
+def test_cant_find_match_changing_batch_is_error():
+    text = "[SinFermera4] Can't find match in 70 minutes. Changing batch..."
+    assert classify(text) == "error"
+
+
 # --- bot_name_from ----------------------------------------------------------
 
 def test_bot_name_extracted_from_tag():

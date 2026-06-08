@@ -48,11 +48,13 @@ class Config:
     """Resolved runtime configuration."""
 
     def __init__(self, values):
-        root = _project_root()
-
         def get(key, default=None):
             # env var wins over file value
             return os.environ.get(key, values.get(key, default))
+
+        # ROOT lets tests (and embedders) point config at a sandbox dir; the
+        # project-root path resolution below honours it. Falls back to the repo.
+        root = get("ROOT") or _project_root()
 
         def resolve_path(p):
             return p if os.path.isabs(p) else os.path.normpath(os.path.join(root, p))
@@ -350,8 +352,12 @@ class Config:
             self.min_severity = "high"
         # Suppress repeats of the same normalized error within this many seconds.
         self.dedupe_window = float(get("DEDUPE_WINDOW", "300"))
-        # If True, skip the Ollama call and just forward raw errors (faster, no AI).
+        # If True, skip all model calls. Deterministic routing, scripted panel
+        # actions, command handlers, screenshots, reports, and alerts still work.
         self.disable_ai = get("DISABLE_AI", "false").strip().lower() in ("1", "true", "yes")
+        if self.disable_ai:
+            self.analyze_unknown = False
+            self.hermes_enabled = False
 
         # --- Hermes skills (skill 2: error handling) ---
         # The learned-fixes "brain" Hermes reads + appends (docs/hermes/skills/

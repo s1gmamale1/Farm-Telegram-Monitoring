@@ -177,6 +177,100 @@ def test_help_lists_every_menu_command():
         assert syntax in out
 
 
+# --- build_jobs -------------------------------------------------------------
+
+def test_build_jobs_no_active_returns_idle():
+    out = commands.build_jobs(cfg=None)
+    assert "No active jobs" in out
+
+
+def test_build_jobs_with_active_task(tmp_path):
+    from watcherdog import task_store
+    from watcherdog.config import Config
+    cfg = Config({"BOT_TASK_PATH": str(tmp_path / "tasks.json")})
+    tid = task_store.start(cfg.bot_task_path, -100, 42, "/weekly")
+    task_store.update(cfg.bot_task_path, tid, "📊 reading bot 3")
+    out = commands.build_jobs(cfg)
+    assert "Active jobs" in out
+    assert "/weekly" in out or "weekly" in out
+
+
+def test_build_jobs_bad_path_returns_idle():
+    from watcherdog.config import Config
+    cfg = Config({"BOT_TASK_PATH": "/nonexistent/path/tasks.json"})
+    out = commands.build_jobs(cfg)
+    assert "No active jobs" in out
+
+
+# --- static_reply for /job --------------------------------------------------
+
+def test_static_reply_job_returns_jobs_output():
+    out = commands.static_reply("/job")
+    assert out is not None
+    assert "job" in out.lower()
+
+
+def test_static_reply_jobs_alias():
+    assert commands.static_reply("/jobs") == commands.static_reply("/job")
+
+
+# --- is_stop ----------------------------------------------------------------
+
+def test_is_stop_stopjobs():
+    assert commands.is_stop("/stopjobs") is True
+
+
+def test_is_stop_stopall():
+    assert commands.is_stop("/stopall") is True
+
+
+def test_is_stop_canceljobs():
+    assert commands.is_stop("/canceljobs") is True
+
+
+def test_is_stop_regular_command():
+    assert commands.is_stop("/weekly") is False
+
+
+def test_is_stop_plain_text():
+    assert commands.is_stop("stop the job") is False
+
+
+# --- friendly_title ---------------------------------------------------------
+
+def test_friendly_title_weekly():
+    assert "Compiling" in commands.friendly_title("/weekly")
+
+
+def test_friendly_title_check_with_arg():
+    title = commands.friendly_title("/check 5")
+    assert "Deep-diving" in title
+    assert "5" in title
+
+
+def test_friendly_title_free_form():
+    title = commands.friendly_title("how are the farms?")
+    assert "Working on" in title
+
+
+def test_friendly_title_unknown_command():
+    title = commands.friendly_title("/frobnicate")
+    assert "frobnicate" in title
+
+
+def test_friendly_title_empty():
+    title = commands.friendly_title("")
+    assert title  # non-empty fallback
+
+
+# --- build_welcome ----------------------------------------------------------
+
+def test_build_welcome_contains_intro_and_menu():
+    out = commands.build_welcome()
+    assert "WatcherDog" in out
+    assert "/weekly" in out
+
+
 # --- names ------------------------------------------------------------------
 
 def test_names_includes_core_and_new_and_help():

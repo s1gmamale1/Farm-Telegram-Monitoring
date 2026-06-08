@@ -127,7 +127,7 @@ The knowledge base is a plain-Markdown file you can read and edit:
 - **Fast slash-commands** (no LLM, instant, free) — `/status`, `/problems`,
   `/silent`, `/fixes`, `/mode`. AI-backed commands (`/weekly`, `/today`, `/top`,
   `/worst`, `/value`, `/check N`, `/bans`, `/compare`, `/whatsnew`) read the
-  folder and summarize. `/help` lists everything.
+  folder and summarize only when `DISABLE_AI=false`. `/help` lists everything.
 - **Live progress + resume** — an action task replies instantly with a status
   message that **edits live** as each step runs, then is replaced by the final
   answer. Tasks are persisted, so a restart mid-task **resumes** it. The bot is
@@ -205,6 +205,7 @@ its default). The keys you'll touch most:
 | `WATCH_POLL_INTERVAL` | `120` | Seconds between proactive sweeps. |
 | `MIN_SEVERITY` | `high` | Alert at/above `low`/`medium`/`high`/`critical`. |
 | `SILENCE_THRESHOLD_MINUTES` | `120` | Alert if a bot is quiet this long. |
+| `DISABLE_AI` | `false` | Fully model-free mode: no Ollama, no OpenRouter agent, no Hermes CLI. Deterministic commands/actions/screenshots/cards/reports/alerts still run. |
 | `OLLAMA_URL` / `OLLAMA_MODEL` | local | Local model used to triage messages. |
 | `AGENT_MODEL` | `deepseek/deepseek-v4-pro` | The conversation/novel-error model (OpenRouter). |
 | `AGENT_API_KEY` / `OPENROUTER_API_KEY` | — | Model key (also read from `~/.hermes/.env`). |

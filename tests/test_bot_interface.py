@@ -223,6 +223,8 @@ def _timed_answer(tracker, delay=0.05):
 def _make_bot(tmp_path, monkeypatch, *, action_users=frozenset()):
     cfg = load_config()
     cfg.bot_task_path = str(tmp_path / "tasks.json")
+    cfg.bot_actions_enabled = True
+    cfg.disable_ai = False
     # state/lock/semaphore are created lazily inside the loop (see _drive).
     bi = bot_interface.BotInterface(cfg, None, "", {}, deliver=True)
     bi.bot = _FakeBot()
@@ -261,6 +263,29 @@ def test_concurrency_capped_by_semaphore(tmp_path, monkeypatch):
     assert tracker["max"] <= 2  # never more than the cap at once
 
 
+def test_disable_ai_bot_turn_does_not_call_agent(tmp_path, monkeypatch):
+    cfg = load_config()
+    cfg.bot_task_path = str(tmp_path / "tasks.json")
+    cfg.bot_actions_enabled = True
+    cfg.disable_ai = True
+    bi = bot_interface.BotInterface(cfg, None, "", {}, deliver=True)
+    bi.bot = _FakeBot()
+    bi.action_user_ids = {777}
+    bi._sem = asyncio.Semaphore(1)
+    called = {"agent": False}
+
+    async def fake_answer(*_a, **_k):
+        called["agent"] = True
+        return "model response", []
+
+    monkeypatch.setattr(bot_interface.agent, "answer", fake_answer)
+    asyncio.run(bi._run_agent_task(chat_id=1, sender_id=777, text="check panel 13",
+                                   is_private=True))
+
+    assert called["agent"] is False
+    assert any("AI disabled" in msg for msg in bi.bot.sent)
+
+
 # --- /stopjobs --------------------------------------------------------------
 
 from watcherdog import task_store  # noqa: E402
@@ -278,6 +303,8 @@ class _FakeEvent:
 def _stopjobs_bot(tmp_path, action_users):
     cfg = load_config()
     cfg.bot_task_path = str(tmp_path / "tasks.json")
+    cfg.bot_actions_enabled = True
+    cfg.disable_ai = False
     bi = bot_interface.BotInterface(cfg, None, "", {}, deliver=True)
     bi.action_user_ids = set(action_users)
     return bi, cfg

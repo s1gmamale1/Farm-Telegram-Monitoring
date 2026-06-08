@@ -59,16 +59,18 @@ sequenceDiagram
 2. `analyze_message` (Ollama, run in an executor) — or a synthetic high-severity dict when `disable_ai`.
 3. Below-`min_severity` errors are recorded un-notified (they still count toward [[Scheduled Reports|recurring-error]] grouping).
 4. Above threshold and outside `dedupe_window` (via `IncidentStore.last_seen`), when `agent_actions_enabled and deliver`, the DETERMINISTIC `auto_fix.try_auto_fix` router runs and dispatches on its status: `suppressed` / `fixed` / `human` / `needs_confirm` (posts a [[Confirm and Action Buttons|confirm card]] via `_offer_card`).
-5. Only on `None`/`failed`/can't-post does it fall through to the LLM — `_incident_via_agent` ([[The Agent]], shared history+lock) when the agent can act, else a one-way `format_alert`.
+5. Only on `None`/`failed`/can't-post does it fall through to the LLM — `_incident_via_agent` ([[The Agent]], shared history+lock) when the agent can act and `DISABLE_AI=false`; otherwise it uses one-way `format_alert`.
 6. Every path ends in `store.record(...)` ([[Data and State|IncidentStore]]).
 
 > [!warning] In the live monitor the Ollama analyzer runs BEFORE `try_auto_fix`, contrary to the doc diagram (DOCUMENTATION §2 shows the router first). `try_auto_fix` is gated on BOTH `cfg.agent_actions_enabled` AND `deliver` — a `--dry-run` never presses real buttons and falls straight through.
+
+> [!info] With `DISABLE_AI=true`, the monitor is fully model-free: no Ollama analyzer, no OpenRouter incident agent, no Special Forces auto-agent reply, and no scheduled weekly agent digest. Deterministic commands, drop-stats, panel recovery, screenshots, confirm cards, hourly reports, daily reports, recurring detection, and alerts continue.
 
 ## Inbound listeners
 
 In continuous mode `run()` registers two `events.NewMessage` handlers, both serialized by the shared `agent_lock`:
 
-- `register_ibo_listener` (`mcp_watcher.py:425`): incoming from **any allowed user** (the `ALLOWLIST` / `cfg.ibo_chat_ids`, not just the primary ibo) → mark-read, then route `drop stats` → `drop_stats.run_weekly` ([[Drop-Stats Pipeline]]), `commands.static_reply`, `commands.fast_parse` → `fast_commands.handle`, else `commands.expand` → `agent.answer`. Each allowed sender is **answered in their own chat**. Conversational replies get `sticker_ok=True`. See the allow-list model in [[Configuration]].
+- `register_ibo_listener` (`mcp_watcher.py:425`): incoming from **any allowed user** (the `ALLOWLIST` / `cfg.ibo_chat_ids`, not just the primary ibo) → mark-read, then route `drop stats` → `drop_stats.run_weekly` ([[Drop-Stats Pipeline]]), `commands.static_reply`, `commands.fast_parse` → `fast_commands.handle`, else `commands.expand` → `agent.answer` when AI is enabled, or a no-AI fallback when `DISABLE_AI=true`. Each allowed sender is **answered in their own chat**. Conversational replies get `sticker_ok=True`. See the allow-list model in [[Configuration]].
 - `register_special_forces_listener` (`mcp_watcher.py:575`): @-mention auto-reply in the UNTRUSTED Special Forces group, agent always `execute=False` with an anti-prompt-injection `_SF_PREAMBLE`. Skipped when the bot already owns that group.
 
 ## Scheduled side-jobs

@@ -641,6 +641,13 @@ class BotInterface:
                 "assume the earlier steps finished) and continue until it's done. "
                 f"Original request:\n{text}")
 
+        if self.cfg.disable_ai:
+            answer = commands.no_ai_reply(text)
+            await self._send_to(chat_id, answer, reply_to=reply_to)
+            log.info("bot → [%s] no-AI fallback (%d chars)",
+                     "DM" if is_private else f"group {chat_id}", len(answer))
+            return
+
         # Persist this as a resumable task only when it actually acts.
         task_id = resume_task.get("id") if resume_task else None
         if can_act and task_id is None:

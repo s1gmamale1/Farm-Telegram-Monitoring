@@ -54,6 +54,8 @@ flowchart TD
 
 Fast and agent turns are tracked in `self._inflight` for cancellation. The full command surface is documented in [[Commands]].
 
+When `DISABLE_AI=true`, `_run_agent_task` does not call `agent.answer`, does not persist a resumable action task, and replies with the deterministic no-AI fallback. Direct/meta/fast commands still work because they are handled before this path.
+
 > [!tip] Topic confinement is two-sided
 > `_message_topic_id` filters INCOMING (wrong-topic messages are ignored) and `_group_reply_to` pins OUTGOING into `_group_topic`. `_group_topic` is parsed from `cfg.bot_topic` and is `None` (no restriction) unless the value is an int-looking string.
 
@@ -62,7 +64,7 @@ Fast and agent turns are tracked in `self._inflight` for cancellation. The full 
 
 ## Running one agent turn — `_run_agent_task`
 
-`_run_agent_task` picks the read-only vs action vs admin prompt, persists the task to the store **only when `can_act`** (read-only Q&A is never persisted), posts a live status message edited via `_progress`, calls `agent.answer(execute, can_grant, can_edit, on_progress=_progress, action_lock=state["agent_lock"])`, then swaps in the final answer and appends `[100% ✅]`. Reads and actions are performed by the injected `user_client`, never the bot. See [[The Agent]] for the tool-calling loop.
+`_run_agent_task` first checks `DISABLE_AI`; in model-free mode it sends the no-AI fallback and stops. Otherwise it picks the read-only vs action vs admin prompt, persists the task to the store **only when `can_act`** (read-only Q&A is never persisted), posts a live status message edited via `_progress`, calls `agent.answer(execute, can_grant, can_edit, on_progress=_progress, action_lock=state["agent_lock"])`, then swaps in the final answer and appends `[100% ✅]`. Reads and actions are performed by the injected `user_client`, never the bot. See [[The Agent]] for the tool-calling loop.
 
 > [!warning] The status header is not "🔧 On it"
 > The live status header is `<friendly_title>\n💭 thinking…` (or `♻️ Resuming — <title>` on a resume), NOT "🔧 On it — <task>". The "🔧 On it…" wording is what `_on_callback` shows on a button tap (`event.answer "On it…"`), not the agent-turn header.

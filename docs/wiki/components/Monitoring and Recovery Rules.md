@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - component
   - concept
-updated: 2026-06-07
+updated: 2026-06-08
 status: current
 ---
 
@@ -28,6 +28,8 @@ Part of [[Home]]. Detection reads the [[Panel Control Bot]] status; actions go t
 
 From each panel's [[Panel Control Bot|status message]]: `Launched: N`, `Status`, `Map`+`Score` (in-match ⇒ farming), `Total`, `Updated` (freshness), plus free-text alerts like `All 8 accounts launched!`.
 
+Free-text match-search failures are deterministic too: `[SinFermeraN] Can't find match in X minutes. Changing batch...` means the panel may be alive but the launched accounts are not finding games. WatcherDog opens `/start`, captures the account names from the panel menu/status, presses `Screenshot`, and alerts ibo with both the account list and screenshot path.
+
 ## The recovery rules
 
 | # | Condition | Action sequence | Notes |
@@ -35,6 +37,7 @@ From each panel's [[Panel Control Bot|status message]]: `Launched: N`, `Status`,
 | **R1** | `Launched > 4` sustained **> 15 min** | `Kill all CS & Steam` → `Select 4/10 unfarmed` → `Start selected accounts` | Replaces the unreliable per-PC 5-min relaunch script. Kill-all is less overhead than de-selecting. ⚠ destructive → confirm. |
 | **R2** | `Launched < 4` or not `LIVE` | `Select 4/10 unfarmed` → `Start selected accounts` | Restore to exactly 4. |
 | **R3** | `LIVE` but **not farming** (no/stale `Map`+`Score`) | `Make lobbies and search game` | Farm should auto-start but sometimes "sits there". |
+| **R3b** | `Can't find match in X minutes. Changing batch...` | `Screenshot` + alert account names from `/start` | Flags panels whose games may never be found even though the bot keeps speaking. |
 | **R4** | Accounts won't launch / inconsistent **and** `Screenshot` is a **black image** | → **per-PC API**: close/restart the self-hosted **RDP-session host** software, then re-verify | The RDP host "screen bugs out"; closing it self-heals. (The bugged script lives in the panel-tools repo — to fix later.) |
 | **R5** | **Wednesday 00:00** (weekly) | `Kill all CS & Steam` (ensure 0 launched) → `Drop Stats` → after it completes, `Run activity booster` | End-of-week stats need 0 launched; auto drop-stats isn't guaranteed 100%. See [[Drop-Stats Pipeline]]. |
 | **R6** | Status stale / bot unreachable (panel or PC down) | → **per-PC API**: relaunch panel exe / RDP reconnect / reboot | Telegram can't reach a dead bot — escalate to the cold-case agent. Ties to [[Alerts and Heartbeat]] silence detection. |

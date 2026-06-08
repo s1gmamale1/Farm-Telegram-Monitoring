@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 
-from watcherdog import tg_tools
+from watcherdog import farm_stats, tg_tools
 from watcherdog.drop_stats import _await_reply, _open_menu
 
 logger = logging.getLogger("watcherdog.tg_actions")
@@ -56,6 +56,11 @@ def _labels(message):
     return out
 
 
+def _account_names(message):
+    status = farm_stats.parse_panel_status(getattr(message, "message", "") or "")
+    return [a.name for a in status.accounts if a.name]
+
+
 async def panel_menu(client, chat, *, timeout=20.0):
     """``/start`` a panel and return its inline-button labels (skill 0).
 
@@ -66,7 +71,7 @@ async def panel_menu(client, chat, *, timeout=20.0):
     if menu is None:
         return {"error": "no /start menu reply", "buttons": []}
     return {"chat": tg_tools.entity_name(ent), "menu_message_id": menu.id,
-            "buttons": _labels(menu)}
+            "buttons": _labels(menu), "accounts": _account_names(menu)}
 
 
 async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
