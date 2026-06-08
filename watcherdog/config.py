@@ -189,6 +189,14 @@ class Config:
         self.recurring_error_min_count = max(2, int(get("RECURRING_ERROR_MIN_COUNT", "3")))
         self.recurring_error_cooldown = float(get("RECURRING_ERROR_COOLDOWN", "3600"))  # 1 h
 
+        # Incident lifecycle tracking: follow up on an open issue until it
+        # resolves (self-heals or we fix it) or is escalated after a give-up
+        # window. See docs/superpowers/specs/2026-06-09-incident-lifecycle-tracking-design.md
+        self.incident_tracking_enabled = get("INCIDENT_TRACKING_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.incident_followup_interval = float(get("INCIDENT_FOLLOWUP_INTERVAL", "900"))   # 15 min: nag + re-attempt tick
+        self.incident_giveup_seconds = float(get("INCIDENT_GIVEUP_MINUTES", "60")) * 60.0   # escalate & stop nagging after this
+        self.incident_max_fix_retries = max(0, int(get("INCIDENT_MAX_FIX_RETRIES", "2")))   # known-fix re-attempts before give-up
+
         # --- Special Forces group (@-mention auto-reply) ---
         # When this account is @-mentioned in the SPECIAL_FORCES_CHAT group, the
         # mention is handed to the agent and its answer is posted back IN the group

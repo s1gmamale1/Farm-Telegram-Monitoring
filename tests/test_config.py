@@ -245,6 +245,18 @@ def test_panel_rule_defaults(monkeypatch):
     assert cfg.panel_max_attempts == 3
 
 
+def test_incident_tracking_defaults(monkeypatch):
+    from watcherdog.config import Config
+    for k in ("INCIDENT_TRACKING_ENABLED", "INCIDENT_FOLLOWUP_INTERVAL",
+              "INCIDENT_GIVEUP_MINUTES", "INCIDENT_MAX_FIX_RETRIES"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = Config({})
+    assert cfg.incident_tracking_enabled is True
+    assert cfg.incident_followup_interval == 900.0
+    assert cfg.incident_giveup_seconds == 3600.0   # 60 min
+    assert cfg.incident_max_fix_retries == 2
+
+
 def test_allowlist_key_and_aliases(monkeypatch):
     for k in ("ALLOWLIST", "ALLOW_LIST", "ALLOWED_USERS", "IBO_CHAT_ID"):
         monkeypatch.delenv(k, raising=False)
