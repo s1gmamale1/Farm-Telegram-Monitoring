@@ -417,13 +417,18 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     # alerted a PC-off / silent cold case and the panel is speaking again, confirm
     # it's back ONCE so the owner who powered it on gets closure.
     if decision.kind != "flag":
+        # Only the cold-case points (PC-off, retry-cap, black-screen) open a panel
+        # incident — flag_alerted/coldcase_reported mark that. Skip the per-sweep
+        # tracker SELECT for panels that were simply healthy this whole time.
+        had_open_incident = ps.flag_alerted or ps.coldcase_reported
         if ps.flag_alerted:
             await _alert(state, client, target, f"✅ {name} | back online", deliver, cfg=cfg)
         ps.flag_alerted = False
         ps.last_probe_ts = None
-        tracker = state.get("tracker")
-        if tracker is not None:
-            tracker.resolve_by_bot("panel", name, "self_healed", now=now)
+        if had_open_incident:
+            tracker = state.get("tracker")
+            if tracker is not None:
+                tracker.resolve_by_bot("panel", name, "self_healed", now=now)
 
     if decision.kind == "noop":
         # Recovery: if a recovery episode was in flight and the panel is now
@@ -610,22 +615,27 @@ async def _handle_cant_find_match(client, cfg, name, target_ref, minutes, *, del
     return "match-search issue flagged"
 
 
-def _open_bot_incident(state, bot, h, severity, analysis, text, *, fixable,
-                       fix_attempted=None, now=None):
+def _open_bot_incident(state, bot, severity, analysis, text, *, fixable, now=None):
     """Record an alerted bot error as an OPEN incident so the follow-up loop can
-    track it to resolution/escalation. Inert when tracking is disabled."""
+    track it to resolution/escalation. Keyed by bot (one open incident per bot,
+    not per error-hash): a second distinct error while one is already open is a
+    no-op, so a later healthy message reliably closes the bot's open incident
+    instead of leaving an orphan that the follow-up loop would falsely escalate.
+    Inert when tracking is disabled."""
     tracker = state.get("tracker")
     if tracker is None:
         return
     summary = (analysis or {}).get("summary") or (text or "").strip()[:160]
-    tracker.open("bot_error", bot, f"bot_error:{bot}:{h}", severity, summary,
-                 fixable=fixable, fix_attempted=fix_attempted,
-                 raw_excerpt=(text or "")[:1000], now=now)
+    tracker.open("bot_error", bot, f"bot_error:{bot}", severity, summary,
+                 fixable=fixable, raw_excerpt=(text or "")[:1000], now=now)
 
 
 async def _resolve_bot_incident(state, client, target, bot, now, deliver, cfg):
     """A bot posted a healthy message — close any open bot_error incident and tell
-    the owner it cleared (self-healed, or fixed by us if a fix had been attempted).
+    the owner it cleared. ``fix_attempted`` holds the status of our last re-fix
+    attempt (set only by the follow-up loop), so we only claim "fixed by
+    WatcherDog" when an attempt actually reported success — an attempted-and-failed
+    fix that then self-heals is correctly reported as "recovered on its own".
     Inert when tracking is disabled (no tracker in state)."""
     tracker = state.get("tracker")
     if tracker is None:
@@ -633,7 +643,7 @@ async def _resolve_bot_incident(state, client, target, bot, now, deliver, cfg):
     row = tracker.open_for_bot("bot_error", bot)
     if row is None:
         return
-    we_fixed = bool(row["fix_attempted"])
+    we_fixed = row["fix_attempted"] == "fixed"
     res = tracker.resolve_by_bot(
         "bot_error", bot, "we_fixed" if we_fixed else "self_healed", now=now)
     if res is not None:
@@ -697,12 +707,11 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     # Phase 2 — deterministic auto-fix router runs FIRST (no LLM). If the brain
     # already knows this error, handle it script-only and skip the model. Only
     # gated on live action capability (a dry run must not press real buttons).
-    fix_status, fix_sig = None, None
+    fix_status = None
     if cfg.agent_actions_enabled and deliver:
         outcome = await auto_fix.try_auto_fix(client, cfg, bot, text, chat=ent)
         status = (outcome or {}).get("status")
         fix_status = status
-        fix_sig = ((outcome or {}).get("fix") or {}).get("signature")
         if status == "suppressed":
             store.record(bot, severity, analysis, h, text, notified=False, ts=now)
             log.info("AUTO-SUPPRESS %s (%s) — known no-op, no AI", bot, severity)
@@ -717,8 +726,8 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
             ok = await _alert(state, client, target,
                               auto_fix.format_human(bot, outcome), deliver)
             store.record(bot, severity, analysis, h, text, notified=ok and deliver, ts=now)
-            _open_bot_incident(state, bot, h, severity, analysis, text,
-                               fixable=False, fix_attempted=fix_sig, now=now)
+            _open_bot_incident(state, bot, severity, analysis, text,
+                               fixable=False, now=now)
             log.info("HUMAN-FIX %s (%s) — alerted owner, no AI", bot, severity)
             return
         if status == "needs_confirm":
@@ -746,9 +755,8 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     else:
         ok = await _alert(state, client, target, format_alert(bot, severity, analysis, text), deliver)
     store.record(bot, severity, analysis, h, text, notified=ok and deliver, ts=now)
-    _open_bot_incident(state, bot, h, severity, analysis, text,
-                       fixable=(fix_status == "failed"), fix_attempted=fix_sig,
-                       now=now)
+    _open_bot_incident(state, bot, severity, analysis, text,
+                       fixable=(fix_status == "failed"), now=now)
     log.info("ALERTED %s (%s, sent=%s)", bot, severity, ok and deliver)
 
 

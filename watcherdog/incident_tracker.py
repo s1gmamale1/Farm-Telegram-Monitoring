@@ -21,6 +21,11 @@ class IncidentTracker:
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # This is a SECOND connection to the same DB file as storage.IncidentStore.
+        # Both are driven from the single monitor-loop thread (no method holds a
+        # txn across an await), so contention is not expected — but wait rather
+        # than fail instantly if the two ever overlap on commit.
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def _init_schema(self):
@@ -56,15 +61,16 @@ class IncidentTracker:
     def _open_by_key(self, key):
         return self.conn.execute(
             "SELECT * FROM open_incidents WHERE key = ? AND status = 'open' "
-            "ORDER BY opened_ts DESC LIMIT 1",
+            "ORDER BY opened_ts DESC, id DESC LIMIT 1",
             (key,),
         ).fetchone()
 
     def open_for_bot(self, source, bot):
-        """Most-recent OPEN incident for a (source, bot), or None."""
+        """Most-recent OPEN incident for a (source, bot), or None. The ``id DESC``
+        tiebreaker makes the pick deterministic when two rows share ``opened_ts``."""
         return self.conn.execute(
             "SELECT * FROM open_incidents WHERE source = ? AND bot = ? "
-            "AND status = 'open' ORDER BY opened_ts DESC LIMIT 1",
+            "AND status = 'open' ORDER BY opened_ts DESC, id DESC LIMIT 1",
             (source, bot),
         ).fetchone()
 
