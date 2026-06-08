@@ -43,8 +43,46 @@ _NORMAL_PATTERNS = [
 _ERROR_RE = re.compile("|".join(_ERROR_PATTERNS), re.IGNORECASE)
 _NORMAL_RE = re.compile("|".join(_NORMAL_PATTERNS), re.IGNORECASE)
 
+# Routine, self-healing "errors" the farm recovers from on its own — e.g. a
+# single account missing its drop, which is simply retried on the next batch.
+# These trip the generic error classifier (they contain the word "error") but
+# must NOT escalate to a HIGH alert by themselves. Extend as new benign hiccups
+# are observed.
+_BENIGN_ERROR_PATTERNS = [
+    r"error collecting drop",
+]
+
+# Strong failure indicators that VETO the benign downgrade: if any appears in
+# the same message, a real problem is happening regardless of routine chatter,
+# so it must still alert. Deliberately excludes the generic tokens (error /
+# failed / cannot) that the benign phrase itself contains.
+_STRONG_ERROR_PATTERNS = [
+    r"\bban(ned)?\b", r"\bblocked\b", r"\bsuspend", r"\bkick(ed)?\b",
+    r"\bcrash", r"\btraceback\b", r"\bexception\b",
+    r"\bcaptcha\b", r"\bverif(y|ication)\b", r"\b2fa\b", r"steam ?guard",
+    r"\bdisconnect", r"\blost connection\b", r"\btimed? ?out\b", r"\btimeout\b",
+    r"\bstuck\b", r"\bnot ?responding\b", r"\brate ?limit",
+    r"\bproxy\b.*\b(dead|fail|bad)\b", r"\blogin\b.*\bfail",
+    r"❌", r"🛑", r"‼",
+]
+
+_BENIGN_ERROR_RE = re.compile("|".join(_BENIGN_ERROR_PATTERNS), re.IGNORECASE)
+_STRONG_ERROR_RE = re.compile("|".join(_STRONG_ERROR_PATTERNS), re.IGNORECASE)
+
 # Pull a "[SinFermera3]" style bot tag off the front of a message.
 _BOT_TAG_RE = re.compile(r"\[([^\]]{1,40})\]")
+
+
+def is_benign_error(text):
+    """True when a message's only failure signal is a routine, self-healing
+    event (e.g. ``Error collecting drop on: <account>``) that must not escalate
+    to a HIGH alert. Any strong failure indicator in the same message vetoes the
+    downgrade. See :data:`_BENIGN_ERROR_PATTERNS` / :data:`_STRONG_ERROR_PATTERNS`."""
+    if not text:
+        return False
+    if _STRONG_ERROR_RE.search(text):
+        return False
+    return bool(_BENIGN_ERROR_RE.search(text))
 
 
 def bot_name_from(text):

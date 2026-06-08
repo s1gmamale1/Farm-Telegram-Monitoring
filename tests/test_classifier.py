@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from watcherdog.classifier import bot_name_from, classify
+from watcherdog.classifier import bot_name_from, classify, is_benign_error
 
 
 # --- classify ---------------------------------------------------------------
@@ -57,6 +57,50 @@ def test_error_takes_priority_over_normal_lines():
 def test_cant_find_match_changing_batch_is_error():
     text = "[SinFermera4] Can't find match in 70 minutes. Changing batch..."
     assert classify(text) == "error"
+
+
+# --- is_benign_error --------------------------------------------------------
+# A routine, self-healing "Error collecting drop on: <account>" trips the generic
+# error classifier but is NOT a HIGH issue — the bot retries it next batch.
+
+def test_collect_drop_error_is_benign():
+    assert is_benign_error("Error collecting drop on: fqekslic11w.") is True
+
+
+def test_full_batch_message_with_collect_error_is_benign():
+    text = (
+        "[SinFermera21] Collected drop on 3 accounts: a, b, c.\n"
+        "Farmed this week: 82/159\n"
+        "Starting next batch...\n"
+        "Error collecting drop on: fqekslic11w."
+    )
+    assert is_benign_error(text) is True
+
+
+def test_collect_error_with_ban_is_not_benign():
+    # A strong indicator anywhere in the message vetoes the downgrade.
+    text = "Error collecting drop on: x. Account banned by Steam."
+    assert is_benign_error(text) is False
+
+
+def test_collect_error_with_traceback_is_not_benign():
+    text = "Error collecting drop on: x\nTraceback (most recent call last):"
+    assert is_benign_error(text) is False
+
+
+def test_plain_login_failure_is_not_benign():
+    # A non-collection error must not be treated as benign just because it lacks
+    # a strong token.
+    assert is_benign_error("[SinFermera3] login failed") is False
+
+
+def test_routine_message_without_error_is_not_benign():
+    assert is_benign_error("collected drop\n- 0.27$") is False
+
+
+def test_benign_error_handles_none_and_empty():
+    assert is_benign_error(None) is False
+    assert is_benign_error("") is False
 
 
 # --- bot_name_from ----------------------------------------------------------

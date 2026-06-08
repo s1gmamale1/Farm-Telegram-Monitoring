@@ -49,7 +49,7 @@ from watcherdog.alerter import (
     format_silence_alert,
 )
 from watcherdog.analyzer import analyze_message
-from watcherdog.classifier import classify
+from watcherdog.classifier import classify, is_benign_error
 from watcherdog.config import SEVERITY_ORDER
 from watcherdog.monitor import error_hash
 from watcherdog.telegram_source import make_client
@@ -544,6 +544,14 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
         return
 
     severity = analysis.get("severity", "high")
+    # Deterministic downgrade (no model): a routine, self-healing hiccup such as
+    # a single account missing its drop ("Error collecting drop on: …") trips the
+    # generic error classifier but is not a HIGH issue. Floor it to "low" so it is
+    # still recorded yet stays below the alert threshold. A strong failure signal
+    # in the same message vetoes this (see classifier.is_benign_error).
+    if is_benign_error(text) and SEVERITY_ORDER.get(severity, 2) > SEVERITY_ORDER["low"]:
+        severity = "low"
+        analysis["severity"] = "low"
     if SEVERITY_ORDER.get(severity, 2) < SEVERITY_ORDER[cfg.min_severity]:
         state[bot + "::err"] = False
         store.record(bot, severity, analysis, h, text, notified=False, ts=now)

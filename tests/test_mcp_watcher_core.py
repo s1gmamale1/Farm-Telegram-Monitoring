@@ -430,6 +430,63 @@ def test_disable_ai_evaluate_bot_never_calls_agent_or_ollama(tmp_path, monkeypat
     store.close()
 
 
+def test_benign_drop_collection_error_does_not_alert(tmp_path, monkeypatch):
+    # A routine, self-healing "Error collecting drop" must be recorded but NOT
+    # escalated to a HIGH alert — even in DISABLE_AI mode at the default
+    # MIN_SEVERITY=high, where every classified error otherwise defaults to high.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true",
+        "AGENT_ACTIONS_ENABLED": "true",
+        "MIN_SEVERITY": "high",
+        "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+
+    async def no_saved_fix(*_a, **_k):
+        return {"status": "unknown"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", no_saved_fix)
+
+    text = (
+        "[SinFermera21] Collected drop on 3 accounts: a, b, c.\n"
+        "Farmed this week: 82/159\n"
+        "Starting next batch...\n"
+        "Error collecting drop on: fqekslic11w."
+    )
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {}, "ibo", "SinFermera21", text,
+        time.time(), asyncio.new_event_loop(), deliver=True, ent=None))
+
+    assert client.sent == []   # no HIGH alert
+    # but it is still recorded (below-threshold) as a low-severity incident
+    assert store.last_seen(mcp_watcher.error_hash(text)) is not None
+    store.close()
+
+
+def test_drop_collection_error_with_strong_signal_still_alerts(tmp_path, monkeypatch):
+    # The benign downgrade must not mask a real problem riding in the same message.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true",
+        "AGENT_ACTIONS_ENABLED": "true",
+        "MIN_SEVERITY": "high",
+        "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+
+    async def no_saved_fix(*_a, **_k):
+        return {"status": "unknown"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", no_saved_fix)
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {}, "ibo", "SinFermera9",
+        "Error collecting drop on: x. Account banned by Steam.",
+        time.time(), asyncio.new_event_loop(), deliver=True, ent=None))
+
+    assert client.sent   # banned -> still a HIGH alert
+    store.close()
+
+
 # ---------------------------------------------------------------------------
 # flush_daily_report (integration with daily_report module)
 # ---------------------------------------------------------------------------
