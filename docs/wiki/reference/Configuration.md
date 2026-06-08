@@ -131,7 +131,9 @@ The `PANEL_*` block configures the model-free R1–R6 engine (`panel_rules.py` +
 | `PANEL_TARGET_ACCOUNTS` | Accounts every working panel must have launched, default **4**. |
 | `PANEL_OVERLAUNCH_MINUTES` | How long `Launched > target` must persist before the destructive Kill→reselect→start reset fires, default **15**. |
 | `PANEL_IDLE_MINUTES` | LIVE-but-no-score-change window before `make_lobbies`, default **10**. |
-| `PANEL_STALE_MINUTES` | **Total silence → DEAD threshold, default 70** (was 30). ANY message — including *"Can't find match… changing batch"* — resets the clock and counts as alive (R6). Pure timing; no screenshot/OCR/model. |
+| `PANEL_STALE_MINUTES` | **Silence threshold that TRIGGERS the R6 liveness probe, default 70** (was 30). ANY message — including *"Can't find match… changing batch"* — resets the clock and counts as alive. Crossing it no longer means "dead"; it means "go probe" (see `PANEL_PROBE_ENABLED`). |
+| `PANEL_PROBE_ENABLED` | **Active R6 liveness probe, default `true`.** Before declaring a silent panel dead, WatcherDog `/start`s it; a reply proves the panel/PC is alive (silence alone is not death — an idle panel answers `/start` instantly), so it is **not** flagged. Set `false` for the old pure-timing R6. `/start` is non-destructive (opens the menu only). The first sweep after a (re)start seeds quietly — no probe/alert — so restarts don't flood. |
+| `PANEL_PROBE_TIMEOUT` | Seconds to wait for the `/start` probe reply before treating the panel as unreachable, default **15**. |
 | `PANEL_ACTION_DEBOUNCE_SECONDS` | Minimum gap between actions on the same panel, default **180**. Also arms the R4 black-screen follow-up. |
 | `PANEL_AUTO_RECOVER` | Auto-run **non-destructive** recoveries (default **true**); else offer a confirm card. |
 | `PANEL_AUTO_DESTRUCTIVE` | **Auto-run DESTRUCTIVE recoveries too, default `true`** (was opt-in). When true, Kill→reselect→start runs unattended; when false a one-tap confirm card is posted instead. See accuracy note below. |

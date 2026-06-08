@@ -331,7 +331,22 @@ async def _panel_report(state, client, target, name, issue, *, fixed, deliver, c
     await _alert(state, client, target, f"{name} | {issue} | {verdict}", deliver, cfg=cfg)
 
 
-async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target):
+async def _panel_responds(client, target_ref, cfg):
+    """Active liveness check for a silent panel: /start it and watch for a reply.
+
+    A reply (the menu/status card) proves the panel bot AND its PC are alive —
+    Telegram silence alone is not death (a healthy panel can sit idle between
+    batches). No reply within the timeout means it's genuinely unreachable.
+    Non-destructive: /start only opens the menu, it presses nothing."""
+    timeout = float(getattr(cfg, "panel_probe_timeout", 15.0))
+    try:
+        menu = await tg_actions.panel_menu(client, target_ref, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return False
+    return not menu.get("error")
+
+
+async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target, seed=False):
     """Deterministic per-panel watch/recover (R1-R6). No model. Takes the panel's
     already-fetched latest status (text, date) — no extra read — advances timers,
     asks panel_rules for a Decision, then flags / runs / offers a confirm card per
@@ -387,10 +402,21 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         return None
 
     if decision.kind == "flag":
-        # R6 cold case. Report ONCE per episode, WITH the reason: how long it's
-        # been totally silent (any message — incl. "can't find match" — resets
-        # the clock and means alive), or that the latest message had no status.
+        # R6 cold case. Telegram silence ALONE is NOT proof of death — a healthy
+        # panel can be idle/quiet > stale_minutes (it answers /start instantly).
+        # Two guards before declaring it dead:
+        #  (1) On the FIRST sweep after (re)start, seed quietly — a restart with a
+        #      fleet quiet overnight must not flood "dead" alerts.
+        #  (2) Actively PROBE with /start: a reply proves the panel/PC is alive
+        #      (leave it — the fresh status card drives the next sweep); only a
+        #      true non-response escalates as needs-PC.
+        if seed:
+            return decision.reason
         if not ps.flag_alerted:
+            if (deliver and getattr(cfg, "panel_probe_enabled", True)
+                    and await _panel_responds(client, target_ref, cfg)):
+                log.info("[panel] %s silent but answered /start — alive, not dead", name)
+                return "probe: alive"
             if status is None or age is None:
                 issue = "no readable status"
             else:
@@ -640,7 +666,8 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
         if cfg.panel_rules_enabled:
             try:
                 note = await _evaluate_panel(client, cfg, name, ent, text, date,
-                                             deliver=deliver, state=state, target=target)
+                                             deliver=deliver, state=state, target=target,
+                                             seed=first)
             except Exception:  # noqa: BLE001
                 log.exception("panel eval failed for %s; continuing", name)
                 note = None

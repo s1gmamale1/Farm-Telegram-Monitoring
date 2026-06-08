@@ -35,8 +35,22 @@ class Decision:
     healthy: bool = False   # set on the "healthy" noop so the caller can report a fix
 
 
-def _is_live(status):
-    return "LIVE" in (status.status or "").upper()
+# Status substrings that mean the accounts are up and WORKING — never a relaunch
+# trigger. "LIVE" is idle-operational; "Searching game…" is actively hunting a
+# match; match/playing states are in-game. Anything else we can READ (e.g.
+# "OFFLINE") is treated as not operational and restores to four (R2).
+_OPERATIONAL_STATUS = ("live", "search", "match", "in game", "in-game", "playing")
+
+
+def _is_operational(status):
+    """The panel/accounts are up and working (LIVE, searching, or in a match)."""
+    s = (status.status or "").lower()
+    return status.in_match or any(k in s for k in _OPERATIONAL_STATUS)
+
+
+def _is_searching(status):
+    """Panel is actively looking for a game — a healthy state with no match yet."""
+    return "search" in (status.status or "").lower()
 
 
 def observe(status, state, now, cfg):
@@ -80,18 +94,23 @@ def decide(status, status_age, state, now, cfg):
                             destructive=True)
         return Decision("noop", reason=f"over-launch observed ({status.launched}); waiting")
 
-    # R2 — under target, or a status we can READ that is not LIVE. A status we
-    # CANNOT read (status.status is None) is NOT inferred as down — never guess;
-    # it falls through to the healthy/idle checks below.
-    if status.launched < target or (status.status is not None and not _is_live(status)):
+    # R2 — under target, or a status we can READ that is NOT operational (e.g.
+    # OFFLINE). "LIVE" / "Searching game…" / in-match all count as operational and
+    # do NOT relaunch. A status we CANNOT read (status.status is None) is never
+    # inferred as down — it falls through to the healthy/idle checks below.
+    if status.launched < target or (status.status is not None and not _is_operational(status)):
         return Decision("sequence", actions=["select_unfarmed", "start_selected"],
                         reason=f"launched={status.launched}, status={status.status!r}")
 
-    # R3 — idle: only when we can confirm the panel is LIVE.
-    if _is_live(status):
+    # R3 — idle/stuck: only when the panel is operational.
+    if _is_operational(status):
         if not status.in_match:
-            return Decision("sequence", actions=["make_lobbies"], reason="LIVE but no map/score")
-        if (state.last_score == status.score and state.last_score_ts is not None
+            # Up but not even searching for a game -> kick it. If it's ALREADY
+            # searching, that's the healthy working state — leave it alone.
+            if not _is_searching(status):
+                return Decision("sequence", actions=["make_lobbies"],
+                                reason="up but no map/score")
+        elif (state.last_score == status.score and state.last_score_ts is not None
                 and (now - state.last_score_ts) >= idle_s):
             return Decision("sequence", actions=["make_lobbies"],
                             reason=f"score unchanged >{idle_s/60:.0f}m")

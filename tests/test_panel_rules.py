@@ -55,6 +55,22 @@ def test_r3_idle_no_match_makes_lobbies():
     assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).actions == ["make_lobbies"]
 
 
+def test_searching_game_is_healthy_noop():
+    # "Status: Searching game..." with 4 launched is the healthy WORKING state
+    # (accounts up, actively looking for a match). It must NOT relaunch (R2) nor
+    # press make_lobbies (R3) — it's a noop.
+    s = _status(launched=4, status="Searching game...", in_match=False)
+    d = pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG)
+    assert d.kind == "noop", f"expected healthy noop, got {d.kind}/{d.actions}"
+
+
+def test_searching_under_target_still_relaunches():
+    # Operational status does NOT excuse a low account count: 2/4 launched while
+    # "searching" is still an R2 restore-to-four.
+    s = _status(launched=2, status="Searching game...")
+    assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).actions == ["select_unfarmed", "start_selected"]
+
+
 def test_r3_idle_score_unchanged():
     s = _status(launched=4, status="LIVE", map="de_nuke", score="[1:0]", in_match=True)
     st = pr.observe(s, pr.PanelState(), 0.0, CFG)

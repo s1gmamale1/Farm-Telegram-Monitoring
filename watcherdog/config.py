@@ -400,6 +400,14 @@ class Config:
         # Kill→Start loop and escalate the panel as a cold case (needs the per-PC
         # tool — a frozen RDP host can't be fixed from Telegram).
         self.panel_max_attempts = int(get("PANEL_MAX_ATTEMPTS", "3"))
+        # R6 liveness probe: before declaring a silent panel DEAD, /start it and
+        # wait this long for a reply. A reply proves the panel/PC is alive (silence
+        # alone is not death — an idle panel answers /start instantly), so it is
+        # NOT flagged. Set PANEL_PROBE_ENABLED=false to skip the probe (pure-timing
+        # R6, the old behaviour). Non-destructive: /start only opens the menu.
+        self.panel_probe_enabled = get(
+            "PANEL_PROBE_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.panel_probe_timeout = float(get("PANEL_PROBE_TIMEOUT", "15"))
 
         # --- Bot interface (the TALKING front-end; bot_interface.py) ----------
         # WatcherDog answers people through a Telegram BOT (logged in over MTProto

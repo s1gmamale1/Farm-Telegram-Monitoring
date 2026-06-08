@@ -34,6 +34,8 @@ OVER = ("📊 Panel status:\n├ 👥 Launched: 8 accounts\n├ 🟢 Status: LIV
         "├ Map: m\n└ Score: [1:0]")
 NON_STATUS = "🎁 [SinFermera7] collected drop · AK-47 | Redline - 0.27$"
 OVERLAUNCH_ALERT = "[SinFermera24] All 8 accounts launched!"
+SEARCHING = ("📊 Panel status:\n├ 👥 Launched: 4 accounts\n"
+             "└ ⏳ Status: Searching game...")
 
 
 @pytest.fixture(autouse=True)
@@ -43,11 +45,13 @@ def _clear_state():
     mcp_watcher._PANEL_STATE.clear()
 
 
-def _run(cfg, text, *, age=1.0, name="SinFermera7", deliver=True, state=None, target=None):
+def _run(cfg, text, *, age=1.0, name="SinFermera7", deliver=True, state=None,
+         target=None, seed=False):
     date = _date(time.time() - age)
     return asyncio.run(mcp_watcher._evaluate_panel(
         None, cfg, name, object(), text, date,
-        deliver=deliver, state=state if state is not None else {}, target=target))
+        deliver=deliver, state=state if state is not None else {}, target=target,
+        seed=seed))
 
 
 def test_healthy_returns_none():
@@ -119,6 +123,66 @@ def test_under_launch_auto_runs_sequence(monkeypatch):
     note = _run(_cfg(), UNDER)
     assert ran == [["select_unfarmed", "start_selected"]]
     assert "-> ok" in note
+
+
+def test_searching_is_healthy_returns_none():
+    # A panel actively "Searching game..." with 4 launched is working — the engine
+    # must not relaunch it. (Regression: "Searching" was misread as not-LIVE → R2.)
+    assert _run(_cfg(), SEARCHING) is None
+
+
+def test_silent_panel_that_answers_start_is_alive(monkeypatch):
+    # R6: before declaring a silent panel dead, /start it. A reply proves it's
+    # alive — no "dead" alert (the SinFermera19 false-positive).
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        return {"buttons": ["Screenshot"], "accounts": []}   # replied -> alive
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    note = _run(_cfg(), HEALTHY, age=4200)     # 70m old > 30m stale
+    assert note == "probe: alive"
+    assert alerts == []                         # NOT reported dead
+
+
+def test_silent_panel_no_reply_is_dead(monkeypatch):
+    # No reply to /start within the timeout -> genuinely unreachable -> needs PC.
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        return {"error": "no /start menu reply", "buttons": []}
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    note = _run(_cfg(), HEALTHY, age=4200)
+    assert note is not None
+    assert alerts and "silent" in alerts[0].lower() and "needs PC" in alerts[0]
+
+
+def test_first_sweep_seeds_silence_without_alert_or_probe(monkeypatch):
+    # On the FIRST sweep after (re)start, an already-quiet panel is SEEDED quietly:
+    # no probe, no alert — so a restart never floods (the 11:11 burst).
+    alerts, probed = [], []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        probed.append(panel)
+        return {"error": "x", "buttons": []}
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    note = _run(_cfg(), HEALTHY, age=4200, seed=True)
+    assert alerts == [] and probed == []        # neither alerted nor probed
+    assert note is not None                       # but handled (AI path skipped)
 
 
 def test_stale_flags_cold_case(monkeypatch):

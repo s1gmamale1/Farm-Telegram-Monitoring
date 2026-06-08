@@ -4,7 +4,7 @@ tags:
   - watcherdog
   - component
   - concept
-updated: 2026-06-08
+updated: 2026-06-09
 status: current
 ---
 
@@ -34,20 +34,21 @@ Free-text match-search failures are deterministic too: `[SinFermeraN] Can't find
 
 Deterministic, **no model / OCR needed**:
 - **Any message = alive.** A status card, or `Can't find match in X minutes. Changing batch…`, both prove the panel/PC is working — the second just means it couldn't find a game (handled by **R3b**, not a failure).
-- **Total silence > `PANEL_STALE_MINUTES` (default 70 min) = dead.** Only when a panel posts *nothing at all* for that long is it **panel/PC down → needs PC**. The report says how long: `SinFermera## | silent 73m (dead) | NOT fixed ❌ → needs PC`.
-- This is pure **last-message timing** — the same way the on-PC Watchdog decides (timestamp of the last log line); the watcher gets that timestamp free from Telegram. Black-screen is the separate **pixel** check (R4 / the PC tool), not this.
+- **Silence is a *trigger to probe*, not a verdict.** When a panel posts *nothing at all* for `PANEL_STALE_MINUTES` (default 70 min), WatcherDog does **not** assume death — it actively **`/start`-probes** the panel (`PANEL_PROBE_ENABLED`, default on; `PANEL_PROBE_TIMEOUT`, default 15s). A reply (the menu/status card) proves the panel **and** its PC are alive, so it is **not** flagged. Only a panel that stays silent **and** ignores `/start` is **panel/PC down → needs PC**: `SinFermera## | silent 73m (dead) | NOT fixed ❌ → needs PC`. *Why:* a healthy panel can sit quiet between batches for >70 min yet answer `/start` in seconds — silence alone false-flagged live panels (e.g. SinFermera19).
+- **First sweep seeds quietly.** On the first sweep after a (re)start, already-silent panels are recorded but never probed or alerted, so a restart with the fleet quiet overnight can't flood. Probing/alerting begins on later sweeps.
+- The freshness clock is the **last Telegram message timestamp** (the watcher gets it free); the `/start` probe is the liveness confirmation layered on top. Black-screen is the separate **pixel** check (R4 / the PC tool), not this. `/start` is **non-destructive** — it only opens the menu.
 
 ## The recovery rules
 
 | # | Condition | Action sequence | Notes |
 |---|-----------|-----------------|-------|
 | **R1** | `Launched > 4` sustained **> 15 min** | `Kill all CS & Steam` → `Select 4/10 unfarmed` → `Start selected accounts` | Replaces the unreliable per-PC 5-min relaunch script. Kill-all is less overhead than de-selecting. Destructive — **auto-runs by default** (`PANEL_AUTO_DESTRUCTIVE=true`). |
-| **R2** | `Launched < 4` or not `LIVE` | `Select 4/10 unfarmed` → `Start selected accounts` | Restore to exactly 4. |
-| **R3** | `LIVE` but **not farming** (no/stale `Map`+`Score`) | `Make lobbies and search game` | Farm should auto-start but sometimes "sits there". |
+| **R2** | `Launched < 4`, or a readable status that is **not operational** (e.g. `OFFLINE`) | `Select 4/10 unfarmed` → `Start selected accounts` | Restore to exactly 4. **Operational** = `LIVE`, `Searching game…`, or in-match — all healthy, never relaunched (a `Searching` panel was previously misread as not-`LIVE` and wrongly relaunched). |
+| **R3** | **operational** but **not farming or searching** (no/stale `Map`+`Score`, and not already `Searching game…`) | `Make lobbies and search game` | Farm should auto-start but sometimes "sits there". An already-`Searching` panel is left alone. |
 | **R3b** | `Can't find match in X minutes. Changing batch...` | `Screenshot` + alert account names from `/start` | Flags panels whose games may never be found even though the bot keeps speaking. |
 | **R4** | Accounts won't launch / inconsistent **and** `Screenshot` is a **black image** | → **per-PC API**: close/restart the self-hosted **RDP-session host** software, then re-verify | The RDP host "screen bugs out"; closing it self-heals. (The bugged script lives in the panel-tools repo — to fix later.) |
 | **R5** | **Wednesday 00:00** (weekly) | `Kill all CS & Steam` (ensure 0 launched) → `Drop Stats` → after it completes, `Run activity booster` | End-of-week stats need 0 launched; auto drop-stats isn't guaranteed 100%. See [[Drop-Stats Pipeline]]. |
-| **R6** | **Total silence > 70 min** (`PANEL_STALE_MINUTES`) — no message of ANY kind | → **per-PC API**: relaunch panel exe / RDP reconnect / reboot; reports `silent Nm (dead)` | Any message — incl. "can't find match… changing batch" — resets the clock and means alive. Only true silence = dead. See *Alive vs dead* above; ties to [[Alerts and Heartbeat]]. |
+| **R6** | **Silence > 70 min** (`PANEL_STALE_MINUTES`) **AND** no reply to a `/start` probe | → **per-PC API**: relaunch panel exe / RDP reconnect / reboot; reports `silent Nm (dead)` | A `/start` reply (or any message — incl. "can't find match… changing batch") proves it's alive and resets the clock. Only silence **that also ignores `/start`** = dead. First sweep seeds quietly. See *Alive vs dead* above; ties to [[Alerts and Heartbeat]]. |
 
 ```mermaid
 flowchart TD
