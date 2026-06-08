@@ -54,10 +54,12 @@ No more per-sweep status spam. (`mcp_watcher._panel_report` / `_issue_label`.)
 - [x] **No concise report** → `Panel# | Issue | Fixed/Not` format (above). `87cdff9`.
 - [x] **Endless futile Kill→Start loop** → retry-cap `PANEL_MAX_ATTEMPTS=3` → escalate as cold case, then stay quiet until recovery. `87cdff9`.
 - [x] **Test suite polluting the repo** (`Config` ignored `ROOT`, wrote `new_module.py`/`.bak` into the tree) → honour the `ROOT` key. `830ab96` + review fix.
+- [x] **R3b "no Screenshot button" on healthy panels** — the live button is `🖼 Screenshot` (emoji prefix); `screenshot()` used `startswith("screenshot")` and missed it. Now case-insensitive substring like `press_button`. `e345007`.
 
 ### 🟡 In progress / needs the PC
 - 🟡 **[critical] Black screen / frozen RDP on panels 13/14/15** — the launch→drop→0 loop; NOT fixable from Telegram (the bot now correctly reports `needs PC` and stops looping). Real fix = **PC tool, PR #1** → https://github.com/AdxamAxatov/Watchdog/pull/1 : pixel black-detection + 30-min close/reopen cycle + `wfreerdp.exe` relaunch. **Status: open, never run on Windows.** Before deploy, confirm 5 assumptions: `wfreerdp.exe` path, window-title substring (`SinFermera`), session count (=2), blackness threshold (12, tune from logs), and that closing a healthy window auto-reopens it. Effort: M.
 - 🟡 **[high] Panel 2 — PC off / bot dead** — beyond the current PC tool (no window to cycle). Needs a per-PC reboot/power path or a human. Effort: M.
+- 🟠 **[medium] R6 "panel/PC down" floods on watcher startup** — silence detection seeds quietly on the first sweep (`mcp_watcher.py:645`) but the R6 cold-case path in `_evaluate_panel` does NOT, so every restart dumps a burst of `panel/PC down → needs PC` for any panel whose last status is >`PANEL_STALE_MINUTES` (30m) old. Fix: seed R6 on the first sweep too (alert only on a new transition). Also confirm whether panels post on a cadence — if only-on-change, the 30m staleness check false-flags quiet-but-healthy panels even after the seed fix. Effort: S.
 
 ### 🔵 Deferred / defense-in-depth
 - 🔵 **[low] AI-on tool-call markup stripping** — if `DISABLE_AI=false` is ever set, DeepSeek markup can still reach Telegram (`watcherdog/agent.py:950` returns `content` verbatim). Fix: strip/parse `<｜DSML｜…｜>` before send, or use a model that returns OpenAI `tool_calls`. Build when AI is re-enabled. Effort: S.
