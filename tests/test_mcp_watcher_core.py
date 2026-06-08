@@ -809,3 +809,76 @@ def test_load_watch_chats_falls_back_when_folder_not_found(tmp_path, monkeypatch
 
         result = asyncio.run(mcp_watcher.load_watch_chats(_Client(), cfg))
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Incident resolution attribution + keying (review regressions)
+# ---------------------------------------------------------------------------
+
+def test_resolve_reports_self_healed_after_failed_fix(tmp_path, monkeypatch):
+    """An attempted-but-FAILED fix that then self-heals must report 'recovered on
+    its own', NOT 'fixed by WatcherDog' — we_fixed is true only when a re-attempt
+    actually reported success."""
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    state = {"tracker": tracker}
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=True, now=100.0)
+    tracker.note_fix_attempt("bot_error:Bot1", "failed")   # our retry FAILED
+
+    sent = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    asyncio.run(mcp_watcher._resolve_bot_incident(
+        state, _FakeClient(), "ibo", "Bot1", 280.0, True, _cfg(tmp_path)))
+
+    assert len(sent) == 1
+    assert "on its own" in sent[0]
+    assert "WatcherDog" not in sent[0]
+    assert tracker.open_for_bot("bot_error", "Bot1") is None
+    tracker.close()
+
+
+def test_resolve_reports_we_fixed_after_successful_refix(tmp_path, monkeypatch):
+    """When a re-fix actually succeeded, the closure credits WatcherDog."""
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    state = {"tracker": tracker}
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=True, now=100.0)
+    tracker.note_fix_attempt("bot_error:Bot1", "fixed")    # our retry SUCCEEDED
+
+    sent = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    asyncio.run(mcp_watcher._resolve_bot_incident(
+        state, _FakeClient(), "ibo", "Bot1", 160.0, True, _cfg(tmp_path)))
+
+    assert len(sent) == 1
+    assert "WatcherDog" in sent[0]
+    tracker.close()
+
+
+def test_open_bot_incident_keyed_by_bot_avoids_leak(tmp_path):
+    """Two distinct errors for one bot must produce ONE open incident (keyed by
+    bot), so a later healthy message closes it instead of leaking an orphan that
+    the follow-up loop would later falsely escalate."""
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    state = {"tracker": tracker}
+    mcp_watcher._open_bot_incident(state, "Bot1", "high",
+                                   {"summary": "error A"}, "error A text",
+                                   fixable=False, now=100.0)
+    mcp_watcher._open_bot_incident(state, "Bot1", "high",
+                                   {"summary": "error B"}, "error B text",
+                                   fixable=False, now=130.0)
+    assert len(tracker.open_list()) == 1
+    tracker.close()
