@@ -41,7 +41,7 @@ flowchart LR
 
 > [!warning] Verified doc-vs-code drift (corrected throughout this vault)
 > The hand-written [[README]] / [[DOCUMENTATION]] carry a few stale claims that the deep-dive caught:
-> - **Test count:** large and growing — run `pytest` for the live number; the 4 known failures are pre-existing (legacy GUI imports + concurrency timing) → see [[Testing]].
+> - **Test count:** large and growing — run `pytest` for the live number (the suite is green; the only skips are legacy GUI imports) → see [[Testing]].
 > - **"Router runs before any LLM":** the **local Ollama triage runs *first***; the router is "first" only relative to the *OpenRouter* agent → see [[Script-First AI-Last]].
 > - **A 5th router status, `needs_confirm`,** exists beyond the four documented → see [[Script-First AI-Last]] and [[Confirm and Action Buttons]].
 > - **Unpinned deps:** `gspread`/`google-auth` ([[Drop-Stats Pipeline]]) and `pyobjc` ([[Legacy Modes]]) are **not in `requirements.txt`** (only `telethon`) → see [[Configuration]].
@@ -61,6 +61,7 @@ flowchart LR
 - [[The Monitor Loop]] — `mcp_watcher.run()`, the sweep, the listeners, the schedule.
 - [[Safe Self-Restart]] — pre-flight import check + detached rollback supervisor.
 - [[Entry Points]] — the supported launcher vs. the retired ones.
+- **Cold cases are handed off, not fixed here.** A frozen RDP host / black screen / truly-dead PC can't be repaired from Telegram — the watcher only *detects + reports* "needs PC"; the on-PC fix lives in the separate `github.com/AdxamAxatov/Watchdog` (`Boot.exe`) repo. See [[Architecture Overview]] and [[Monitoring and Recovery Rules]].
 
 ## 🧩 Components
 
@@ -69,7 +70,7 @@ flowchart LR
 - [[The Bot Front-End]] · [[Commands]] · [[Confirm and Action Buttons]] — the human-facing surface.
 - [[Alerts and Heartbeat]] · [[Roster and Health Scan]] — detection and the shared no-LLM scan.
 - [[Scheduled Reports]] · [[Drop-Stats Pipeline]] — the hourly/weekly/daily jobs and the Sheets push.
-- [[Monitoring and Recovery Rules]] · [[Panel Control Bot]] — the deterministic per-panel watch/recover rules and the SinFermera bot's status + button vocabulary they act on.
+- [[Monitoring and Recovery Rules]] · [[Panel Control Bot]] — the deterministic per-panel watch/recover rules and the SinFermera bot's status + button vocabulary they act on. Recovery runs **autonomously by default** (incl. destructive Kill→relaunch) and reports each episode as one `Panel | Issue | Fixed/Not` line; after `PANEL_MAX_ATTEMPTS` futile tries it escalates a **cold case** (R4 black screen / R6 dead = "needs PC").
 
 ## 📚 Reference & Operations
 

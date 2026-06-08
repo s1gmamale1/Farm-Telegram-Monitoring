@@ -55,13 +55,16 @@ HWID: 914139A1...
 
 Free-text alerts also appear. `[SinFermera24] All 8 accounts launched!` is an explicit over-launch signal. `[SinFermera4] Can't find match in 70 minutes. Changing batch...` is treated as a deterministic match-search failure: WatcherDog requests `Screenshot` and includes the account names parsed from the `/start` menu/status in the alert.
 
+> [!info] Any message means alive (R6 is pure timing)
+> A panel counts as DEAD only after **total silence past `PANEL_STALE_MINUTES` (default 70)**. ANY message — including a working *"Can't find match… changing batch"* — resets the silence clock and proves the panel is alive. R6 needs no screenshot, OCR, or model; it is a timer. See [[Monitoring and Recovery Rules]] and [[Configuration]].
+
 ## The button menu (what we press)
 
 Buttons as shown in the bot's `/start` menu, top to bottom. ✅ = used by recovery, ⚠ = destructive (must confirm via [[Confirm and Action Buttons]]).
 
 | Button | What it does | Recovery role |
 |--------|--------------|---------------|
-| 🖼 **Screenshot** | Sends a screenshot of the PC | ✅ confirm state; **black image ⇒ RDP-session host bug ⇒ per-PC API restart** (cold case) |
+| 🖼 **Screenshot** | Sends a screenshot of the PC | ✅ confirm state; **black image ⇒ RDP-session host bug ⇒ per-PC API restart** (cold case). The live label is `🖼 Screenshot` (emoji prefix); `tg_actions.screenshot` matches it by case-insensitive **substring** (`startswith` missed it). |
 | 📊 **Launched accs stats** | Status of launched accounts | optional active read |
 | 👉 **Select 4/10 unfarmed** | Selects 4 **un-farmed** accounts (does **not** launch) | ✅ **the canonical selection** |
 | 👉 **Select first 4/10 accs** | Selects the first 4 regardless of farmed state | ❌ **do not use** |
@@ -80,7 +83,10 @@ Buttons as shown in the bot's `/start` menu, top to bottom. ✅ = used by recove
 | ⛔ **Shutdown PC** | Shuts the PC down | ⚠ confirm |
 
 > [!warning] Match buttons by label prefix, re-read live
-> Labels can change/truncate. The action layer ([[Telegram Tools and Actions]]) resolves a button by exact → prefix → substring match from a live read of the inline keyboard (`tg_actions.press_button`), not a hard-coded index — same discipline as the `docs/hermes/skills/00-panels.md` skill guide. The named wrappers and their `BTN_*` label constants live in `panel_actions.py` ([[Module Reference]]).
+> Labels can change/truncate. The action layer ([[Telegram Tools and Actions]]) resolves a button by exact → prefix → substring match from a live read of the inline keyboard (`tg_actions.press_button`), not a hard-coded index — same discipline as the `docs/hermes/skills/00-panels.md` skill guide. The `screenshot` helper uses the same case-insensitive **substring** match (so the emoji-prefixed `🖼 Screenshot` resolves). The named wrappers and their `BTN_*` label constants live in `panel_actions.py` ([[Module Reference]]).
+
+> [!info] Telegram only DETECTS cold cases; the PC tool fixes them
+> A black screenshot (R4) or total silence (R6) tells WatcherDog the PC itself is frozen/black-screened. WatcherDog reports the panel as *"needs PC"* and stops the futile Telegram-side loop. The actual black-screen / frozen-RDP repair is done by the per-PC tool (`Boot.exe` in the cross-repo `AdxamAxatov/Watchdog` project), which supersedes the on-PC `Watchdog.exe` babysitter. See [[Monitoring and Recovery Rules]] and [[Legacy Modes]].
 
 ## See also
 - [[Monitoring and Recovery Rules]] — the deterministic rules that consume this vocabulary

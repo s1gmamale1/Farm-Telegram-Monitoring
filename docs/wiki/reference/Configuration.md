@@ -121,6 +121,29 @@ Each ref is a numeric user id (e.g. `1406109190`) or an `@username`. The watcher
 > [!warning] BOT_TOPIC has no fallback to topic 7 in the module
 > `DOCUMENTATION.md` (167-168) / `README.md` (207) imply `BOT_TOPIC` "defaults to" the hourly-report topic id 7. In `bot_interface.py`, `_group_topic` comes straight from `cfg.bot_topic` with **no fallback** — it is `None` (unrestricted) when blank. Any `=7` default lives in `config.py`, not the bot module.
 
+## Deterministic panel monitoring & recovery
+
+The `PANEL_*` block configures the model-free R1–R6 engine (`panel_rules.py` + `mcp_watcher._evaluate_panel`). See [[Monitoring and Recovery Rules]] and [[Panel Control Bot]].
+
+| Key | Default / notes |
+|-----|-----------------|
+| `PANEL_RULES_ENABLED` | Master gate for the deterministic panel engine. |
+| `PANEL_TARGET_ACCOUNTS` | Accounts every working panel must have launched, default **4**. |
+| `PANEL_OVERLAUNCH_MINUTES` | How long `Launched > target` must persist before the destructive Kill→reselect→start reset fires, default **15**. |
+| `PANEL_IDLE_MINUTES` | LIVE-but-no-score-change window before `make_lobbies`, default **10**. |
+| `PANEL_STALE_MINUTES` | **Total silence → DEAD threshold, default 70** (was 30). ANY message — including *"Can't find match… changing batch"* — resets the clock and counts as alive (R6). Pure timing; no screenshot/OCR/model. |
+| `PANEL_ACTION_DEBOUNCE_SECONDS` | Minimum gap between actions on the same panel, default **180**. Also arms the R4 black-screen follow-up. |
+| `PANEL_AUTO_RECOVER` | Auto-run **non-destructive** recoveries (default **true**); else offer a confirm card. |
+| `PANEL_AUTO_DESTRUCTIVE` | **Auto-run DESTRUCTIVE recoveries too, default `true`** (was opt-in). When true, Kill→reselect→start runs unattended; when false a one-tap confirm card is posted instead. See accuracy note below. |
+| `PANEL_SETTLE_SECONDS` | Wait between chained actions in a sequence, default **4** (`panel_actions.run_sequence`). |
+| `PANEL_MAX_ATTEMPTS` | **Retry cap before cold-case escalation, default 3.** After this many failed recovery attempts in one episode, the futile Kill→Start loop stops and the panel is flagged *"NOT fixed ❌ → needs PC (N relaunches failed)"*. |
+
+> [!warning] Destructive recovery now auto-runs by default
+> `PANEL_AUTO_DESTRUCTIVE` defaults to **`true`** — destructive sequences (Kill all CS & Steam → Select unfarmed → Start) execute unattended (`confirmed=True`). The confirm card is now the **opt-in** path (set `PANEL_AUTO_DESTRUCTIVE=false`). The non-destructive gate is the separate `PANEL_AUTO_RECOVER` (also default true). See [[Confirm and Action Buttons]].
+
+> [!info] Cold cases are detect-only from Telegram
+> When recovery exhausts `PANEL_MAX_ATTEMPTS`, or a screenshot comes back black (R4, `panel_actions.screenshot_is_black`), or a panel is totally silent past `PANEL_STALE_MINUTES` (R6), WatcherDog reports the panel as **needs PC** and stops acting — a frozen/black-screen RDP host can't be fixed over Telegram. The actual black-screen/frozen-RDP repair lives in the per-PC tool (`Boot.exe` in the cross-repo `Watchdog` project). See [[Monitoring and Recovery Rules]].
+
 ## Self-edit & safe self-restart
 
 | Key | Notes |

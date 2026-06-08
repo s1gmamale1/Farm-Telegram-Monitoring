@@ -46,6 +46,9 @@ Part of [[Home]].
 
 If no `AGENT_API_KEY` / `OPENROUTER_API_KEY` is found, the watcher **warns but continues** (unless `--once`); the agent simply can't answer novel questions. Keys resolve `AGENT_API_KEY` → `OPENROUTER_API_KEY` env → `~/.hermes/.env`.
 
+> [!tip] Running fully deterministic (AI-off) — the owner's mode
+> Set `DISABLE_AI=true` to run **completely model-free**: no Ollama triage, no OpenRouter agent, no legacy Hermes CLI. The deterministic R1–R6 [[Monitoring and Recovery Rules|panel engine]], scripted button actions, screenshots, confirm/auto-fix routing, slash-commands, reports, and alerts all still work — panel recovery never touches the agent. This is the owner's preferred runtime (rules over AI). See [[Script-First AI-Last]] and [[Configuration]].
+
 ## The three flags
 
 ```

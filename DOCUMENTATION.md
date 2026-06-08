@@ -40,15 +40,19 @@ One Python process, one asyncio event loop, **two Telegram logins**:
 ```
  ┌─ every WATCH_POLL_INTERVAL seconds ─────────────────────────────────────────┐
  │ 1. Read each chat in the watch folder (default "Farms" = 24 SinFermera bots) │
- │ 2. For each bot's latest message → _evaluate_bot():                          │
+ │ 2. Panel status card? → _evaluate_panel() (panel_rules R1–R6, no LLM):       │
+ │      • decide() → over-launch / relaunch / make-lobbies / R6 dead-flag       │
+ │      • destructive ladder runs AUTO by default (PANEL_AUTO_DESTRUCTIVE)       │
+ │      • outcome: `SinFermera## | <issue> | Fixed ✅ / NOT fixed ❌ → needs PC` │
+ │ 3. Else (free-text error) → _evaluate_bot():                                 │
  │      a. auto_fix.try_auto_fix()  ── the SCRIPT-FIRST router (no LLM)          │
  │           • classify() + learned_fixes.find_fix()                            │
  │           • suppressed → drop · fixed → report · human → alert · failed →↓   │
  │      b. miss / novel error → analyzer (Ollama) triage → _incident_via_agent  │
  │           (one agent.answer turn; it applies a fix and save_fix()es it)      │
- │ 3. heartbeat: a bot quiet past the threshold → silence alert (recovery note  │
+ │ 4. heartbeat: a bot quiet past the threshold → silence alert (recovery note  │
  │    when it speaks again)                                                      │
- │ 4. Alerts go out as a BOT DM to every ALLOWLIST owner (fallback: user acct)  │
+ │ 5. Alerts go out as a BOT DM to every ALLOWLIST owner (fallback: user acct)  │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -114,6 +118,46 @@ panel's buttons), the card is edited to show the result + who tapped, and the
 token is single-use + expiring. By the owner's explicit choice, **any group
 member may tap** — the token is the authorization, not the presser id (logged).
 `BotInterface.post_action_card` / `_on_callback` wire it to Telegram.
+
+### Deterministic panel recovery (`panel_rules.py` + `_evaluate_panel`)
+A separate, **pure** decision engine handles the panel *status cards* (distinct
+from the learned-fixes router, which handles free-text errors). `panel_rules.py`
+is I/O-free and model-free: `observe()` advances per-panel timers from a parsed
+`PanelStatus`, and `decide()` returns a `Decision` (R1–R6 precedence — over-launch,
+under-target/not-live relaunch, idle make-lobbies, R6 dead-by-silence flag).
+`mcp_watcher._evaluate_panel` drives it, runs the chosen action sequence on the
+**user account**, and reports the outcome:
+
+- **Auto by default.** Non-destructive recoveries run when `PANEL_AUTO_RECOVER`
+  (default true); the **destructive** ladder (`kill_all → select_unfarmed →
+  start_selected`) runs autonomously when `PANEL_AUTO_DESTRUCTIVE` (**default
+  true**). Set `PANEL_AUTO_DESTRUCTIVE=false` and a destructive Decision instead
+  posts a one-tap confirm card — the card is the *opt-in*, not the default.
+- **One-line outcome report** (`_panel_report` / `_issue_label`). On recovery:
+  `SinFermera## | <issue> | Fixed ✅`; on a cold case it can't fix from Telegram:
+  `SinFermera## | <issue> | NOT fixed ❌ → needs PC`. Issue labels come from the
+  Decision (`over-launch`, `idle / no match`, `N/4 launched`, `panel/PC down`).
+- **Retry-cap** (`PANEL_MAX_ATTEMPTS`, default 3). Each recovery cycle increments
+  `PanelState.recover_attempts`; after N failed cycles in one episode the futile
+  Kill→Start loop stops and the panel is escalated **once** as a cold case
+  (`coldcase_reported` latch), then stays quiet until it recovers.
+- **R6 dead rule** (`PANEL_STALE_MINUTES`, **default 70**, was 30). A panel is
+  `flag`-ged as dead only after *total* silence this long; **any** message — incl.
+  "Can't find match… changing batch" (working, just no games) — resets the clock
+  and counts as alive. The cold-case line reads `silent Nm (dead)`.
+- **R3b — "Can't find match… changing batch"** (`_handle_cant_find_match`): not a
+  failure, but flagged once with a **screenshot** plus the account roster pulled
+  from the panel's `/start` menu. `tg_actions.screenshot` matches the button by
+  **case-insensitive substring** (so the real emoji-prefixed `🖼 Screenshot` label
+  resolves; `startswith` was too strict).
+- **R4 / cold case (cross-repo).** A black screen (pixel-black screenshot) or
+  frozen RDP is only **detected** here and reported `needs PC`. The actual host
+  fix (close/reopen the RDP window, relaunch `wfreerdp`) lives in a **separate
+  per-PC tool** ([AdxamAxatov/Watchdog](https://github.com/AdxamAxatov/Watchdog),
+  `Boot.exe`) — the Telegram watcher never restarts a host.
+
+This whole path is deterministic; **panel recovery never routes through a model**,
+so it runs identically with `DISABLE_AI=true`.
 
 ---
 
@@ -215,6 +259,7 @@ and the fast commands.
 | Module | Responsibility |
 |--------|----------------|
 | `config.py` | Parses `.env` into a typed `Config`; `validate_watcher()` checks the keys `run_watcher.py` needs (API id/hash + a non-empty owner allow-list). The owner allow-list is `ALLOWLIST` (aliases `ALLOW_LIST` / `ALLOWED_USERS`; legacy `IBO_CHAT_ID` is the fallback — first non-empty wins): a **comma-separated** list of refs (numeric user ids or `@usernames`) parsed into `cfg.ibo_chat_ids`, with `cfg.ibo_chat_id` = the first (primary) ref. Each ref is stripped of surrounding whitespace, JSON-array brackets `[](){}` and quotes (so `ALLOWLIST=[111, "222"]` works), but leading `-` and `@` are preserved. Every tunable + its default is documented here. |
+| `panel_rules.py` | Pure (I/O- and model-free) panel-recovery decision engine. `observe()` advances per-panel timers; `decide()` returns the R1–R6 `Decision`. Driven by `mcp_watcher._evaluate_panel` (see §3). Knobs: `PANEL_AUTO_DESTRUCTIVE` (auto-run the destructive ladder, default true), `PANEL_STALE_MINUTES` (R6 dead-by-silence, default 70), `PANEL_MAX_ATTEMPTS` (retry-cap → cold case, default 3). |
 | `classifier.py` | `classify(text)` → `error` / `normal` / `unknown`; `bot_name_from(text)`. Cheap prefilter so Ollama isn't spent on routine spam. |
 | `analyzer.py` | Ollama `/api/chat`. `analyze_message()` → `{is_error, severity, summary, root_cause, fix}` for chat messages; `analyze()` for tracebacks (log mode). |
 | `heartbeat.py` | Silence detection. Bots auto-learned on first post; clocks reset on restart so downtime never floods false "silent" alerts. |
@@ -287,9 +332,9 @@ and the fast commands.
 ## 10. Tests
 
 `tests/` (run with `pytest` or `./scripts/run_tests.sh`) covers the router, learned
-fixes, buttons, fast commands, fan-out, progress/resume, the agent loop, and
-config — **700+ tests** (run `.venv/bin/python -m pytest` for the live count). The 4 failures are pre-existing and unrelated
-to the watcher path: 2 legacy macOS GUI imports needing `pyobjc`/`Quartz`
-(`watcherdog.gui_mac`, `run_gui`) and 2 timing-sensitive concurrency tests in
-`test_bot_interface`. `pytest.ini` sets discovery; dev deps in
-`requirements-dev.txt`.
+fixes, buttons, fast commands, fan-out, progress/resume, the agent loop, the
+deterministic panel-recovery engine (`panel_rules` R1–R6), and config — **700+
+tests** (run `.venv/bin/python -m pytest` for the live count). The suite is
+**green** aside from a couple of skipped legacy macOS GUI imports that need
+`pyobjc`/`Quartz` (`watcherdog.gui_mac`, `run_gui`). `pytest.ini` sets discovery;
+dev deps in `requirements-dev.txt`.

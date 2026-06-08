@@ -15,8 +15,11 @@ WatcherDog runs over the **Telegram API (MTProto)** as your user account
    Every message hits a **script-first router** (`watcherdog/auto_fix.py`) first:
    known errors are **auto-fixed with zero AI cost**, and only a *novel* error
    escalates to the model (which then saves a runnable fix so the next time is
-   free). Destructive steps post a one-tap **confirm button**, never a typed
-   question.
+   free). Panel status problems go through a separate deterministic engine
+   (`watcherdog/panel_rules.py`) that **auto-fixes them itself** — the destructive
+   Kill-all → Start ladder runs autonomously by default (`PANEL_AUTO_DESTRUCTIVE`);
+   the one-tap confirm button is the opt-in. Each outcome is reported as one line:
+   `SinFermera## | <issue> | Fixed ✅` (or `NOT fixed ❌ → needs PC`).
 2. **Answers ibo.** Anything you text the account from **ibo** is read instantly
    and handed to WatcherDog's built-in **agent** (deepseek-v4-pro via OpenRouter),
    which uses Telegram tools to inspect folders/chats and replies — e.g.
@@ -133,6 +136,9 @@ Project folder: `~/Documents/WatcherDogBot`
    | `WATCH_POLL_INTERVAL` | Seconds between proactive sweeps | `120` |
    | `MIN_SEVERITY` | Alert at/above `low`/`medium`/`high`/`critical` | `high` |
    | `SILENCE_THRESHOLD_MINUTES` | Alert if a bot is quiet this long | `120` |
+   | `PANEL_AUTO_DESTRUCTIVE` | Auto-run the destructive Kill-all → Start recovery ladder (false = post a confirm card) | `true` |
+   | `PANEL_STALE_MINUTES` | Total panel silence before "dead" → `needs PC` (any message resets it) | `70` |
+   | `PANEL_MAX_ATTEMPTS` | Failed recovery cycles before escalating a cold case | `3` |
    | `AGENT_MODEL` | The conversation model | `deepseek/deepseek-v4-pro` |
 
    Ollama must be running (used to triage bot messages): `ollama list`.
@@ -233,10 +239,21 @@ launchctl load ~/Library/LaunchAgents/com.watcherdog.telegram.plist
   so the next occurrence is handled by the router with no model. Real problems
   (≥ `MIN_SEVERITY`) or silence (> `SILENCE_THRESHOLD_MINUTES`) → message ibo
   (de-duped; recovery note when a bot returns).
-- **Confirmation is a button, not a question.** Anything destructive
-  (Kill/Restart/Reboot/Shutdown) or a novel fix needing a yes posts an inline
-  **confirm button** in the group. Any member can tap it (the signed single-use
-  token is the authorization); the press is logged.
+- **Panel recovery is autonomous by default.** When a *panel* status card shows a
+  problem (over-launch, under-target, idle, dead), the deterministic engine
+  (`watcherdog/panel_rules.py`) **fixes it itself** — including the destructive
+  Kill-all → select 4 → Start ladder — with no tap (`PANEL_AUTO_DESTRUCTIVE=true`,
+  the default). It then posts **one concise line** per outcome:
+  `SinFermera## | <issue> | Fixed ✅`, or `SinFermera## | <issue> | NOT fixed ❌ →
+  needs PC` for a cold case it can't fix from Telegram. After
+  `PANEL_MAX_ATTEMPTS` (3) failed cycles it stops the futile loop and escalates as
+  a cold case. A panel is only "dead" after `PANEL_STALE_MINUTES` (70) of *total*
+  silence — any message (incl. "Can't find match… changing batch") resets it.
+- **Confirmation is the opt-in, not the default.** Set
+  `PANEL_AUTO_DESTRUCTIVE=false` (or for the bot's own relaunch flow / a novel
+  text-error fix) and a yes posts an inline **confirm button** in the group
+  instead of running. Any member can tap it (the signed single-use token is the
+  authorization); the press is logged.
 - **Whenever ibo texts:** fast commands (`/status` etc.) answer with no model;
   everything else goes to the agent, which reads the relevant folder/chat and
   replies. The agent acts only when allowed (`AGENT_ACTIONS_ENABLED`) and ignores

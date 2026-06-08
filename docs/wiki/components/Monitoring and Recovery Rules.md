@@ -78,6 +78,9 @@ Each recovery episode produces ONE concise line to the [[Configuration|allow-lis
 
 **Retry-cap → cold case.** A frozen RDP host can't be fixed from Telegram, so the engine never loops forever: after `PANEL_MAX_ATTEMPTS` (default 3) failed Kill→Start cycles it stops acting and escalates the panel as **needs PC**, then stays quiet until it recovers. **R4** (black screenshot) and **R6** (down/stale) escalate immediately via the same one-line format. The per-PC RDP tool (closes/reopens the frozen `wfreerdp` window) is what actually clears these — see R4/R6.
 
+> [!info] Cold cases are handed to the PC-side repo
+> **R4** (black screen) and **R6** (dead / total silence) are *cold cases*: the Telegram watcher only **detects + reports** them as "needs PC" — it does NOT and CANNOT fix them from Telegram. The actual on-PC repair (close/reopen the frozen RDP-session host, relaunch the panel exe, reboot) lives in the separate repo `github.com/AdxamAxatov/Watchdog` (`Boot.exe`), the descendant of the legacy on-PC `Watchdog.exe` (see [[Legacy Modes]]). R1–R3b stay fully in WatcherDog's deterministic loop.
+
 ## See also
 - [[Panel Control Bot]] — the status format + button vocabulary these rules use
 - [[Telegram Tools and Actions]] — executes the button presses

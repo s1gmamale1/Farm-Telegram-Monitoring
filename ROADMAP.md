@@ -19,7 +19,7 @@ This ROADMAP is the single source of truth for what to build next.
 
 | # | Sev | Bug | Where (file:line) | Effort |
 |---|-----|-----|-------------------|--------|
-| 1 | Med | Two concurrency tests fail on a pristine checkout (`assert 3 == 1`); fail in isolation too | `tests/test_bot_interface.py` (`test_action_turns_serialize`, `test_stopjobs_cancels_running_jobs_and_clears_store`) | M |
+| 1 | ✅ | ~~Two concurrency tests fail on a pristine checkout~~ — **RESOLVED 2026-06-08** (fixed via test fixtures; full suite green, those `test_bot_interface` tests pass) | `tests/test_bot_interface.py` | M |
 | 2 | Low | Unpinned runtime deps not declared: `gspread`/`google-auth` (drop-stats → Sheets, optional) and `pyobjc` (legacy GUI). `requirements.txt` pins only `telethon` | `requirements.txt` | S |
 | 3 | Low | `agent.py` module docstring says "READ-ONLY loop" but it exposes act/self-edit/grant/restart tools (it's READ/ACT) | `watcherdog/agent.py:2` | S |
 | 4 | Low | Stray space inside f-string braces renders a double space in the "needs attention" hourly line | `watcherdog/mcp_watcher.py:724` (`f'…{bn }…'`) | S |

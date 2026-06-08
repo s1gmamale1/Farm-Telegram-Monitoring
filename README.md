@@ -96,8 +96,10 @@ farm message ─▶ classify()                          (scripts, no LLM)
 - **Novel error** → escalated to the agent (deepseek via OpenRouter) **once**. It
   fixes it, then **saves the fix with an executable `action`** so every repeat is
   handled by the router with **no model**.
-- **Destructive steps** (Kill / Restart / Reboot / Shutdown) → never pressed
-  blindly. The bot posts an **inline confirm button** instead of a text question.
+- **Destructive panel recovery** (the deterministic Kill-all → select-4 → Start
+  ladder) runs **autonomously by default** (`PANEL_AUTO_DESTRUCTIVE=true`). The
+  inline confirm button is the **opt-in**: set `PANEL_AUTO_DESTRUCTIVE=false` and
+  destructive steps post a one-tap card instead of running themselves.
 - **`type: human` fix** → the router does *not* act; it pings you (a person is
   needed).
 
@@ -112,8 +114,20 @@ The knowledge base is a plain-Markdown file you can read and edit:
   Guard, or goes **silent** past `SILENCE_THRESHOLD_MINUTES`, **everyone in the
   `ALLOWLIST`** gets a DM (and a "✅ back online" note when it recovers).
   De-duplicated so the same bug doesn't spam you within `DEDUPE_WINDOW`.
-- **Inline confirm/action buttons** (`watcherdog/buttons.py`) — anything needing a
-  yes shows tappable buttons, not a typed question:
+- **Autonomous panel recovery + one-line outcome** — the deterministic engine
+  (`watcherdog/panel_rules.py`, driven by `mcp_watcher._evaluate_panel`) watches
+  each panel's status and, by default, **fixes it itself** (Kill all → select 4 →
+  Start, no tap), then posts **one concise line** per outcome:
+  ```
+  SinFermera9 | over-launch | Fixed ✅
+  SinFermera3 | silent 71m (dead) | NOT fixed ❌ → needs PC
+  ```
+  A cold case (frozen RDP / black screen / total silence) it *can't* fix from
+  Telegram is reported as `NOT fixed ❌ → needs PC` — the host-side fix lives in a
+  separate per-PC tool (see the Appendix note at the bottom).
+- **Inline confirm/action buttons** (`watcherdog/buttons.py`) — when destructive
+  auto-run is *off* (`PANEL_AUTO_DESTRUCTIVE=false`), or for the bot's own
+  relaunch flow, a yes shows tappable buttons instead of a typed question:
   ```
   ⚠️ SinFermera9 — farm dead (device on). Proposed: relaunch (Kill All → Start 4).
   [ ✅ Do it ]   [ ✋ Skip ]   [ 🔁 Restart instead ]
@@ -205,7 +219,10 @@ its default). The keys you'll touch most:
 | `WATCH_POLL_INTERVAL` | `120` | Seconds between proactive sweeps. |
 | `MIN_SEVERITY` | `high` | Alert at/above `low`/`medium`/`high`/`critical`. |
 | `SILENCE_THRESHOLD_MINUTES` | `120` | Alert if a bot is quiet this long. |
-| `DISABLE_AI` | `false` | Fully model-free mode: no Ollama, no OpenRouter agent, no Hermes CLI. Deterministic commands/actions/screenshots/cards/reports/alerts still run. |
+| `PANEL_AUTO_DESTRUCTIVE` | `true` | Run the destructive recovery ladder (Kill all → select 4 → Start) **autonomously**. Set `false` to make destructive steps post a one-tap confirm card instead. |
+| `PANEL_STALE_MINUTES` | `70` | Total silence (any message resets the clock) before a panel counts as **dead** → cold case `needs PC`. |
+| `PANEL_MAX_ATTEMPTS` | `3` | After this many failed recovery cycles in one episode, stop the futile loop and escalate as a cold case (`needs PC`). |
+| `DISABLE_AI` | `false` | Fully model-free mode: no Ollama, no OpenRouter agent, no Hermes (no Hermes CLI either). Panel recovery is deterministic and never routes through AI; deterministic commands/actions/screenshots/cards/reports/alerts still run. |
 | `OLLAMA_URL` / `OLLAMA_MODEL` | local | Local model used to triage messages. |
 | `AGENT_MODEL` | `deepseek/deepseek-v4-pro` | The conversation/novel-error model (OpenRouter). |
 | `AGENT_API_KEY` / `OPENROUTER_API_KEY` | — | Model key (also read from `~/.hermes/.env`). |
@@ -277,10 +294,10 @@ from the CLI), `simulate_error.py` (log-mode testing), `gui_probe.py` /
 ```
 
 The suite (`tests/`) covers the router, learned fixes, buttons, fast commands,
-fan-out, progress/resume, and the config — **700+ tests** (run `.venv/bin/python -m pytest` for the live count). The 4
-failures are pre-existing and unrelated to the watcher path: 2 legacy macOS GUI
-imports that need `pyobjc`/`Quartz` (`watcherdog.gui_mac`, `run_gui`) and 2
-timing-sensitive concurrency tests in `test_bot_interface`.
+fan-out, progress/resume, the deterministic panel-recovery engine, and the
+config — **700+ tests** (run `.venv/bin/python -m pytest` for the live count). The
+suite is **green** aside from a couple of skipped legacy macOS GUI imports that
+need `pyobjc`/`Quartz` (`watcherdog.gui_mac`, `run_gui`).
 
 WatcherDog runs on **Python 3.11–3.14** (entrypoints use `asyncio.run()`; the
 local venv is Python 3.14.3 + Telethon 1.43.2, and the MTProto handshake works
@@ -308,5 +325,10 @@ the supported path** — use `run_watcher.py`.
   it to log into this folder (`watcherdog/bot_logging.py` is a drop-in for that).
 
 > **Auto-recovery of *your machine* is intentionally OFF in every mode.**
-> WatcherDog detects, analyzes, alerts, and (on the farm panels only, with a
-> tap or a learned fix) acts — it never restarts your host or your bots' hosts.
+> WatcherDog detects, analyzes, alerts, and acts on the **farm panels** (the
+> destructive Kill-all → Start ladder runs autonomously by default; see §2) — but
+> it never restarts your host or your bots' hosts. A frozen RDP host / black
+> screen is only **detected** here (R4 pixel-black, R6 silence) and reported as
+> `needs PC`; fixing it (closing/reopening the RDP window, relaunching
+> `wfreerdp`) is done by a **separate per-PC tool** in another repo
+> ([AdxamAxatov/Watchdog](https://github.com/AdxamAxatov/Watchdog) — `Boot.exe`).

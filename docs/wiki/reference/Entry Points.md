@@ -65,6 +65,9 @@ The `ACTIONS:` log line resolves to one of **READ-ONLY / DRY-RUN / LIVE**.
 
 These feed [[The Agent]] for ibo, the bot, and Special Forces respectively.
 
+> [!info] The watcher is detect-only for cold cases
+> `run_watcher.py` drives panels over Telegram and auto-runs deterministic recovery (including destructive Kill→reselect→start by default — `PANEL_AUTO_DESTRUCTIVE`). What it **cannot** fix from Telegram — a frozen/black-screen RDP host (R4 black screenshot or R6 silence past `PANEL_STALE_MINUTES`) — it only **detects and reports** as *"needs PC"*. The actual host restart is the cross-repo per-PC tool (`Boot.exe` in `AdxamAxatov/Watchdog`). See [[Monitoring and Recovery Rules]] and [[Panel Control Bot]].
+
 ## Login tooling
 
 Before `run_watcher.py` can connect, the user account needs a session (or it reuses the telegram-mcp session string). The helpers live in `tools/`:

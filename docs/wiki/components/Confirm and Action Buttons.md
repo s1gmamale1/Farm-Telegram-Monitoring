@@ -73,7 +73,10 @@ On `ok`, the mapped `option["steps"]` are pressed on the **user account** via `t
 | `confirm_options()` | a do-label / ✋ Skip |
 | `is_noop()` | True when an option has empty `steps` |
 
-`relaunch_options` is posted by the silence path in [[The Monitor Loop]] when a bot goes quiet; `confirm_options` is posted by the deterministic router's `needs_confirm` outcome in [[Script-First AI-Last]].
+`relaunch_options` is posted by the silence path in [[The Monitor Loop]] when a bot goes quiet; `confirm_options` is posted by the deterministic router's `needs_confirm` outcome in [[Script-First AI-Last]] and by the panel-recovery engine when it is configured to ASK instead of auto-run.
+
+> [!warning] Panel recovery does NOT always need a tap — it auto-runs by default
+> The confirm card is the path for a destructive step the router/engine won't run on its own — but in the owner's runtime that is the **opt-in** behaviour, not the default. The [[Monitoring and Recovery Rules|panel-recovery engine]] runs even **destructive** recoveries (R1 `Kill all` → relaunch) **autonomously** because `PANEL_AUTO_DESTRUCTIVE=true` is the default; it posts a `confirm_options` card only when you set `PANEL_AUTO_DESTRUCTIVE=false` (non-destructive recoveries follow `PANEL_AUTO_RECOVER`, also default true). The learned-fixes router still gates a destructive learned fix behind `needs_confirm` unless that block is marked `auto: yes`. So "destructive ⇒ always a human tap" is true only for the learned-fix path, not for the deterministic panel-recovery loop.
 
 > [!warning] README confirm-card layout is illustrative
 > `README.md` shows a confirm card with three buttons including "[ 🔁 Restart instead ]". The actual presets do not produce that exact layout — `relaunch_options()` is Relaunch / Screenshot / Skip and `confirm_options()` is a do-label / Skip. The README example is illustrative, not a literal preset. See [[README]].
@@ -101,6 +104,7 @@ The monitor stores `state["post_card"]` at startup so the incident handler can p
 
 - [[The Bot Front-End]] — `_on_callback` / `_run_card_steps` consume these cards
 - [[Script-First AI-Last]] — the `needs_confirm` router outcome that posts confirm cards
+- [[Monitoring and Recovery Rules]] — the panel-recovery engine that auto-runs destructive steps by default (card is opt-in)
 - [[The Monitor Loop]] — silence relaunch cards and the shared `agent_lock`
 - [[Telegram Tools and Actions]] — `press_button(confirmed=True)` and `is_destructive`
 - [[Safe Self-Restart]] — why button tokens become invalid after a restart

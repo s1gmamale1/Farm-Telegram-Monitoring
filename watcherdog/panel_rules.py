@@ -60,7 +60,7 @@ def decide(status, status_age, state, now, cfg):
     target = int(getattr(cfg, "panel_target_accounts", 4))
     overlaunch_s = float(getattr(cfg, "panel_overlaunch_minutes", 15)) * 60.0
     idle_s = float(getattr(cfg, "panel_idle_minutes", 10)) * 60.0
-    stale_s = float(getattr(cfg, "panel_stale_minutes", 30)) * 60.0
+    stale_s = float(getattr(cfg, "panel_stale_minutes", 70)) * 60.0
 
     if status is None or status_age is None or status_age > stale_s:
         return Decision("flag", reason="panel/PC down or status stale — needs per-PC API",

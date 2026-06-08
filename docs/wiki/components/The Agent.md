@@ -17,6 +17,9 @@ Part of [[Home]].
 
 `watcherdog/agent.py` is the reasoning engine WatcherDog falls back to when the cheap deterministic stages can't handle an error. It is the "AI-last" tier of [[Script-First AI-Last]]: only genuinely novel errors, free-form ibo questions, and self-improvement requests ever reach it. Every other path — [[The Learned-Fixes Brain]], the classifier, and the deterministic router — runs first and spends zero OpenRouter tokens.
 
+> [!warning] In the owner's runtime this agent is OFF
+> The owner runs with `DISABLE_AI=true`, so `agent.answer` is never called: novel incidents become plain alerts, the Special Forces auto-reply and the weekly digest are skipped, and **panel recovery is never routed through the agent** — it stays in the deterministic [[Monitoring and Recovery Rules|R1–R6 engine]]. Treat everything in this note as a **reserved / optional** capability (the model-backed path), present in the code but off by default in production. With AI enabled it behaves as described below.
+
 ## The answer loop
 
 `answer(...)` (`agent.py:907`) is the main entry point. It runs an OpenRouter chat-completion loop up to `cfg.agent_max_steps` (default 12) iterations, executing tool calls each turn via `_dispatch` and forcing a final tools-less pass when the step budget is spent. The transport is `_chat_completion` (`agent.py:851`) — a blocking `urllib` POST to OpenRouter's `chat/completions`, pure stdlib with **no SDK**. `tools` + `tool_choice: auto` are only attached when there are tools to advertise.
@@ -111,6 +114,7 @@ The `save_fix` tool the agent uses to teach itself a new fix is literally `learn
 
 - [[Telegram Tools and Actions]] — the read/write Telethon layers the agent calls through
 - [[Script-First AI-Last]] — why the agent is the LAST resort, not the first
+- [[Monitoring and Recovery Rules]] — the deterministic panel loop that runs WITHOUT the agent
 - [[Safe Self-Restart]] — what happens when the agent rewrites and relaunches itself
 - [[Confirm and Action Buttons]] — how destructive actions get human approval
 - [[The Bot Front-End]] — the human-facing caller that drives the agent

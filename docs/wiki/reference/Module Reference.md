@@ -17,7 +17,7 @@ Part of [[Home]].
 This is the map from filename to responsibility. It is organized by tier — the **supported** [[Script-First AI-Last]] path that [[The Monitor Loop]] runs, then the shared library modules, then the [[Legacy Modes]] modules that predate `run_watcher.py`. For the configuration keys each module reads, see [[Configuration]]; for the files they write at runtime, see [[Data and State]]; for term definitions, see [[Glossary]].
 
 > [!warning] Test count grows — verify, don't trust the docs
-> The suite is large (**700+ `def test_` functions** across 40+ `test_*.py` modules) and grows constantly — don't hard-code a number here; run `.venv/bin/python -m pytest` for the live count. There are 4 pre-existing, unrelated failures. See [[Testing]].
+> The suite is large (**700+ `def test_` functions** across 40+ `test_*.py` modules) and grows constantly — don't hard-code a number here; run `.venv/bin/python -m pytest` for the live count. A clean run is **all-green with 2 skips** (the legacy GUI imports in `test_smoke.py` need the optional `pyobjc`/`Quartz`) — there are **no failures**. See [[Testing]].
 
 ## Entry points (root scripts)
 
@@ -32,7 +32,7 @@ This is the map from filename to responsibility. It is organized by tier — the
 
 | Module | Subsystem note | Key symbols / role |
 |--------|----------------|--------------------|
-| `mcp_watcher.py` | [[The Monitor Loop]] | `run` (the event loop, line 868), `monitor_once` (351), `_evaluate_bot` (261), `_incident_via_agent` (228), `run_hourly_report` (671), the scheduled loops (`_recurring_loop`, `_weekly_digest_loop`, `daily_report_loop`, `_hourly_report_loop`), the listeners (`register_ibo_listener`, `register_special_forces_listener`), `load_watch_chats` (95), `_send`/`_alert` (167/184). |
+| `mcp_watcher.py` | [[The Monitor Loop]] | `run` (the event loop, line 868), `monitor_once` (351), `_evaluate_bot` (261), the deterministic panel path `_evaluate_panel` (334) + `_panel_report`/`_issue_label` (one-line Fixed/Not reports) + `_handle_cant_find_match`, `_incident_via_agent` (228), `run_hourly_report` (671), the scheduled loops (`_recurring_loop`, `_weekly_digest_loop`, `daily_report_loop`, `_hourly_report_loop`), the listeners (`register_ibo_listener`, `register_special_forces_listener`), `load_watch_chats` (95), `_send`/`_alert` (167/184). |
 | `classifier.py` | [[Script-First AI-Last]] | `classify(text)` → `error`/`normal`/`unknown` via `_ERROR_RE`/`_NORMAL_RE`; `bot_name_from(text)`. Zero-token, model-free. |
 | `auto_fix.py` | [[Script-First AI-Last]], [[Confirm and Action Buttons]] | `try_auto_fix(...)` — the deterministic, zero-token router returning `None` or `{status: suppressed\|fixed\|failed\|human\|needs_confirm}`; `parse_action`, `is_ignore`, `_auto_ok`, `format_fixed`, `format_human`. |
 | `learned_fixes.py` | [[The Learned-Fixes Brain]] | `load_fixes`, `find_fix` (longest-match-wins substring), `append_fix` (the function the agent's `save_fix` tool wraps), `is_human_fix`. Parses the Markdown brain. |
@@ -48,12 +48,12 @@ This is the map from filename to responsibility. It is organized by tier — the
 
 ## Deterministic panel engine (R1–R6)
 
-The script-first recovery engine that drives FSM [[Panel Control Bot|panels]] without a model. `mcp_watcher._evaluate_panel` parses each panel's status, asks `panel_rules` for a `Decision`, then executes it via `panel_actions`. See [[Monitoring and Recovery Rules]].
+The script-first recovery engine that drives FSM [[Panel Control Bot|panels]] without a model. `mcp_watcher._evaluate_panel` parses each panel's status, asks `panel_rules` for a `Decision`, then executes it via `panel_actions`. Each outcome is one line via `_panel_report`/`_issue_label` — `SinFermera## | <issue> | Fixed ✅` or `… | NOT fixed ❌ → needs PC`. Destructive recoveries auto-run by default (`PANEL_AUTO_DESTRUCTIVE`); a futile loop is capped at `PANEL_MAX_ATTEMPTS` then escalated as a cold case (needs PC). See [[Monitoring and Recovery Rules]].
 
 | Module | Subsystem note | Key symbols / role |
 |--------|----------------|--------------------|
 | `farm_stats.py` | [[Panel Control Bot]], [[Monitoring and Recovery Rules]] | Pure deterministic parser of the "FSM Panel - Main menu" status message → typed `PanelStatus`/`Account` (`parse_panel_status`, `launched_from_alert`). Never raises; unknown fields stay `None` (never guesses a number). No model, no Telegram. |
-| `panel_rules.py` | [[Monitoring and Recovery Rules]] | The **R1–R6 decision engine** (pure — no I/O, no model): `observe(status, state, …)` advances per-panel timers; `decide(status, status_age, state, …)` returns a `Decision` (`kind`, `actions`, `destructive`, `cold_case`). `PanelState` holds per-panel latches/timers. R4 (black screenshot) is a caller-side follow-up in `mcp_watcher`. |
+| `panel_rules.py` | [[Monitoring and Recovery Rules]] | The **R1–R6 decision engine** (pure — no I/O, no model): `observe(status, state, …)` advances per-panel timers; `decide(status, status_age, state, …)` returns a `Decision` (`kind`, `actions`, `destructive`, `cold_case`, `healthy`). `PanelState` holds per-panel latches/timers plus the recovery-episode fields (`recover_attempts`, `episode_issue`, `coldcase_reported`) that drive the Fixed/Not report and the `PANEL_MAX_ATTEMPTS` retry-cap. R4 (black screenshot) and R6 staleness (`PANEL_STALE_MINUTES`) are handled in `mcp_watcher`. |
 | `panel_actions.py` | [[Monitoring and Recovery Rules]], [[Telegram Tools and Actions]] | High-level named actions over `tg_actions.press_button` (no decisions, just execution): `kill_all`, `select_unfarmed`, `start_selected`, `make_lobbies`, `drop_stats`, `run_activity_booster`, `restart_panel`, `run_sequence`; plus `screenshot_is_black`/`screenshot_black` (the cold-case RDP detector). `BTN_*` label constants. |
 
 ## The bot front-end

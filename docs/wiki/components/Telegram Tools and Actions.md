@@ -42,10 +42,10 @@ WatcherDog cleanly separates **reading** from **acting** into two modules. [[The
 |--------|------|------|
 | `DESTRUCTIVE` | `tg_actions.py:25` | The set of dangerous label markers |
 | `is_destructive` | `tg_actions.py:31` | True if a button label looks like kill/restart/reboot/shutdown |
-| `panel_menu` | `tg_actions.py:59` | Opens a panel's `/start` menu |
-| `press_button` | `tg_actions.py:72` | Clicks a button — refuses unless `confirmed=True` for destructive |
-| `send_command` | `tg_actions.py:116` | Sends a slash/text command to a panel |
-| `screenshot` | `tg_actions.py:124` | Captures a panel screenshot |
+| `panel_menu` | `tg_actions.py:64` | Opens a panel's `/start` menu |
+| `press_button` | `tg_actions.py:77` | Clicks a button — refuses unless `confirmed=True` for destructive |
+| `send_command` | `tg_actions.py:121` | Sends a slash/text command to a panel |
+| `screenshot` | `tg_actions.py:129` | Captures a panel screenshot (button matched by **substring**) |
 
 ### The destructive guard
 
@@ -81,6 +81,9 @@ Lower-level Telethon button helpers live in [[Drop-Stats Pipeline|drop_stats.py]
 
 > [!tip]
 > Button matching is by lowercased label **prefix** because Telegram truncates inline labels. Order matters: a more specific prefix must be tried before a shorter one (e.g. "kill all cs" before "kill all").
+
+> [!info] `press_button` and `screenshot` match by SUBSTRING, not just prefix
+> `tg_actions.press_button` resolves a label in order **exact → prefix → substring** (lowercased), and `tg_actions.screenshot` matches the Screenshot button by plain **substring** (`"screenshot" in label.lower()`). This is deliberately emoji-safe: a real panel button labelled `🖼 Screenshot` has an emoji + space *prefix*, so a strict `startswith("screenshot")` missed it on the live panels. The lower-level `_press` primitive shared with [[Drop-Stats Pipeline|drop_stats]] is still prefix-only — the difference is `tg_actions`'s own matchers are broader.
 
 ## How callers reach this layer
 

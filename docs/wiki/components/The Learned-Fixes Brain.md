@@ -97,6 +97,9 @@ flowchart TD
 
 The point of the brain is one-time learning: a novel error reaches [[The Agent]] (via [[The Monitor Loop|_incident_via_agent]]), the agent solves it, then calls `save_fix` (= `append_fix`) to write a runnable `action`. The NEXT identical error is handled router-only — zero tokens.
 
+> [!warning] With AI off, the brain is read-only (human-seeded)
+> The owner runs `DISABLE_AI=true`, so the agent never runs and never *writes* new blocks. The brain still **fires** — `find_fix` + the deterministic router are pure, model-free — but new entries must be seeded/edited **by hand**. The auto-learning loop above is the AI-enabled (reserved/optional) behaviour, not the default runtime. The routine panel watch/recover path doesn't use the brain at all; it runs on the deterministic [[Monitoring and Recovery Rules|R1–R6 engine]].
+
 > [!tip] The brain is human-editable
 > Because it is Markdown, you can pre-seed fixes by hand or correct the agent's entries. Just remember: every block needs a `match` phrase, and `action` steps must use the panel's exact button-label prefixes (see [[Telegram Tools and Actions]]).
 

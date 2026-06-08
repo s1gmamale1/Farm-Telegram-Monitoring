@@ -19,10 +19,8 @@ WatcherDog ships a regression suite under `tests/`. Run it after every change to
 > [!info] Counts drift — verify, don't trust
 > The suite grows constantly (it has passed through 302 → 466 → 615+ `def test_` functions); don't hard-code a number in prose — run `.venv/bin/python -m pytest` for the live count. Recent additions include the allow-list/multi-user path (`test_multi_user`), the [[Monitoring and Recovery Rules|deterministic panel engine]] (`test_farm_stats`, `test_panel_rules`, `test_panel_actions`, `test_evaluate_panel`), and core coverage for the loop/bot/Telethon layers (`test_mcp_watcher_core`, `test_bot_interface_core`, `test_telegram_source`, `test_tg_tools_async`, `test_restart_helper`).
 
-> [!warning] 4 PRE-EXISTING failures in a clean checkout (not regressions)
-> A full `pytest` run reports **4 pre-existing failures** against an otherwise-green suite. All 4 are unrelated to logic:
-> - **2 legacy GUI imports** need the unpinned `pyobjc`/`Quartz`: `test_smoke.py::test_module_imports[watcherdog.gui_mac]` and `[run_gui]` ([[Legacy Modes]]). Off macOS, or without pyobjc, they `ModuleNotFoundError: No module named 'Quartz'`.
-> - **2 concurrency-timing assertions** in `test_bot_interface.py`: `test_action_turns_serialize` and `test_stopjobs_cancels_running_jobs_and_clears_store` — they fail in isolation on pristine code too.
+> [!info] Clean run = all-green with 2 skips (no failures)
+> A full `pytest` run is **all passing with exactly 2 SKIPPED** and **zero failures**. The 2 skips are the **legacy GUI/OCR imports** in `test_smoke.py` (`watcherdog.gui_mac` / `run_gui`), which need the unpinned, macOS-only `pyobjc`/`Quartz` — without them the imports are skipped, not failed ([[Legacy Modes]]). Earlier docs cited "4 failures" (2 GUI imports + 2 concurrency-timing tests in `test_bot_interface.py`); that is stale — the GUI imports now `skip` cleanly and the concurrency tests pass.
 
 ## Running the suite
 
@@ -41,7 +39,7 @@ scripts/run_tests.sh -k config      # only tests matching "config"
 > [!info] Python 3.11–3.14 (venv = 3.14.3 + Telethon 1.43.2)
 > Entrypoints use `asyncio.run()` and coroutines use `asyncio.get_running_loop()` (not `get_event_loop()`), so the suite passes on 3.11 through 3.14. The local venv is **Python 3.14.3 with Telethon 1.43.2**, and the MTProto handshake is verified working there. See [[Troubleshooting]].
 
-## The 41 test modules
+## The test modules
 
 > [!tip] ⭐ marks modules added since the 302-test baseline. Counts are `def test_` functions per file (parametrization expands several into more cases at run time).
 
@@ -60,7 +58,7 @@ scripts/run_tests.sh -k config      # only tests matching "config"
 | `test_storage.py` | 19 | [[Data and State\|IncidentStore]] — dedupe + recurring order |
 | `test_monitor.py` | 19 | [[Legacy Modes\|LogMonitor]] + error_hash/normalize_error, logrotate |
 | `test_daily_report.py` | 18 | [[Scheduled Reports]] — jsonl log, hourly/daily summaries |
-| `test_bot_interface.py` | 18 | [[The Bot Front-End]] — routing, capabilities, callbacks (2 concurrency tests fail pre-existing) |
+| `test_bot_interface.py` | 19 | [[The Bot Front-End]] — routing, capabilities, callbacks, concurrency (all green) |
 | ⭐ `test_tg_tools_async.py` | 17 | [[Telegram Tools and Actions]] — async read helpers against a stub client |
 | ⭐ `test_multi_user.py` | 17 | the **allow-list** path — `resolve_ibos`, reply-to-sender, fan-out `_send`/`_alert` to all |
 | `test_auto_fix.py` | 17 | [[Script-First AI-Last]] — the deterministic router |
@@ -87,10 +85,10 @@ scripts/run_tests.sh -k config      # only tests matching "config"
 | `test_hourly_report.py` | 4 | [[Scheduled Reports\|hourly report]] guard |
 | `test_card_routing.py` | 4 | [[Confirm and Action Buttons\|card]] routing |
 | `test_agent_progress.py` | 4 | live progress bars |
-| `test_smoke.py` | 2 | import + boot smoke test (2 GUI imports fail w/o `pyobjc`) |
+| `test_smoke.py` | 2 | import + boot smoke test (2 legacy GUI imports SKIP w/o `pyobjc`/`Quartz`) |
 
-> [!info] `conftest.py` is the 42nd file
-> `tests/` holds 41 `test_*.py` modules plus `conftest.py` (the 42nd `.py` file, which just puts the project root on `sys.path`). `tests/README.md` is documentation, not code.
+> [!info] `conftest.py` sits alongside the test modules
+> `tests/` holds 42 `test_*.py` modules plus `conftest.py` (which just puts the project root on `sys.path`). `tests/README.md` is documentation, not code. The module count grows — `ls tests/test_*.py | wc -l` for the live number.
 
 ## What the tests exercise
 

@@ -54,7 +54,7 @@ The defining philosophy is [[Script-First AI-Last]]: every farm-bot message runs
 - [[The Agent]] — the OpenRouter tool-calling loop for novel errors and ibo conversations.
 - [[The Learned-Fixes Brain]] — the human-readable Markdown memory that turns one AI fix into a router-only repeat.
 - [[The Bot Front-End]] — the talking bot, [[Commands|command layers]], and [[Confirm and Action Buttons|signed inline buttons]].
-- [[Monitoring and Recovery Rules]] — the fully-deterministic per-panel watch/recover engine (R1–R6, no AI), the Telegram port of the on-PC `Watchdog.exe`.
+- [[Monitoring and Recovery Rules]] — the fully-deterministic per-panel watch/recover engine (R1–R6, no AI), the Telegram port of the on-PC `Watchdog.exe`. It reports each recovery episode as one `Panel | Issue | Fixed/Not` line and, after `PANEL_MAX_ATTEMPTS` futile tries, escalates a cold case.
 - [[Alerts and Heartbeat]] — message formatting and bot-DM-first delivery (to the whole allow-list); inline silence/recovery detection.
 - [[Roster and Health Scan]] — the deterministic no-LLM per-bot scan shared by hourly reports and fast commands.
 - [[Scheduled Reports]] — hourly / weekly / daily / recurring side-jobs.
@@ -66,6 +66,9 @@ The defining philosophy is [[Script-First AI-Last]]: every farm-bot message runs
 The only pinned third-party dependency is `telethon>=1.36` (MTProto). Ollama and OpenRouter are both reached through plain-stdlib `urllib` — there is no SDK. `gspread`/`google-auth` are UNPINNED and optional (lazily imported by `watcherdog/drop_sheets.py` for the Sheets push); absent, the run degrades to `reason="gspread not installed"`. See [[Configuration]] and [[Module Reference]].
 
 > [!warning] Doc accuracy: README/DOCUMENTATION describe "24 SinFermera bots" — the code is folder-driven (`load_watch_chats`), so 24 is an environment fact, not enforced in code. There is no `data/` directory in a fresh checkout; every state file is created at runtime. See [[Data and State]].
+
+> [!info] Cold cases are a cross-repo handoff
+> WatcherDog fixes everything it can over Telegram (R1–R3b: over-launch, under-target, idle, stuck match-search) **autonomously by default**, including destructive Kill→relaunch (`PANEL_AUTO_DESTRUCTIVE=true`). What it CANNOT fix from Telegram — a **black screen** (R4, RDP host bugged out) or a **truly dead PC** (R6, total silence > `PANEL_STALE_MINUTES`) — is a *cold case*: the watcher only **detects and reports** it as "needs PC". The actual PC-side repair (close/reopen the frozen RDP-session host, relaunch the panel exe, reboot) lives in the separate repo `github.com/AdxamAxatov/Watchdog` (`Boot.exe`), the descendant of the legacy on-PC `Watchdog.exe`. See [[Monitoring and Recovery Rules]] (R4/R6) and [[Legacy Modes]].
 
 ## See also
 - [[The Monitor Loop]] — the event loop this overview orbits.

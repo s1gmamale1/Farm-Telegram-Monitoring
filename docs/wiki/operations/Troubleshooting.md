@@ -82,6 +82,15 @@ flowchart TD
 > [!warning] The current loop does NOT use `heartbeat.py`
 > Silence/recovery in the supported path is implemented **inline** in `monitor_once` via per-bot `state[name+"::silent"]` flags. `HeartbeatMonitor` (`watcherdog/heartbeat.py`) is used only by [[Legacy Modes|legacy]] `run_telegram.py`/`run_gui.py`. Docs that present `heartbeat.py` as the live detector are stale. See [[Alerts and Heartbeat]].
 
+## Panel recovery oddities
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| A working panel reported as DEAD too soon | `PANEL_STALE_MINUTES` too low | The R6 dead-threshold is **total silence > 70m by default**. ANY message (incl. *"Can't find match… changing batch"*) resets the clock — that bot is alive, not dead. Raise/lower `PANEL_STALE_MINUTES` to taste. See [[Monitoring and Recovery Rules]]. |
+| `"no Screenshot button"` even though the panel has one | the live label is `🖼 Screenshot` (emoji prefix) | Already fixed: `tg_actions.screenshot` now matches by case-insensitive **substring** (`startswith` missed the emoji-prefixed label). If you still see it, the `/start` menu didn't load — check connectivity. |
+| Panel reported `NOT fixed ❌ → needs PC` | recovery exhausted `PANEL_MAX_ATTEMPTS` (default 3), R4 black screenshot, or R6 total silence | This is correct behaviour, not a bug: a frozen/black-screen RDP host can't be fixed from Telegram. WatcherDog only **detects** and reports it; the per-PC tool (`Boot.exe` in the cross-repo `AdxamAxatov/Watchdog`) does the actual host restart. See [[Monitoring and Recovery Rules]] and [[Legacy Modes]]. |
+| Destructive recovery ran without anyone confirming | `PANEL_AUTO_DESTRUCTIVE=true` (the default) | Intended: destructive Kill→reselect→start now auto-runs. Set `PANEL_AUTO_DESTRUCTIVE=false` to get a one-tap confirm card instead. See [[Configuration]] and [[Confirm and Action Buttons]]. |
+
 ## Python version
 
 > [!info] Runs on Python 3.11–3.14
