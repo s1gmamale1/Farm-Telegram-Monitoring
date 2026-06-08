@@ -44,6 +44,9 @@ from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         tg_actions, tg_tools)
 from watcherdog.alerter import (
     format_alert,
+    format_incident_escalated,
+    format_incident_followup,
+    format_incident_resolved,
     format_recovery_alert,
     format_recurring_alert,
     format_silence_alert,
@@ -51,6 +54,7 @@ from watcherdog.alerter import (
 from watcherdog.analyzer import analyze_message
 from watcherdog.classifier import classify, is_benign_error
 from watcherdog.config import SEVERITY_ORDER
+from watcherdog.incident_tracker import IncidentTracker, incident_followup_step
 from watcherdog.monitor import error_hash
 from watcherdog.telegram_source import make_client
 
@@ -362,6 +366,16 @@ async def _panel_responds(client, target_ref, cfg):
     return not menu.get("error")
 
 
+def _open_panel_incident(state, name, summary):
+    """Register a panel cold-case (needs-PC) as an open incident so the follow-up
+    loop nags until power-on. The panel path already sends its own Fixed/Not
+    report, so the tracker stays silent on open/resolve. Inert when disabled."""
+    tracker = state.get("tracker")
+    if tracker is None:
+        return
+    tracker.open("panel", name, f"panel:{name}", "high", summary, fixable=False)
+
+
 async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target, seed=False):
     """Deterministic per-panel watch/recover (R1-R6). No model. Takes the panel's
     already-fetched latest status (text, date) — no extra read — advances timers,
@@ -400,6 +414,9 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             await _alert(state, client, target, f"✅ {name} | back online", deliver, cfg=cfg)
         ps.flag_alerted = False
         ps.last_probe_ts = None
+        tracker = state.get("tracker")
+        if tracker is not None:
+            tracker.resolve_by_bot("panel", name, "self_healed")
 
     if decision.kind == "noop":
         # Recovery: if a recovery episode was in flight and the panel is now
@@ -456,6 +473,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                 # Only a human/power-on fixes it: HIGH alert.
                 await _panel_report_pc_off(state, client, target, name, age,
                                            deliver=deliver, cfg=cfg)
+                _open_panel_incident(state, name, "PC OFF / unreachable — no /start reply")
                 log.info("[panel] %s silent AND no /start reply — PC off (HIGH)", name)
             else:
                 # Probing off (or dry-run): can't confirm PC-off, so keep the
@@ -476,6 +494,8 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                             fixed=False, deliver=deliver, cfg=cfg,
                             extra=f" ({ps.recover_attempts} relaunches failed)")
         ps.coldcase_reported = True
+        _open_panel_incident(state, name,
+                             f"{ps.episode_issue or 'issue'} — relaunches failed")
         return "cold-case: attempts exhausted"
 
     # R4 cold-case: a relaunch (select_unfarmed -> start_selected) we already
@@ -490,6 +510,7 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                                     extra=" (RDP frozen)")
                 ps.r2_attempted_ts = None
                 ps.coldcase_reported = True
+                _open_panel_incident(state, name, "black screen (RDP frozen)")
                 return "R4 cold-case flagged"
 
     if not deliver:
@@ -582,6 +603,40 @@ async def _handle_cant_find_match(client, cfg, name, target_ref, minutes, *, del
     return "match-search issue flagged"
 
 
+def _open_bot_incident(state, bot, h, severity, analysis, text, *, fixable,
+                       fix_attempted=None, now=None):
+    """Record an alerted bot error as an OPEN incident so the follow-up loop can
+    track it to resolution/escalation. Inert when tracking is disabled."""
+    tracker = state.get("tracker")
+    if tracker is None:
+        return
+    summary = (analysis or {}).get("summary") or (text or "").strip()[:160]
+    tracker.open("bot_error", bot, f"bot_error:{bot}:{h}", severity, summary,
+                 fixable=fixable, fix_attempted=fix_attempted,
+                 raw_excerpt=(text or "")[:1000], now=now)
+
+
+async def _resolve_bot_incident(state, client, target, bot, now, deliver, cfg):
+    """A bot posted a healthy message — close any open bot_error incident and tell
+    the owner it cleared (self-healed, or fixed by us if a fix had been attempted).
+    Inert when tracking is disabled (no tracker in state)."""
+    tracker = state.get("tracker")
+    if tracker is None:
+        return
+    row = tracker.open_for_bot("bot_error", bot)
+    if row is None:
+        return
+    we_fixed = bool(row["fix_attempted"])
+    res = tracker.resolve_by_bot(
+        "bot_error", bot, "we_fixed" if we_fixed else "self_healed", now=now)
+    if res is not None:
+        await _alert(state, client, target,
+                     format_incident_resolved(bot, res["elapsed"], we_fixed=we_fixed),
+                     deliver, cfg=cfg)
+        log.info("RESOLVED %s after %.0fs (%s)", bot, res["elapsed"],
+                 "we_fixed" if we_fixed else "self_healed")
+
+
 async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
                         deliver=True, ent=None):
     """Classify + (Ollama) analyze one bot's latest message; alert on a real
@@ -591,6 +646,7 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
         return
     bucket = classify(text)
     if bucket == "normal":
+        await _resolve_bot_incident(state, client, target, bot, now, deliver, cfg)
         state[bot + "::err"] = False
         return
     if bucket == "unknown" and not cfg.analyze_unknown:
@@ -634,9 +690,12 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     # Phase 2 — deterministic auto-fix router runs FIRST (no LLM). If the brain
     # already knows this error, handle it script-only and skip the model. Only
     # gated on live action capability (a dry run must not press real buttons).
+    fix_status, fix_sig = None, None
     if cfg.agent_actions_enabled and deliver:
         outcome = await auto_fix.try_auto_fix(client, cfg, bot, text, chat=ent)
         status = (outcome or {}).get("status")
+        fix_status = status
+        fix_sig = ((outcome or {}).get("fix") or {}).get("signature")
         if status == "suppressed":
             store.record(bot, severity, analysis, h, text, notified=False, ts=now)
             log.info("AUTO-SUPPRESS %s (%s) — known no-op, no AI", bot, severity)
@@ -651,6 +710,8 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
             ok = await _alert(state, client, target,
                               auto_fix.format_human(bot, outcome), deliver)
             store.record(bot, severity, analysis, h, text, notified=ok and deliver, ts=now)
+            _open_bot_incident(state, bot, h, severity, analysis, text,
+                               fixable=False, fix_attempted=fix_sig, now=now)
             log.info("HUMAN-FIX %s (%s) — alerted owner, no AI", bot, severity)
             return
         if status == "needs_confirm":
@@ -678,6 +739,9 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     else:
         ok = await _alert(state, client, target, format_alert(bot, severity, analysis, text), deliver)
     store.record(bot, severity, analysis, h, text, notified=ok and deliver, ts=now)
+    _open_bot_incident(state, bot, h, severity, analysis, text,
+                       fixable=(fix_status == "failed"), fix_attempted=fix_sig,
+                       now=now)
     log.info("ALERTED %s (%s, sent=%s)", bot, severity, ok and deliver)
 
 
@@ -742,11 +806,18 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
                     await _alert(state, client, target,
                                  format_silence_alert(name, age_min * 60.0), deliver)
                 state[key] = True
+                tracker = state.get("tracker")
+                if tracker is not None:
+                    tracker.open("silence", name, f"silence:{name}", "high",
+                                 f"silent ~{age_min:.0f}m", fixable=False, now=now)
                 log.info("SILENT: %s (~%.0fm ago)%s", name, age_min,
                          " [card]" if posted is not None else "")
             elif not silent and was:
                 await _alert(state, client, target, format_recovery_alert(name), deliver)
                 state[key] = False
+                tracker = state.get("tracker")
+                if tracker is not None:
+                    tracker.resolve_by_bot("silence", name, "self_healed", now=now)
                 log.info("RECOVERED: %s", name)
 
         if not state.get(name + "::err") and not state.get(name + "::silent"):
@@ -893,6 +964,51 @@ async def _recurring_loop(client, cfg, store, target, state, deliver=True):
                          h[:8], g["count"], ",".join(g["bots"]) or "?", ok and deliver)
         except Exception:  # noqa: BLE001
             log.exception("recurring-error check failed; continuing")
+
+
+async def _incident_followup_loop(client, cfg, tracker, target, state, deliver=True):
+    """Periodically re-attempt known fixes, nag on still-open incidents, and
+    escalate after the give-up window. Mirrors _recurring_loop: each tick is
+    wrapped so a failure logs and the loop continues."""
+    while True:
+        await asyncio.sleep(cfg.incident_followup_interval)
+        try:
+            now = time.time()
+            actions = incident_followup_step(
+                tracker, now,
+                followup_interval_s=cfg.incident_followup_interval,
+                giveup_s=cfg.incident_giveup_seconds,
+                max_fix_retries=cfg.incident_max_fix_retries)
+            for act in actions:
+                row = act["row"]
+                bot, key = row["bot"], row["key"]
+                elapsed = now - row["opened_ts"]
+                if act["kind"] == "giveup":
+                    needs_pc = row["source"] == "panel"
+                    await _alert(state, client, target,
+                                 format_incident_escalated(
+                                     bot, row["summary"], elapsed, needs_pc=needs_pc),
+                                 deliver, cfg=cfg)
+                    tracker.escalate(key, now=now)
+                    log.info("ESCALATED %s after %.0fs", bot, elapsed)
+                    continue
+                if act["kind"] == "refix":
+                    try:
+                        outcome = await auto_fix.try_auto_fix(
+                            client, cfg, bot, row["raw_excerpt"] or row["summary"])
+                    except Exception:  # noqa: BLE001
+                        log.exception("incident re-fix raised for %s", bot)
+                        outcome = None
+                    tracker.note_fix_attempt(
+                        key, (outcome or {}).get("status") or "retry")
+                await _alert(state, client, target,
+                             format_incident_followup(
+                                 bot, row["summary"], elapsed,
+                                 retrying=(act["kind"] == "refix")),
+                             deliver, cfg=cfg)
+                tracker.mark_followed_up(key, now=now)
+        except Exception:  # noqa: BLE001
+            log.exception("incident follow-up check failed; continuing")
 
 
 # --- Special Forces group (@-mention auto-reply) ----------------------------
@@ -1293,6 +1409,8 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         # Shared by the monitor's incident handler, the ibo listener, and the bot
         # so they use one agent lock and never run the agent concurrently.
         state = {"system_prompt": system_prompt, "agent_lock": asyncio.Lock()}
+        if cfg.incident_tracking_enabled:
+            state["tracker"] = IncidentTracker(cfg.db_path)
 
         # Start the talking BOT (continuous mode only). On success it can own the
         # group conversation and deliver proactive alerts as DMs to the owner.
@@ -1363,6 +1481,10 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         # Recurring-error watchdog: every 15 min, flag errors that keep repeating (to all).
         if cfg.recurring_error_enabled:
             client.loop.create_task(_recurring_loop(client, cfg, store, ibos, state, deliver))
+        # Incident follow-up: re-attempt known fixes, nag, and escalate after give-up.
+        if cfg.incident_tracking_enabled and state.get("tracker") is not None:
+            client.loop.create_task(_incident_followup_loop(
+                client, cfg, state["tracker"], ibos, state, deliver))
         # Auto weekly digest: a /weekly report to all allowed users on Sunday evening.
         if cfg.weekly_digest_enabled:
             client.loop.create_task(
