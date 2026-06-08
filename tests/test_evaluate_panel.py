@@ -166,6 +166,45 @@ def test_silent_panel_no_reply_is_dead(monkeypatch):
     assert alerts and "silent" in alerts[0].lower() and "needs PC" in alerts[0]
 
 
+def test_pc_off_no_start_reply_is_high_alert(monkeypatch):
+    # /start gets NO reply -> the FSM Panel app on that PC is unreachable (PC off /
+    # crashed). Nothing automated can fix a powered-off machine, so this is the
+    # HIGH-priority, human-only "power on the PC" case (distinct from R4 black
+    # screen, where the PC is on and the per-PC tool retries).
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        return {"error": "no /start menu reply", "buttons": []}
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    _run(_cfg(), HEALTHY, age=4200)
+    assert alerts
+    a = alerts[0]
+    assert "HIGH" in a and "PC OFF" in a.upper() and "power on" in a.lower()
+    assert "70m" in a                          # still says how long it's been silent
+
+
+def test_probe_disabled_falls_back_to_timing_dead(monkeypatch):
+    # With probing OFF we can't confirm PC-off, so keep the timing-only "dead"
+    # report (no HIGH "PC OFF" claim) and never call /start.
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        raise AssertionError("must not probe when PANEL_PROBE_ENABLED is false")
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    _run(_cfg(panel_probe_enabled=False), HEALTHY, age=4200)
+    assert alerts and "silent" in alerts[0].lower() and "HIGH" not in alerts[0]
+
+
 def test_first_sweep_seeds_silence_without_alert_or_probe(monkeypatch):
     # On the FIRST sweep after (re)start, an already-quiet panel is SEEDED quietly:
     # no probe, no alert — so a restart never floods (the 11:11 burst).

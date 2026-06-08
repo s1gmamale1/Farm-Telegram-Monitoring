@@ -331,6 +331,19 @@ async def _panel_report(state, client, target, name, issue, *, fixed, deliver, c
     await _alert(state, client, target, f"{name} | {issue} | {verdict}", deliver, cfg=cfg)
 
 
+async def _panel_report_pc_off(state, client, target, name, age, *, deliver, cfg):
+    """HIGH-priority alert for a CONFIRMED-dead panel: silent past the stale window
+    AND ignoring an active /start probe. The FSM Panel app on that PC is
+    unreachable — almost always the PC is powered OFF (or Windows hard-crashed /
+    the app died / that site's internet dropped). Nothing on-PC or Telegram-side
+    can fix a powered-off machine, so this is the urgent, human-only "power on the
+    PC" case — distinct from R4 (black screen: PC on, the per-PC tool retries)."""
+    mins = f" (silent {age / 60:.0f}m)" if age else ""
+    text = (f"🚨 {name} | PC OFF / unreachable — no /start reply{mins} "
+            f"| HIGH ❌ → needs PC (power on)")
+    await _alert(state, client, target, text, deliver, cfg=cfg)
+
+
 async def _panel_responds(client, target_ref, cfg):
     """Active liveness check for a silent panel: /start it and watch for a reply.
 
@@ -413,16 +426,23 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         if seed:
             return decision.reason
         if not ps.flag_alerted:
-            if (deliver and getattr(cfg, "panel_probe_enabled", True)
-                    and await _panel_responds(client, target_ref, cfg)):
+            probed = deliver and getattr(cfg, "panel_probe_enabled", True)
+            if probed and await _panel_responds(client, target_ref, cfg):
                 log.info("[panel] %s silent but answered /start — alive, not dead", name)
                 return "probe: alive"
-            if status is None or age is None:
-                issue = "no readable status"
+            if probed:
+                # Probed and got NOTHING -> the panel app is unreachable -> the PC
+                # is off/crashed. Only a human/power-on can fix it: HIGH alert.
+                await _panel_report_pc_off(state, client, target, name, age,
+                                           deliver=deliver, cfg=cfg)
+                log.info("[panel] %s silent AND no /start reply — PC off (HIGH)", name)
             else:
-                issue = f"silent {age / 60:.0f}m (dead)"
-            await _panel_report(state, client, target, name, issue,
-                                fixed=False, deliver=deliver, cfg=cfg)
+                # Probing off (or dry-run): can't confirm PC-off, so keep the
+                # timing-only "dead" report rather than over-claiming.
+                issue = ("no readable status" if (status is None or age is None)
+                         else f"silent {age / 60:.0f}m (dead)")
+                await _panel_report(state, client, target, name, issue,
+                                    fixed=False, deliver=deliver, cfg=cfg)
             ps.flag_alerted = True
         return decision.reason
 
