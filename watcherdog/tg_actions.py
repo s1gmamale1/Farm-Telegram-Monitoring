@@ -136,17 +136,20 @@ async def screenshot(client, chat, *, cfg=None, timeout=30.0):
     menu = await _open_menu(client, ent, timeout=20.0)
     if menu is None:
         return {"error": "no /start menu reply"}
-    pressed = False
+    # Match like press_button: case-insensitive SUBSTRING, so an emoji/word
+    # prefix ("🖼 Screenshot") still resolves. `startswith` was too strict and
+    # missed the real button label on the live panels.
+    target = None
     for row in (getattr(menu, "buttons", None) or []):
         for btn in row:
-            if (getattr(btn, "text", "") or "").strip().lower().startswith("screenshot"):
-                await menu.click(text=btn.text)
-                pressed = True
+            if "screenshot" in (getattr(btn, "text", "") or "").lower():
+                target = btn
                 break
-        if pressed:
+        if target:
             break
-    if not pressed:
+    if target is None:
         return {"error": "no Screenshot button", "buttons": _labels(menu)}
+    await menu.click(text=target.text)
 
     reply = await _await_reply(client, ent, menu.id, timeout=timeout)
     if reply is None:

@@ -280,6 +280,21 @@ def test_screenshot_no_screenshot_button_returns_error(monkeypatch):
     assert "Screenshot" in out["error"] or "buttons" in out
 
 
+def test_screenshot_matches_emoji_prefixed_button(monkeypatch, tmp_path):
+    """The live Screenshot button is '🖼 Screenshot' — an emoji prefix. The
+    matcher must find it by substring, not require it to start with 'screenshot'."""
+    menu = FakeMenu(["🖼 Screenshot", "📊 Launched accs stats", "👉 Select 4/10 unfarmed"])
+    reply = SimpleNamespace(message="ok", media=None, id=301)
+    _patch_screenshot(monkeypatch, menu, reply=reply)
+
+    class _Cfg:
+        root = str(tmp_path)
+
+    out = asyncio.run(tg_actions.screenshot(FakeClient(), "@p1", cfg=_Cfg()))
+    assert "error" not in out                       # the button WAS found + pressed
+    assert "no media" in (out.get("note") or "").lower()
+
+
 def test_screenshot_no_reply_returns_error(monkeypatch):
     """No reply after pressing Screenshot → screenshot() returns an error."""
     menu = FakeMenu(["Screenshot", "Start selected accounts"])
