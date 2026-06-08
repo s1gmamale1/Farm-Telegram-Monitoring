@@ -29,6 +29,9 @@ This note covers two intertwined jobs: building/sending alert messages (`watcher
 | `format_recovery_alert` (`:131`) | "✅ Back online" |
 | `format_recurring_alert` (`:135`) | "🔁 Recurring error — N× in last M min" from a [[Roster and Health Scan\|store.recurring()]] group |
 | `format_silence_oneline` / `format_recovery_oneline` | one-line variants |
+| `format_incident_resolved` | "✅ Resolved — … after Xm (fixed by WatcherDog / recovered on its own)" — incident-lifecycle closure |
+| `format_incident_followup` | "⏳ … still unresolved after Xm" — periodic nag while an incident stays open |
+| `format_incident_escalated` | "❌ … unresolved after Xm, stopping auto-retries — needs PC/attention" — give-up |
 
 Severity maps to an emoji via `_SEVERITY_EMOJI`; excerpts are tail-truncated to stay under Telegram's 4096-char limit.
 
@@ -76,6 +79,12 @@ In the supported path, silence detection lives in [[The Monitor Loop|monitor_onc
 
 > [!tip] First sweep never floods
 > Because the first sweep only seeds `::silent` flags, a restart during overnight quiet will not blast alerts for every already-quiet bot. The seed is committed via `state["_seeded"] = True` at the end of the first sweep.
+
+## Incident lifecycle (detect → fix → verify → resolve/escalate)
+
+Alerts no longer fire-and-forget. When a bot-error / silence / panel cold-case alert goes out, `_open_bot_incident` / the silence block / `_open_panel_incident` record it in the [[Data and State|`open_incidents` ledger]]. Closure is **event-driven**: the moment a bot posts a healthy (`normal`-classified) message — e.g. *"All 4 accounts launched!"* after a launch error — `_resolve_bot_incident` sends `format_incident_resolved` and clears the row. Silence recovery and panel back-online resolve **silently** (their existing recovery messages already fire).
+
+The background `_incident_followup_loop` (registered beside `_recurring_loop`, every `INCIDENT_FOLLOWUP_INTERVAL`) runs a pure `_incident_followup_tick`: it re-attempts a known fix for still-open `fixable` bot-errors (**dry-run-safe** — never presses buttons when `deliver=False`), sends `format_incident_followup` nags, and after `INCIDENT_GIVEUP_MINUTES` emits `format_incident_escalated` and stops. See [[Configuration#Incident lifecycle tracking]].
 
 ## HeartbeatMonitor (legacy)
 

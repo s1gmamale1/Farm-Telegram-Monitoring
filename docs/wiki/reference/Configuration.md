@@ -84,6 +84,17 @@ Each ref is a numeric user id (e.g. `1406109190`) or an `@username`. The watcher
 | `RECURRING_ERROR_WINDOW`, `RECURRING_ERROR_MIN_COUNT` | Alert errors whose hash repeats ≥ `min_count` in the window. |
 | `RECURRING_ERROR_COOLDOWN` | Per-hash cooldown (in-memory in `_recurring_loop`). |
 
+## Incident lifecycle tracking
+
+Follows an alerted issue to closure: detect → (re)attempt fix → verify → `✅ Resolved` (self-healed vs we-fixed) or periodic `⏳ still unresolved` nags → `❌ escalated → needs PC/attention`. Backed by the `open_incidents` ledger ([[Data and State]]) and the background `_incident_followup_loop`. Reached via `state["tracker"]`, so it is a **no-op when disabled**.
+
+| Key | Notes |
+|-----|-------|
+| `INCIDENT_TRACKING_ENABLED` | Gates the whole feature (default **true**). When off, every open/resolve call is inert and the follow-up loop never starts. |
+| `INCIDENT_FOLLOWUP_INTERVAL` | Follow-up tick: nag cadence + known-fix re-attempt, default **900s**. |
+| `INCIDENT_GIVEUP_MINUTES` | Escalate and stop nagging after this, default **60**. Give-up is keyed off `opened_ts`, so nagging can't postpone it. |
+| `INCIDENT_MAX_FIX_RETRIES` | Known-fix re-attempts before give-up, default **2**. Re-fixes press real buttons only when `deliver` (never in dry-run). |
+
 ## Agent / model (OpenRouter)
 
 | Key | Default / notes |

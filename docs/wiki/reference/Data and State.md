@@ -25,7 +25,7 @@ WatcherDog keeps almost all of its state under a single `data/` directory (resol
 |---|---|---|---|
 | `data/watcher.session` | Telethon (`TELEGRAM_SESSION`) | SQLite (Telethon) | the user account's authorized MTProto session, written by `tools/tg_login.py`; use `tools/tg_login.py --reset-session --legacy-start` when the file exists but `tg_probe.py` reports `NOT_AUTHORIZED` |
 | `data/bot.session` | Telethon (`BOT_SESSION`) | SQLite (Telethon) | the talking bot's own MTProto session ([[The Bot Front-End]]) |
-| `data/watcherdog.db` / `data/incidents.db` | `IncidentStore` (`DB_PATH`) | SQLite | incident history + dedupe + recurring-error grouping |
+| `data/watcherdog.db` / `data/incidents.db` | `IncidentStore` + `IncidentTracker` (`DB_PATH`) | SQLite | `incidents` table (history + dedupe + recurring-error grouping) **and** the `open_incidents` lifecycle ledger |
 | `data/farms.json` | `_farms_cache_path` | JSON | cached watch roster (folder lookup fallback) |
 | `data/farmer_pc_map.json` | `roster.load_pc_map` | JSON | bot-number → PC mapping for reports |
 | `data/hourly_report_state.json` | `_hourly_state_path` | JSON | once-per-clock-hour guard for the hourly report |
@@ -79,6 +79,15 @@ Key methods:
 
 > [!info] Below-threshold rows still land
 > Incidents below `MIN_SEVERITY` are still recorded with `notified=False`, so they feed the recurring-error grouping without ever firing an individual alert. See [[Script-First AI-Last]].
+
+## The incident lifecycle ledger (`open_incidents`)
+
+`incident_tracker.IncidentTracker` (`watcherdog/incident_tracker.py`) is a **second SQLite connection to the same `DB_PATH` file** (`PRAGMA busy_timeout=5000`; both connections are driven from the single monitor thread). Where `IncidentStore` is append-only *history*, the `open_incidents` table is the live *open → resolved/escalated* state that drives the [[Alerts and Heartbeat|incident lifecycle]]. Columns: `key, source, bot, severity, summary, raw_excerpt, fixable, fix_attempted, fix_retries, opened_ts, last_update_ts, update_count, status, resolved_ts, resolution`, indexed on `(status, key)`.
+
+- **Keying** — one open incident per subject: `bot_error:{bot}`, `silence:{name}`, `panel:{name}`. `open()` is idempotent per key, so a second distinct error while one is open is a no-op (no orphan a later healthy message would miss). Resolution is by `(source, bot)` since the original error's hash isn't known at heal time.
+- **Cadence** — `due_for_followup` keys off `last_update_ts` (nagging resets it); `due_for_giveup` off `opened_ts` (nagging can't postpone give-up). The pure `incident_followup_step()` planner turns these into `giveup`/`refix`/`followup` actions.
+- **Attribution** — `fix_attempted` holds the follow-up loop's last re-fix status, so `we_fixed` (the "fixed by WatcherDog" vs "recovered on its own" wording) is true only when an attempt actually reported `"fixed"`.
+- **Panel rows** stay silent on open/resolve — the [[Monitoring and Recovery Rules|panel path]] already emits its own `Fixed ✅`/back-online; the ledger only adds the periodic "still needs PC" nag for cold-cases that would otherwise go quiet.
 
 ## The auto-fix log (`daily_errors.jsonl`)
 

@@ -74,6 +74,7 @@ The script-first recovery engine that drives FSM [[Panel Control Bot|panels]] wi
 | `heartbeat.py` | [[Alerts and Heartbeat]] | `HeartbeatMonitor` (`record`/`check`, restart-safe clock reset, grace window). |
 | `roster.py` | [[Roster and Health Scan]] | `scan` (async, no-LLM per-bot health), `classify_status` (FARMING/QUIET/ATTENTION/DEAD), `load_pc_map`. Calls Telethon indirectly via `tg_tools`. |
 | `storage.py` | [[Data and State]] | `IncidentStore` SQLite history: `_init_schema`, `record`, `last_seen` (dedupe primitive), `recurring` (GROUP BY `raw_hash` HAVING COUNT ≥ min). |
+| `incident_tracker.py` | [[Data and State]], [[Alerts and Heartbeat]] | `IncidentTracker` — the `open_incidents` lifecycle ledger (open → resolved/escalated) in the same `DB_PATH` file: `open` (idempotent per key), `open_for_bot`, `resolve_by_bot`, `note_fix_attempt`, `mark_followed_up`, `escalate`, `due_for_followup`/`due_for_giveup`. Plus the pure `incident_followup_step()` cadence planner. Wired into `mcp_watcher` via `state["tracker"]`; `_incident_followup_loop`/`_incident_followup_tick` drive nags + dry-run-safe re-fixes + escalation. |
 | `monitor.py` | [[Data and State]], [[Legacy Modes]] | `LogMonitor` (legacy log tailer) **plus** `error_hash`/`normalize_error` — the dedupe-key generator imported by the supported path's `_evaluate_bot`. |
 | `daily_report.py` | [[Scheduled Reports]] | The auto-fix jsonl log (skill 2): `record`, `load_entries`, `has_pending`, `build_report`/`format_report` (end-of-day rollup), `summary_since` (hourly one-liner), `clear_log`. |
 
