@@ -172,3 +172,31 @@ class IncidentTracker:
             self.conn.close()
         except Exception:
             pass
+
+
+def incident_followup_step(tracker, now, *, followup_interval_s, giveup_s,
+                           max_fix_retries):
+    """Pure planner: decide what the follow-up loop should DO this tick.
+
+    Returns a list of action dicts ``{"kind", "row"}`` for the async loop to
+    execute. Kinds:
+      * ``giveup``   — past the give-up window: escalate + final message.
+      * ``refix``    — open, fixable, source ``bot_error``, retry budget left:
+                       re-run the known fix, then nag.
+      * ``followup`` — otherwise: nag only.
+    Give-up (keyed off ``opened_ts``) wins over follow-up for the same incident.
+    """
+    actions = []
+    giveup_ids = set()
+    for row in tracker.due_for_giveup(giveup_s, now):
+        actions.append({"kind": "giveup", "row": row})
+        giveup_ids.add(row["id"])
+    for row in tracker.due_for_followup(followup_interval_s, now):
+        if row["id"] in giveup_ids:
+            continue
+        if (row["fixable"] and row["source"] == "bot_error"
+                and row["fix_retries"] < max_fix_retries):
+            actions.append({"kind": "refix", "row": row})
+        else:
+            actions.append({"kind": "followup", "row": row})
+    return actions
