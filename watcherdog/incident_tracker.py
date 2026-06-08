@@ -112,7 +112,7 @@ class IncidentTracker:
             "row": dict(row),
         }
 
-    def note_fix_attempt(self, key, fix_attempted, now=None):
+    def note_fix_attempt(self, key, fix_attempted):
         row = self._open_by_key(key)
         if row is None:
             return

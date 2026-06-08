@@ -65,8 +65,8 @@ def test_due_for_giveup_uses_opened_ts(tracker):
 
 def test_note_fix_attempt_bumps_retries(tracker):
     tracker.open("bot_error", "Bot1", "k", "high", "x", fixable=True, now=0.0)
-    tracker.note_fix_attempt("k", "relaunch", now=10.0)
-    tracker.note_fix_attempt("k", "relaunch", now=20.0)
+    tracker.note_fix_attempt("k", "relaunch")
+    tracker.note_fix_attempt("k", "relaunch")
     assert tracker.open_list()[0]["fix_retries"] == 2
 
 
@@ -104,8 +104,8 @@ def test_planner_refixes_fixable_bot_error_with_budget(tracker):
 def test_planner_falls_back_to_nag_when_retry_budget_spent(tracker):
     tracker.open("bot_error", "Bot1", "k", "high", "boom",
                  fixable=True, now=0.0)
-    tracker.note_fix_attempt("k", "x", now=1.0)
-    tracker.note_fix_attempt("k", "x", now=2.0)   # retries now == 2 == cap
+    tracker.note_fix_attempt("k", "x")
+    tracker.note_fix_attempt("k", "x")   # retries now == 2 == cap
     actions = incident_followup_step(tracker, now=900.0,
                                      followup_interval_s=900,
                                      giveup_s=3600, max_fix_retries=2)

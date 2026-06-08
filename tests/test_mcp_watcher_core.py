@@ -488,6 +488,45 @@ def test_drop_collection_error_with_strong_signal_still_alerts(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# incident lifecycle: open on alert, resolve on healthy (end-to-end)
+# ---------------------------------------------------------------------------
+
+def test_bot_error_then_healthy_emits_one_resolved(tmp_path):
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true",            # deterministic HIGH, no Ollama
+        "AGENT_ACTIONS_ENABLED": "false",  # skip the auto-fix router -> plain alert
+        "MIN_SEVERITY": "high",
+        "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    loop = asyncio.new_event_loop()
+
+    # 1) error -> HIGH alert + open incident
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Got an error while launching accounts.",
+        100.0, loop, deliver=True, ent=None))
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None
+
+    # 2) healthy line ("All 4 accounts launched!" classifies as normal) ->
+    #    resolve + exactly one ✅ Resolved.
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] All 4 accounts launched!",
+        280.0, loop, deliver=True, ent=None))
+    assert tracker.open_for_bot("bot_error", "Bot1") is None
+    resolved = [t for _, t in client.sent if "✅ Resolved" in t]
+    assert len(resolved) == 1
+    assert "3 min" in resolved[0]
+    store.close()
+    tracker.close()
+
+
+# ---------------------------------------------------------------------------
 # flush_daily_report (integration with daily_report module)
 # ---------------------------------------------------------------------------
 
