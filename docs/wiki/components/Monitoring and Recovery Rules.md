@@ -30,6 +30,13 @@ From each panel's [[Panel Control Bot|status message]]: `Launched: N`, `Status`,
 
 Free-text match-search failures are deterministic too: `[SinFermeraN] Can't find match in X minutes. Changing batch...` means the panel may be alive but the launched accounts are not finding games. WatcherDog opens `/start`, captures the account names from the panel menu/status, presses `Screenshot`, and alerts ibo with both the account list and screenshot path.
 
+## Alive vs dead — when a panel is "down" (owner spec)
+
+Deterministic, **no model / OCR needed**:
+- **Any message = alive.** A status card, or `Can't find match in X minutes. Changing batch…`, both prove the panel/PC is working — the second just means it couldn't find a game (handled by **R3b**, not a failure).
+- **Total silence > `PANEL_STALE_MINUTES` (default 70 min) = dead.** Only when a panel posts *nothing at all* for that long is it **panel/PC down → needs PC**. The report says how long: `SinFermera## | silent 73m (dead) | NOT fixed ❌ → needs PC`.
+- This is pure **last-message timing** — the same way the on-PC Watchdog decides (timestamp of the last log line); the watcher gets that timestamp free from Telegram. Black-screen is the separate **pixel** check (R4 / the PC tool), not this.
+
 ## The recovery rules
 
 | # | Condition | Action sequence | Notes |
@@ -40,7 +47,7 @@ Free-text match-search failures are deterministic too: `[SinFermeraN] Can't find
 | **R3b** | `Can't find match in X minutes. Changing batch...` | `Screenshot` + alert account names from `/start` | Flags panels whose games may never be found even though the bot keeps speaking. |
 | **R4** | Accounts won't launch / inconsistent **and** `Screenshot` is a **black image** | → **per-PC API**: close/restart the self-hosted **RDP-session host** software, then re-verify | The RDP host "screen bugs out"; closing it self-heals. (The bugged script lives in the panel-tools repo — to fix later.) |
 | **R5** | **Wednesday 00:00** (weekly) | `Kill all CS & Steam` (ensure 0 launched) → `Drop Stats` → after it completes, `Run activity booster` | End-of-week stats need 0 launched; auto drop-stats isn't guaranteed 100%. See [[Drop-Stats Pipeline]]. |
-| **R6** | Status stale / bot unreachable (panel or PC down) | → **per-PC API**: relaunch panel exe / RDP reconnect / reboot | Telegram can't reach a dead bot — escalate to the cold-case agent. Ties to [[Alerts and Heartbeat]] silence detection. |
+| **R6** | **Total silence > 70 min** (`PANEL_STALE_MINUTES`) — no message of ANY kind | → **per-PC API**: relaunch panel exe / RDP reconnect / reboot; reports `silent Nm (dead)` | Any message — incl. "can't find match… changing batch" — resets the clock and means alive. Only true silence = dead. See *Alive vs dead* above; ties to [[Alerts and Heartbeat]]. |
 
 ```mermaid
 flowchart TD

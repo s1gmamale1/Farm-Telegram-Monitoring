@@ -387,10 +387,15 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         return None
 
     if decision.kind == "flag":
-        # R6 cold case (panel/PC down or stale). Report ONCE per episode.
+        # R6 cold case. Report ONCE per episode, WITH the reason: how long it's
+        # been totally silent (any message — incl. "can't find match" — resets
+        # the clock and means alive), or that the latest message had no status.
         if not ps.flag_alerted:
-            await _panel_report(state, client, target, name,
-                                _issue_label(decision, status, cfg),
+            if status is None or age is None:
+                issue = "no readable status"
+            else:
+                issue = f"silent {age / 60:.0f}m (dead)"
+            await _panel_report(state, client, target, name, issue,
                                 fixed=False, deliver=deliver, cfg=cfg)
             ps.flag_alerted = True
         return decision.reason

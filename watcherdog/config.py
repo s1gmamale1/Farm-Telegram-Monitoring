@@ -383,7 +383,11 @@ class Config:
         self.panel_target_accounts = int(get("PANEL_TARGET_ACCOUNTS", "4"))
         self.panel_overlaunch_minutes = float(get("PANEL_OVERLAUNCH_MINUTES", "15"))
         self.panel_idle_minutes = float(get("PANEL_IDLE_MINUTES", "10"))
-        self.panel_stale_minutes = float(get("PANEL_STALE_MINUTES", "30"))
+        # A panel counts as DEAD only after TOTAL silence this long. ANY message
+        # — incl. "Can't find match… changing batch" (working, just no games) —
+        # resets the clock. 70m per the owner's spec (see Monitoring and Recovery
+        # Rules.md → Alive vs dead). Pure timing; no screenshot/OCR/model needed.
+        self.panel_stale_minutes = float(get("PANEL_STALE_MINUTES", "70"))
         self.panel_action_debounce_seconds = float(get("PANEL_ACTION_DEBOUNCE_SECONDS", "180"))
         self.panel_auto_recover = get(
             "PANEL_AUTO_RECOVER", "true").strip().lower() in ("1", "true", "yes")

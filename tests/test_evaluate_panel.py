@@ -133,6 +133,20 @@ def test_stale_flags_cold_case(monkeypatch):
     assert alerts and "SinFermera7" in alerts[0]
 
 
+def test_stale_label_reports_silence_duration(monkeypatch):
+    # The R6 "down" report must say HOW LONG it's been silent, not just a vague
+    # "panel/PC down". (cfg stale=30m here; a 70m-old message is dead.)
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    _run(_cfg(), HEALTHY, age=4200)   # 70 min old > 30m stale → dead
+    assert alerts and "silent" in alerts[0].lower() and "needs PC" in alerts[0]
+    assert "70m" in alerts[0]
+
+
 def test_flag_alert_latched_once(monkeypatch):
     alerts = []
 
