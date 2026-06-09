@@ -126,21 +126,27 @@ async def mark_chat_read(client, ent):
 
 
 async def latest_message(client, ent, mark_read=False):
-    """(text, date) of a resolved entity's most recent message, or ("", None).
+    """(text, date) of an entity's most recent INCOMING message, or ("", None).
+
+    Skips the watcher's OWN outgoing messages (`m.out`): our /start liveness
+    probes and button-presses must NOT count as panel activity, or a dead PC
+    re-alerts HIGH every ~71 minutes when the probe resets the staleness clock.
+    Fetches a small window and returns the first incoming message in it.
 
     When `mark_read`, also acknowledge the chat as read so its unread badge
     clears (the watcher has now read it on the owner's behalf)."""
     try:
-        msgs = await client.get_messages(ent, limit=1)
+        msgs = await client.get_messages(ent, limit=5)
     except Exception as exc:  # noqa: BLE001
         logger.warning("read failed for %s: %s", entity_name(ent), exc)
         return "", None
     msgs = list(msgs)
     if mark_read and msgs:
         await mark_chat_read(client, ent)
-    if not msgs:
-        return "", None
-    return (msgs[0].message or ""), msgs[0].date
+    for m in msgs:
+        if not getattr(m, "out", False):
+            return (m.message or ""), m.date
+    return "", None
 
 
 async def find_chats(client, query, limit=10):

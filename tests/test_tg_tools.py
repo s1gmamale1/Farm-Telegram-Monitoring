@@ -106,11 +106,11 @@ class _FakeClient:
 
 
 class _FakeMsg:
-    def __init__(self, text, date=None):
+    def __init__(self, text, date=None, out=False):
         import datetime
         self.message = text
         self.date = date or datetime.datetime(2026, 6, 5, 12, 0, 0)
-        self.out = False
+        self.out = out
 
 
 def test_latest_message_returns_text_and_date():
@@ -164,3 +164,32 @@ def test_mark_chat_read_swallows_error():
     client = _BrokenClient()
     ent = SimpleNamespace(id=1, first_name="Bot", last_name=None, title=None, username=None)
     asyncio.run(tg_tools.mark_chat_read(client, ent))  # must not raise
+
+
+# --- latest_message skips watcher's own outgoing probes ---------------------
+# The watcher sends /start liveness probes; those must NOT count as panel
+# activity (else a dead PC re-alerts HIGH every ~71 minutes).
+
+def test_latest_message_skips_own_outgoing_probe():
+    import datetime
+    newer = datetime.datetime(2026, 6, 5, 12, 1, 0)
+    older = datetime.datetime(2026, 6, 5, 12, 0, 0)
+    probe = _FakeMsg("/start", date=newer, out=True)
+    real = _FakeMsg("📊 Panel status: ...", date=older, out=False)
+    client = _FakeClient(messages=[probe, real])
+    text, date = asyncio.run(tg_tools.latest_message(client, SimpleNamespace(id=1)))
+    assert text == "📊 Panel status: ..."
+    assert date == older
+
+
+def test_latest_message_all_outgoing_returns_empty():
+    client = _FakeClient(messages=[_FakeMsg("/start", out=True),
+                                   _FakeMsg("/start", out=True)])
+    text, date = asyncio.run(tg_tools.latest_message(client, SimpleNamespace(id=1)))
+    assert text == "" and date is None
+
+
+def test_latest_message_incoming_unchanged():
+    client = _FakeClient(messages=[_FakeMsg("🎁 collected drop", out=False)])
+    text, date = asyncio.run(tg_tools.latest_message(client, SimpleNamespace(id=1)))
+    assert text == "🎁 collected drop"
