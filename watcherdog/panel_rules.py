@@ -24,6 +24,8 @@ class PanelState:
     episode_issue: str | None = None
     coldcase_reported: bool = False
     last_probe_ts: float | None = None   # last R6 /start liveness probe (debounce)
+    last_msg_ts: float | None = None     # ts of the panel's latest INCOMING message
+                                         # seen by _evaluate_panel (gap detection)
 
 
 @dataclass

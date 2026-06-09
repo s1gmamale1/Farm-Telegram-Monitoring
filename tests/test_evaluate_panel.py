@@ -759,3 +759,123 @@ def test_recovery_resets_r2_and_action_timestamps(monkeypatch):
     note = _run(_cfg(), UNDER, name="SinFermera8")              # new episode
     assert shots == []                       # no pre-relaunch screenshot
     assert ran and ran[0][:2] == ["select_unfarmed", "start_selected"]
+
+
+def test_coldcase_unlatches_after_silence_gap_with_fresh_card(monkeypatch):
+    # Cold case latched, panel silent > stale window (PC off), then a FRESH
+    # parseable-but-unhealthy card arrives (PC powered back on at 2/4): the FSM
+    # must start a new episode and relaunch instead of staying quiet forever.
+    ran = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        ran.append(actions)
+        return [{"ok": True} for _ in actions]
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+
+    cfg = _cfg(panel_stale_minutes=30)
+    now = time.time()
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True
+    ps.recover_attempts = 3
+    ps.episode_issue = "under-launch"
+    ps.last_msg_ts = now - 3600           # last seen message: 60 min ago (> 30m gap)
+    mcp_watcher._PANEL_STATE["SinFermera2"] = ps
+
+    note = _run(cfg, UNDER, name="SinFermera2", age=5.0)   # fresh card now
+    assert ran, f"expected a relaunch, got note={note!r}"
+    assert mcp_watcher._PANEL_STATE["SinFermera2"].coldcase_reported is False
+
+
+def test_coldcase_stays_latched_while_panel_keeps_posting(monkeypatch):
+    # R4/retry-cap cold case where the panel KEEPS posting (no silence gap):
+    # the latch must hold — this is the same futile episode, not a power-cycle.
+    ran = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        ran.append(actions)
+        return [{"ok": True} for _ in actions]
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+
+    cfg = _cfg(panel_stale_minutes=30)
+    now = time.time()
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True
+    ps.recover_attempts = 3
+    ps.last_msg_ts = now - 120            # posted 2 min ago: no gap
+    mcp_watcher._PANEL_STATE["SinFermera13"] = ps
+
+    note = _run(cfg, UNDER, name="SinFermera13", age=5.0)
+    assert note == "cold-case: awaiting PC"
+    assert ran == []
+    assert mcp_watcher._PANEL_STATE["SinFermera13"].coldcase_reported is True
+
+
+def test_coldcase_stays_latched_on_empty_message_after_silence_gap(monkeypatch):
+    # The unlatch must require a PARSEABLE card. An empty/textless incoming
+    # message (status is None) after a long silence must NOT clear the latch —
+    # the only path where status is None reaches the unlatch block, so it pins
+    # the `status is not None` guard.
+    ran = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        ran.append(actions)
+        return [{"ok": True} for _ in actions]
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+
+    cfg = _cfg(panel_stale_minutes=30, panel_probe_enabled=False)
+    now = time.time()
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True
+    ps.recover_attempts = 3
+    ps.episode_issue = "under-launch"
+    ps.last_msg_ts = now - 3600
+    mcp_watcher._PANEL_STATE["SinFermera9"] = ps
+
+    note = _run(cfg, "", name="SinFermera9", age=5.0)   # textless message
+    assert mcp_watcher._PANEL_STATE["SinFermera9"].coldcase_reported is True, note
+    assert ran == []
+
+
+def test_coldcase_stays_latched_when_panel_posted_nonstatus_during_silence(monkeypatch):
+    # The PC never died: while cold-cased the panel kept emitting cant-find-match
+    # notices (alive). Those must refresh last_msg_ts so the eventual status card
+    # shows NO stale gap and the latch HOLDS. Requires last_msg_ts capture BEFORE
+    # the cant-find-match / self-report early returns.
+    ran = []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        ran.append(actions)
+        return [{"ok": True} for _ in actions]
+
+    async def fake_menu(client, panel, *, timeout=20.0):
+        return {"accounts": [], "buttons": []}
+
+    async def fake_shot(client, panel, *, cfg=None, timeout=30.0):
+        return {}
+
+    async def fake_alert(*a, **k):
+        return True
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", fake_menu)
+    monkeypatch.setattr(mcp_watcher.tg_actions, "screenshot", fake_shot)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+
+    cfg = _cfg(panel_stale_minutes=30, panel_probe_enabled=False)
+    now = time.time()
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True
+    ps.recover_attempts = 3
+    ps.episode_issue = "under-launch"
+    ps.last_msg_ts = now - 3600
+    mcp_watcher._PANEL_STATE["SinFermera5"] = ps
+
+    _run(cfg, "[SinFermera5] Can't find match in 70 minutes. Changing batch...",
+         name="SinFermera5", age=300, target="ibo")
+    _run(cfg, UNDER, name="SinFermera5", age=5.0)
+
+    assert mcp_watcher._PANEL_STATE["SinFermera5"].coldcase_reported is True
+    assert ran == []
