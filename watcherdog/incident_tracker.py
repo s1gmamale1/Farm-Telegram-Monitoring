@@ -118,6 +118,28 @@ class IncidentTracker:
             "row": dict(row),
         }
 
+    def open_list_for_bot(self, bot):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM open_incidents WHERE bot = ? AND status = 'open' "
+            "ORDER BY opened_ts", (bot,)).fetchall()]
+
+    def resolve_open_for_bot(self, bot, resolution, now=None):
+        """Resolve ALL open incidents for a bot regardless of source (the bot/panel
+        is healthy again — close everything). Returns {elapsed (from earliest
+        opened_ts), we_fixed (any attempt reported 'fixed'), count} or None."""
+        now = now if now is not None else time.time()
+        rows = self.open_list_for_bot(bot)
+        if not rows:
+            return None
+        earliest = min(r["opened_ts"] for r in rows)
+        we_fixed = any((r["fix_attempted"] == "fixed") for r in rows)
+        self.conn.execute(
+            "UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
+            "resolution = ? WHERE bot = ? AND status = 'open'",
+            (now, resolution, bot))
+        self.conn.commit()
+        return {"elapsed": now - earliest, "we_fixed": we_fixed, "count": len(rows)}
+
     def note_fix_attempt(self, key, fix_attempted):
         row = self._open_by_key(key)
         if row is None:
