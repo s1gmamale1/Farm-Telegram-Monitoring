@@ -133,10 +133,13 @@ class IncidentTracker:
             return None
         earliest = min(r["opened_ts"] for r in rows)
         we_fixed = any((r["fix_attempted"] == "fixed") for r in rows)
+        # Preserve the we_fixed/self_healed vocabulary in the stored column: a
+        # successful re-fix on any row wins; otherwise store the caller's base.
+        stored = "we_fixed" if we_fixed else resolution
         self.conn.execute(
             "UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
             "resolution = ? WHERE bot = ? AND status = 'open'",
-            (now, resolution, bot))
+            (now, stored, bot))
         self.conn.commit()
         return {"elapsed": now - earliest, "we_fixed": we_fixed, "count": len(rows)}
 

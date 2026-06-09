@@ -896,7 +896,7 @@ def test_resolve_reports_self_healed_after_failed_fix(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
-    asyncio.run(mcp_watcher._resolve_bot_incident(
+    asyncio.run(mcp_watcher._resolve_incidents_for(
         state, _FakeClient(), "ibo", "Bot1", 280.0, True, _cfg(tmp_path)))
 
     assert len(sent) == 1
@@ -922,7 +922,7 @@ def test_resolve_reports_we_fixed_after_successful_refix(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
-    asyncio.run(mcp_watcher._resolve_bot_incident(
+    asyncio.run(mcp_watcher._resolve_incidents_for(
         state, _FakeClient(), "ibo", "Bot1", 160.0, True, _cfg(tmp_path)))
 
     assert len(sent) == 1
