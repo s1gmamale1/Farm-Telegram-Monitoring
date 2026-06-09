@@ -359,3 +359,16 @@ def test_incident_escalated_needs_pc():
     msg = format_incident_escalated("SinFermera3", "PC OFF", 3600, needs_pc=True)
     assert "❌" in msg
     assert "needs PC" in msg
+
+
+def test_incident_escalated_retried_says_stopping():
+    from watcherdog.alerter import format_incident_escalated
+    m = format_incident_escalated("B", "boom", 3600, needs_pc=False, retried=True)
+    assert "stopping auto-retries" in m
+
+
+def test_incident_escalated_not_retried_says_no_auto_fix():
+    from watcherdog.alerter import format_incident_escalated
+    m = format_incident_escalated("B", "boom", 3600, needs_pc=False, retried=False)
+    assert "no automatic fix available" in m
+    assert "stopping auto-retries" not in m

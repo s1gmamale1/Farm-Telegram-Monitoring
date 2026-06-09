@@ -171,11 +171,12 @@ def format_incident_followup(bot, summary, elapsed_seconds, *, retrying):
     return f"{head}\n{tail}"
 
 
-def format_incident_escalated(bot, summary, elapsed_seconds, *, needs_pc=False):
-    """Final give-up message: stop auto-retries and ask for a human."""
+def format_incident_escalated(bot, summary, elapsed_seconds, *, needs_pc=False, retried=False):
+    """Final give-up message. ``retried`` distinguishes 'we tried and stopped' from
+    'there was never an automatic fix to try'."""
     need = "needs PC (power on / RDP)" if needs_pc else "needs manual attention"
-    head = (f"❌ {bot} — unresolved after {_fmt_duration(elapsed_seconds)}, "
-            f"stopping auto-retries")
+    tail = "stopping auto-retries" if retried else "no automatic fix available"
+    head = f"❌ {bot} — unresolved after {_fmt_duration(elapsed_seconds)}, {tail}"
     s = (summary or "").strip()
     if s:
         head += f"\n{s}"
