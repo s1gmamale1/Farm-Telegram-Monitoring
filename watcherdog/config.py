@@ -202,7 +202,10 @@ class Config:
         # mention is handed to the agent and its answer is posted back IN the group
         # (read-only: the agent runs with actions disabled so untrusted group text
         # can never trigger a real action). Match by group title, @username, or id.
-        self.special_forces_enabled = get("SPECIAL_FORCES_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        # OPT-IN (default off): posting in a shared group AS the owner is surprising
+        # to enable implicitly, so it must be turned on explicitly with
+        # SPECIAL_FORCES_ENABLED=true.
+        self.special_forces_enabled = get("SPECIAL_FORCES_ENABLED", "false").strip().lower() in ("1", "true", "yes")
         self.special_forces_chat = get("SPECIAL_FORCES_CHAT", "Special Forces").strip()
 
         # --- Auto weekly digest (read-only report pushed to ibo) ---
