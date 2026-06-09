@@ -391,6 +391,10 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     skips the AI incident path), else None — including when the latest message
     isn't a status card, so normal error/silence monitoring still runs."""
     target_ref = _panel_target(ent, name)
+    ps = _PANEL_STATE.setdefault(name, panel_rules.PanelState())
+    prev_msg_ts = ps.last_msg_ts
+    if date:
+        ps.last_msg_ts = date.timestamp()
     match_wait = _cant_find_match_minutes(text)
     if match_wait is not None:
         return await _handle_cant_find_match(
@@ -422,7 +426,6 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         if alerted is not None:
             status.launched = alerted
 
-    ps = _PANEL_STATE.setdefault(name, panel_rules.PanelState())
     if status is not None:
         panel_rules.observe(status, ps, now, cfg)
     decision = panel_rules.decide(status, age, ps, now, cfg)
@@ -455,6 +458,17 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             ps.r2_attempted_ts = None
             ps.last_action_ts = None
         return None
+
+    # A cold-cased panel that went silent past the stale window and is now posting
+    # parseable cards again demonstrably had its PC come back (power-cycle) — start
+    # a NEW episode so the FSM may act again. A cold case that kept posting all
+    # along (R4 / retry-cap, same futile state) stays latched.
+    if (ps.coldcase_reported and status is not None and date
+            and prev_msg_ts is not None
+            and (date.timestamp() - prev_msg_ts) > cfg.panel_stale_minutes * 60):
+        ps.coldcase_reported = False
+        ps.recover_attempts = 0
+        ps.episode_issue = None
 
     # Already escalated this episode to a cold case (needs the PC) — stay quiet
     # and stop the futile Telegram-side loop until the panel recovers.
