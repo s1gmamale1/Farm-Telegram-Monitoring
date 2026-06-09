@@ -33,6 +33,27 @@ def test_resolve_by_bot_none_when_nothing_open(tracker):
     assert tracker.resolve_by_bot("bot_error", "Ghost", "self_healed", now=1.0) is None
 
 
+def test_resolve_open_for_bot_closes_all_sources(tracker):
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "x", fixable=False, now=100.0)
+    tracker.open("panel", "Bot1", "panel:Bot1", "high", "pc", fixable=False, now=120.0)
+    res = tracker.resolve_open_for_bot("Bot1", "self_healed", now=400.0)
+    assert res is not None
+    assert res["count"] == 2
+    assert res["elapsed"] == pytest.approx(300.0)   # from EARLIEST opened_ts (100)
+    assert tracker.open_list() == []
+
+
+def test_resolve_open_for_bot_none_when_nothing_open(tracker):
+    assert tracker.resolve_open_for_bot("Ghost", "self_healed", now=1.0) is None
+
+
+def test_resolve_open_for_bot_we_fixed_when_any_attempt_fixed(tracker):
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "x", fixable=True, now=100.0)
+    tracker.note_fix_attempt("bot_error:Bot1", "fixed")
+    res = tracker.resolve_open_for_bot("Bot1", "we_fixed", now=200.0)
+    assert res["we_fixed"] is True
+
+
 def test_reopen_after_resolve_starts_fresh_episode(tracker):
     tracker.open("silence", "Bot1", "silence:Bot1", "high", "quiet",
                  fixable=False, now=100.0)
