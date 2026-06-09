@@ -403,9 +403,14 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     # Route liveness HERE (/start probe -> relaunch or PC-off) instead of letting
     # it fall through to the generic _evaluate_bot error alert.
     if is_panel_silence_selfreport(text):
-        return await _handle_panel_selfreport_silence(
-            client, cfg, name, target_ref, deliver=deliver, state=state,
-            target=target, ent=ent)
+        note_age = (time.time() - date.timestamp()) if date else None
+        if note_age is None or note_age < cfg.panel_stale_minutes * 60:
+            return await _handle_panel_selfreport_silence(
+                client, cfg, name, target_ref, deliver=deliver, state=state,
+                target=target, ent=ent, seed=seed)
+        # Stale notice (e.g. read back after a restart): fall through so the
+        # age-based R6 path below owns old traffic (it has its own seed guard
+        # and probe debounce).
 
     now = time.time()
     age = (now - date.timestamp()) if date else None
@@ -624,7 +629,7 @@ async def _handle_cant_find_match(client, cfg, name, target_ref, minutes, *, del
 
 
 async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
-                                           deliver, state, target, ent):
+                                           deliver, state, target, ent, seed=False):
     """The panel posted its own 'has not sent any messages … please check it'
     watchdog notice. That sentence is fresh traffic, so the age-based R6 probe
     never fires for it — handle liveness HERE as a first-class FSM episode:
@@ -641,6 +646,14 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
     # Already escalated this episode to a cold case — stay quiet until recovery.
     if ps.coldcase_reported:
         return "self-report: cold-case awaiting PC"
+    if seed:
+        # First sweep after (re)start: never probe/alert off a notice we may have
+        # already handled before the restart — mirror R6's seed-quiet behavior.
+        return "self-report: seeded"
+    # R6 (or a prior notice) already alerted PC-off this episode — share the latch
+    # between BOTH PC-off paths so one dead PC yields exactly one HIGH.
+    if ps.flag_alerted:
+        return "self-report: PC-off already alerted"
     # Debounce on the last ACTION (not the R6 probe timer — leave last_probe_ts to
     # R6): don't re-act on a panel we just relaunched within the window.
     if (ps.last_action_ts is not None

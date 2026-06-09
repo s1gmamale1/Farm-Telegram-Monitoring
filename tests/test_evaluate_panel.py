@@ -621,3 +621,109 @@ def test_selfreport_silence_retry_cap_escalates_cold_case(monkeypatch):
     assert n4 == "self-report: cold-case awaiting PC"
     assert len(sent) == sent_before
     tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase A — R5 self-report shares the PC-off latch + seed/age guards
+# ---------------------------------------------------------------------------
+
+SELFREPORT_2H = "⚠️Panel has not sent any messages for 2 hours. Please check it!⚠️"
+
+
+def test_selfreport_respects_r6_pc_off_latch(monkeypatch):
+    alerts, probes = [], []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    async def fake_responds(client, target_ref, cfg):
+        probes.append(target_ref)
+        return False
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher, "_panel_responds", fake_responds)
+
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.flag_alerted = True
+    mcp_watcher._PANEL_STATE["SinFermera16"] = ps
+
+    note = _run(_cfg(), SELFREPORT_2H, name="SinFermera16", target="ibo")
+    assert note == "self-report: PC-off already alerted"
+    assert probes == [] and alerts == []
+
+
+def test_selfreport_seed_sweep_is_quiet(monkeypatch):
+    probes = []
+
+    async def fake_responds(client, target_ref, cfg):
+        probes.append(target_ref)
+        return False
+
+    monkeypatch.setattr(mcp_watcher, "_panel_responds", fake_responds)
+    note = _run(_cfg(), SELFREPORT_2H, name="SinFermera16", seed=True)
+    assert note == "self-report: seeded"
+    assert probes == []
+
+
+def test_selfreport_stale_and_seeded_both_quiet(monkeypatch):
+    probes = []
+
+    async def fake_responds(client, target_ref, cfg):
+        probes.append(target_ref)
+        return False
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_panel_responds", fake_responds)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    cfg = _cfg(panel_stale_minutes=30)
+    # notice is 60 min old (> 30m stale window) AND seed=True so R6 also stays quiet;
+    # the assertion is that the R5 handler did NOT probe off a stale notice, and
+    # the seed guard wins over the stale notice (no probe at all).
+    note = _run(cfg, SELFREPORT_2H, name="SinFermera16", age=3600.0, seed=True)
+    assert probes == []
+    assert note != "self-report: PC off"
+
+
+def test_selfreport_stale_notice_routed_to_r6_probe(monkeypatch):
+    probes, alerts = [], []
+
+    async def fake_responds(client, ref, cfg):
+        probes.append(ref)
+        return False
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_panel_responds", fake_responds)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    cfg = _cfg(panel_stale_minutes=30)
+    # 60-min-old notice, seed=False: R5 must NOT own it; R6 owns stale traffic.
+    note = _run(cfg, SELFREPORT_2H, name="SinFermera16", age=3600.0, seed=False, target="ibo")
+    assert note != "self-report: PC off"        # R5 did not handle it
+    assert len(probes) == 1 and len(alerts) == 1
+    # R6's flag reason for stale/down panel (panel_rules.decide line 91):
+    assert note == "panel/PC down or status stale — needs per-PC API"
+
+
+def test_selfreport_dead_still_alerts_once_then_latches(monkeypatch):
+    alerts = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    async def fake_responds(client, target_ref, cfg):
+        return False
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher, "_panel_responds", fake_responds)
+
+    assert _run(_cfg(), SELFREPORT_2H, name="SinFermera11") == "self-report: PC off"
+    assert len(alerts) == 1
+    assert _run(_cfg(), SELFREPORT_2H, name="SinFermera11") == \
+        "self-report: PC-off already alerted"
+    assert len(alerts) == 1
