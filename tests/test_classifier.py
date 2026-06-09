@@ -115,3 +115,18 @@ def test_bot_name_fallback_when_no_tag():
 
 def test_bot_name_handles_none():
     assert bot_name_from(None) == "unknown-bot"
+
+
+# --- is_panel_silence_selfreport --------------------------------------------
+
+def test_panel_silence_selfreport_matches():
+    from watcherdog.classifier import is_panel_silence_selfreport as f
+    assert f("[SinFermera11] ⚠️Panel has not sent any messages for the last 2 hours 0 minutes. Please check it!⚠️")
+    assert f("Panel has not sent any messages for the last 45 minutes. please CHECK it")
+
+
+def test_panel_silence_selfreport_negatives():
+    from watcherdog.classifier import is_panel_silence_selfreport as f
+    assert not f("[SinFermera6] Got an error while launching accounts.")
+    assert not f("All 4 accounts launched!")
+    assert not f("")

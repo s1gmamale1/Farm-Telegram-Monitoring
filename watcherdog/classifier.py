@@ -85,6 +85,18 @@ def is_benign_error(text):
     return bool(_BENIGN_ERROR_RE.search(text))
 
 
+# The FSM panel's OWN watchdog notice that it has gone quiet. This is a liveness
+# signal (route to a /start probe), NOT a generic error — see mcp_watcher.
+_PANEL_SILENCE_SELFREPORT_RE = re.compile(
+    r"has\s+not\s+sent\s+any\s+messages.*please\s+check", re.IGNORECASE | re.DOTALL)
+
+
+def is_panel_silence_selfreport(text):
+    """True when the panel itself reports it has gone silent ('…has not sent any
+    messages… Please check it!'). Routed to the liveness/recovery path."""
+    return bool(text and _PANEL_SILENCE_SELFREPORT_RE.search(text))
+
+
 def bot_name_from(text):
     """Best-effort extraction of the posting bot's name from a message."""
     m = _BOT_TAG_RE.search(text or "")
