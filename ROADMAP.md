@@ -26,7 +26,176 @@ This ROADMAP is the single source of truth for what to build next.
 
 ---
 
-## Phase 1 — Deterministic farm-stats parser  ⭐ do first
+# Reliability fix campaign (2026-06-10 deep review) — Phases A–D  ⭐ runs before everything below
+
+A 5-agent audit + 24h log forensics confirmed 22 defects (full cited index:
+`WISHLIST.md` → "Deep review findings (2026-06-10)"; design:
+`docs/superpowers/specs/2026-06-10-deep-review-fix-campaign-design.md`). Production
+impact measured: 38 PC-off HIGHs in 24h, 10 incidents for ONE dead PC at a ~71-min
+period, dual-path doubles, 4 incidents leaked 30+ h, refix never working, hourly report
+dead, dry-run sending real messages. These phases fix correctness of what's already
+built and therefore run **before** the AI-removal Phases 1–6.
+
+Each phase = one branch → PR → two-stage review → push-first merge, regression tests
+written test-first, tracked suite green (`pytest $(git ls-files 'tests/*.py')`).
+
+---
+
+## Phase A — Kill the alert storm
+
+**Goal.** A dead PC produces exactly ONE PC-off HIGH per episode; recovery always
+produces exactly one closure signal; watcher restarts re-alert nothing.
+
+**Deliverables.**
+- `watcherdog/tg_tools.py` — `latest_message` returns the latest **incoming** message (skips own probes).
+- `watcherdog/mcp_watcher.py` — R5 self-report handler honoring `flag_alerted` + `seed`/notice-age guards; healthy-recovery latch reset incl. `r2_attempted_ts`/`last_action_ts`; ledger-aware `had_episode`.
+- `watcherdog/panel_rules.py` — `PanelState.last_msg_ts` for silence-gap episode reset.
+- Regression tests in `tests/test_tg_tools.py` + `tests/test_evaluate_panel.py` (probe-as-latest, shared latch, seed/stale notice, timestamp resets, gap-unlatch, ledger closure).
+- Implementation plan: `docs/superpowers/plans/2026-06-10-fix-campaign-phase-a-alert-storm.md`.
+
+**Why now.** This is the owner-facing pain: the overnight HIGH storm, doubles, and
+30-hour leaked incidents all trace to the watcher counting its own `/start` probes as
+panel activity plus unshared episode latches. Five small changes end it.
+
+**Scope.**
+- `m.out` filter in `latest_message` (`watcherdog/tg_tools.py:128-143`).
+- R5 honors `flag_alerted`, takes `seed`, defers stale notices to R6 (`watcherdog/mcp_watcher.py:405-408`, `:626-697`).
+- Healthy-recovery resets `r2_attempted_ts`/`last_action_ts` (`watcherdog/mcp_watcher.py:447-449`).
+- Cold case unlatches on fresh card after a silence gap > `panel_stale_minutes` (`watcherdog/mcp_watcher.py:454`).
+- `had_episode` falls back to `tracker.open_for_bot("panel", name)` (`watcherdog/mcp_watcher.py:430-446`).
+
+**Findings + recommendation.** Log shows the exact 71-min re-alert period (stale 70m +
+120s sweep) for SinFermera2; `incidents.db` holds 10 rows for that one PC; SinFermera16
+double-alerted from both paths within 2.5 min. Recommendation: fix the evidence source
+(probe filter) rather than patching each consumer — `roster.py` benefits for free.
+
+**Risks.** Probe-reply traffic from *alive* panels still resets staleness (correct — the
+panel is alive); the gap-unlatch heuristic could re-act on a still-frozen host after a
+long silent window — bounded by the retry-cap re-escalating to cold case.
+
+**Definition of done.** Simulated dead-PC episode across 3+ sweeps yields exactly one
+HIGH + one open incident; R6-then-selfreport yields one alert; restart with open rows
+re-alerts nothing and a healthy card closes the row with one ✅; tracked suite green.
+
+---
+
+## Phase B — Make the incident lifecycle truthful
+
+**Goal.** Every ✅/⏳/❌ message reflects reality: resolves prove health (not traffic),
+new errors are never hidden, and the followup refix actually presses panel buttons.
+
+**Deliverables.**
+- Freshness-gated classify-"normal" resolve + source-scoped silence resolve (wiring the existing `resolve_by_bot`).
+- Startup re-arm of panel episodes from `tracker.open_list()`.
+- Hash/severity-aware suppression gate; idempotent re-open inside the dedupe window.
+- Per-bot last-evaluated-message memo (kills false 🔁 counts + eternal hash refresh + wasted Ollama calls).
+- Row-id-keyed followup mutations; refix resolving the entity from `state["watch"]`.
+- Regression tests per fix in `tests/test_mcp_watcher_core.py` + `tests/test_incident_tracker.py`.
+- Implementation plan: `docs/superpowers/plans/2026-06-10-fix-campaign-phase-b-lifecycle.md` (written when the phase starts).
+
+**Why now.** These are the "script lies to me" bugs: false ✅ on dark bots, false
+"❌ needs PC" on healthy panels, hidden CRITICALs behind open MEDIUMs, fabricated
+recurring counts, and a refix that has never once reached a panel.
+
+**Scope.**
+- Freshness gate on resolve-on-normal (`watcherdog/mcp_watcher.py:743-746`).
+- `resolve_by_bot("silence", …)` in the silence-recovery branch (`watcherdog/mcp_watcher.py:920-927`; `watcherdog/incident_tracker.py:100`).
+- Startup re-arm (`watcherdog/mcp_watcher.py:1539-1540`).
+- Suppression gate compares hash + severity (`watcherdog/mcp_watcher.py:791-794`).
+- `_open_bot_incident` before the dedupe `return` (`watcherdog/mcp_watcher.py:780-783`).
+- Same-message memo in `_evaluate_bot` (`watcherdog/mcp_watcher.py:773-783`) + `notified=1` filter in `storage.last_seen` (`watcherdog/storage.py:41-48`).
+- Row-id re-fetch in `_incident_followup_tick` (`watcherdog/mcp_watcher.py:1091-1125`); `chat=` from the watch roster (`:1114-1115`).
+
+**Findings + recommendation.** Three of these were reproduced by executing the real
+code (false ✅ on stale normal; error-closes-its-own-incident; restart orphan →
+false escalation). Recommendation: land as one PR — they share the same files and the
+same test harness; splitting would create review churn.
+
+**Risks.** The suppression-gate change increases alert volume by design (new distinct
+errors now alert); the memo must key on message id+hash so an *edited* panel message
+still re-evaluates.
+
+**Definition of done.** Replayed production scenarios (dark bot + old drop line; error
+from silent bot; restart with open rows; CRITICAL after open MEDIUM; recurrence within
+dedupe window) each produce the truthful message set and ledger state; refix presses
+buttons on a fake entity in tests; tracked suite green.
+
+---
+
+## Phase C — Sweep robustness, dry-run isolation, hourly report
+
+**Goal.** One bad chat costs only itself; dry-run touches nothing real; the hourly
+report delivers or says loudly why it can't.
+
+**Deliverables.**
+- Exception isolation around `_evaluate_bot` + the sweep silence block (parity with `_evaluate_panel`).
+- `deliver` honored on the ibo agent-answer send; ledger mutations gated on `deliver`.
+- Hourly report: fall back to the allow-list primary or disable with a one-time startup warning.
+- Regression tests in `tests/test_mcp_watcher_core.py` + `tests/test_hourly_report.py`.
+- Implementation plan: `docs/superpowers/plans/2026-06-10-fix-campaign-phase-c-robustness.md` (written when the phase starts).
+
+**Why now.** Cheap (S-effort each) and they cap blast radius before Phase D's riskier
+infra work; the hourly-report fix restores a feature that has been silently dead.
+
+**Scope.**
+- Wrap `_evaluate_bot` call (`watcherdog/mcp_watcher.py:887`) and bare `try_auto_fix` (`:802`).
+- Pass `deliver` at `watcherdog/mcp_watcher.py:1041`; gate tracker writes (`:848`, `:914-917`, `:1107`, `:1125`).
+- Hourly target fallback (`watcherdog/config.py:222-223`, `watcherdog/mcp_watcher.py:1368-1376`).
+
+**Findings + recommendation.** 26×/day `Cannot find any entity corresponding to ""` in
+production; dry-run delivery confirmed by signature inspection. Recommendation: keep
+this phase small and mechanical — three independent fixes, one PR.
+
+**Risks.** Over-broad exception wrapping could hide real bugs — mitigate with
+`log.exception` + per-chat error counters (the pattern `_evaluate_panel` already uses).
+
+**Definition of done.** A raising `_evaluate_bot` for chat N doesn't stop chat N+1
+(test); `--dry-run` sweep leaves the ledger byte-identical and sends nothing (test);
+with empty `TELEGRAM_CHAT_ID` the hourly report reaches the allow-list primary or logs
+one clear warning at startup — not 26 errors/day.
+
+---
+
+## Phase D — Infra hardening
+
+**Goal.** The lower-frequency failure modes can't silently lose a week of stats, kill
+the watcher during a self-restart, drop oversized alerts, or corrupt the session file.
+
+**Deliverables.**
+- Drop-stats: zero-panels ⇒ failure alert + no buffer overwrite + short retry + Panels-folder cache fallback + `.strip()` title match.
+- Restart supervisor: try/finally relaunch, raised health timeout, pid lockfile against double-start.
+- Alert truncation (~4000 chars) in both send paths; daily-report snapshot-then-clear.
+- Per-bot dedupe scope (`last_seen(h, bot)`); `busy_timeout` on `IncidentStore`; executor offloading for gspread/`set_my_commands`; process-global per-bot action locks for `dispatch_bots`; SF-listener sender filter + cooldown; escalation-copy/duration fixes; `_alert` for the fixed-report.
+- Regression tests across `tests/test_drop_stats.py`, `tests/test_restart_helper.py`, `tests/test_alerter.py`, `tests/test_storage.py`, `tests/test_agent_dispatch.py`.
+- Implementation plan: `docs/superpowers/plans/2026-06-10-fix-campaign-phase-d-infra.md` (written when the phase starts).
+
+**Why now.** Real but lower-frequency; safe to land last. Several (drop-stats, restart
+supervisor) protect against rare-but-expensive losses (a week of stats; the fleet
+unwatched overnight; a corrupted `watcher.session` — a failure class already hit once).
+
+**Scope.** `watcherdog/drop_stats.py:208-227,375-414` + `watcherdog/tg_tools.py:57-95`;
+`watcherdog/restart_helper.py:109-130` + `watcherdog/self_restart.py:119`;
+`watcherdog/alerter.py:27-50,215-247` + `watcherdog/mcp_watcher.py:1490-1499`;
+`watcherdog/storage.py:15-17,41-48`; `watcherdog/bot_interface.py:236`;
+`watcherdog/agent.py:613-657`; `watcherdog/mcp_watcher.py:810,1105,1186-1233`.
+
+**Findings + recommendation.** The Wednesday-00:00 zero-panel run is confirmed in the
+log; the rest are code-traced with clear invariant violations. Recommendation: split the
+PR in two if review gets heavy (storage/alerting vs restart/locks).
+
+**Risks.** Restart-supervisor changes are themselves restart-critical — test via
+`tests/test_restart_helper.py` process-fakes, never live; lock unification could
+serialize previously-parallel fan-outs (acceptable: correctness over speed on a shared
+account).
+
+**Definition of done.** Zero-panel weekly run alerts + preserves the buffer + retries
+(test); double `request_restart` yields one supervisor (test); a 10k-char alert arrives
+truncated, not dropped (test); two concurrent `dispatch_bots` on one panel serialize
+(test); tracked suite green.
+
+---
+
+## Phase 1 — Deterministic farm-stats parser  ⭐ first feature phase (after the fix campaign)
 
 **Goal.** A bot's recent Telegram **text** is parsed into a structured per-bot record with zero model calls; anything not in text is explicitly marked unknown (never guessed).
 
@@ -187,6 +356,10 @@ This ROADMAP is the single source of truth for what to build next.
 
 | Item | Phase | Effort | Impact | Notes |
 |------|-------|--------|--------|-------|
+| **Kill the alert storm** | **A** | **M** | **High** | Ends the 71-min HIGH storm, doubles, leaked incidents; plan ready |
+| Truthful incident lifecycle | B | M | High | False ✅/❌, hidden CRITICALs, never-working refix; 3 bugs repro'd |
+| Sweep robustness + dry-run + hourly | C | S | Medium | Blast-radius caps; restores the dead hourly report |
+| Infra hardening | D | M | Medium | Drop-stats week loss, restart safety, alert truncation, locks |
 | Concurrency test failures | Hotlist #1 | M | Medium | Real failures on pristine code; fix before building on `bot_interface` |
 | Declare/optional-guard deps | Hotlist #2 | S | Medium | Sheets + GUI features silently unrunnable on clean install |
 | Docstring + f-string nits | Hotlist #3–4 | S | Low | Cheap correctness |
