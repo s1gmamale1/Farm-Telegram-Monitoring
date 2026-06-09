@@ -452,6 +452,8 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             ps.recover_attempts = 0
             ps.episode_issue = None
             ps.coldcase_reported = False
+            ps.r2_attempted_ts = None
+            ps.last_action_ts = None
         return None
 
     # Already escalated this episode to a cold case (needs the PC) — stay quiet

@@ -727,3 +727,35 @@ def test_selfreport_dead_still_alerts_once_then_latches(monkeypatch):
     assert _run(_cfg(), SELFREPORT_2H, name="SinFermera11") == \
         "self-report: PC-off already alerted"
     assert len(alerts) == 1
+
+
+def test_recovery_resets_r2_and_action_timestamps(monkeypatch):
+    # Episode 1 relaunched (r2_attempted_ts armed). Panel goes healthy. A NEW
+    # under-launch episode hours later must RELAUNCH first — not run the R4
+    # black-screen check off the stale timestamp.
+    ran, shots = [], []
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=True):
+        ran.append(actions)
+        return [{"ok": True} for _ in actions]
+
+    async def fake_shot(client, target_ref, cfg):
+        shots.append(target_ref)
+        return {"black": True}
+
+    monkeypatch.setattr(mcp_watcher.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mcp_watcher.panel_actions, "screenshot_black", fake_shot)
+
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.r2_attempted_ts = time.time() - 7200   # stale: armed 2h ago
+    ps.last_action_ts = time.time() - 7200
+    ps.recover_attempts = 1
+    mcp_watcher._PANEL_STATE["SinFermera8"] = ps
+
+    assert _run(_cfg(), HEALTHY, name="SinFermera8") is None   # healthy recovery
+    assert mcp_watcher._PANEL_STATE["SinFermera8"].r2_attempted_ts is None
+    assert mcp_watcher._PANEL_STATE["SinFermera8"].last_action_ts is None
+
+    note = _run(_cfg(), UNDER, name="SinFermera8")              # new episode
+    assert shots == []                       # no pre-relaunch screenshot
+    assert ran and ran[0][:2] == ["select_unfarmed", "start_selected"]
