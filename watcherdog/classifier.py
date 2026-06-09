@@ -88,7 +88,7 @@ def is_benign_error(text):
 # The FSM panel's OWN watchdog notice that it has gone quiet. This is a liveness
 # signal (route to a /start probe), NOT a generic error — see mcp_watcher.
 _PANEL_SILENCE_SELFREPORT_RE = re.compile(
-    r"has\s+not\s+sent\s+any\s+messages.*please\s+check", re.IGNORECASE | re.DOTALL)
+    r"has\s+not\s+sent\s+any\s+messages[^\n]{0,80}please\s+check", re.IGNORECASE)
 
 
 def is_panel_silence_selfreport(text):

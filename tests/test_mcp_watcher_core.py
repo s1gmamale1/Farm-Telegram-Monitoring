@@ -40,6 +40,16 @@ class _FakeClient:
         self.sent.append((target, text))
 
 
+@pytest.fixture(autouse=True)
+def _clear_panel_state():
+    # _PANEL_STATE is process-global; clear it around every test so per-panel FSM
+    # state (recover_attempts, flag_alerted, last_action_ts, …) never leaks across
+    # tests (mirror test_evaluate_panel.py's _clear_state).
+    mcp_watcher._PANEL_STATE.clear()
+    yield
+    mcp_watcher._PANEL_STATE.clear()
+
+
 # ---------------------------------------------------------------------------
 # _send — text delivery, dry-run, multi-target
 # ---------------------------------------------------------------------------
@@ -531,6 +541,29 @@ def test_bot_error_then_healthy_emits_one_resolved(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_open_incident_suppresses_duplicate_detection_alert(tmp_path, monkeypatch):
+    # A bot_error incident already open → a fresh bot_error for the SAME bot is a
+    # duplicate symptom and must be suppressed (recorded, not re-alerted).
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=1.0)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Got an error while launching accounts.", 50.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    assert client.sent == []          # bot_error already open → no duplicate 🟠
+    store.close()
+    tracker.close()
+
+
+def test_open_panel_incident_does_not_suppress_bot_error(tmp_path):
+    # A panel (or silence) incident is a DIFFERENT failure mode/channel; it must
+    # NEVER swallow a fresh bot_error alert. F1 regression guard.
     from watcherdog.incident_tracker import IncidentTracker
     cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
                           "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0"})
@@ -543,7 +576,8 @@ def test_open_incident_suppresses_duplicate_detection_alert(tmp_path, monkeypatc
         client, cfg, store, state, "ibo", "Bot1",
         "[Bot1] Got an error while launching accounts.", 50.0,
         asyncio.new_event_loop(), deliver=True, ent=None))
-    assert client.sent == []          # an incident is already open → no duplicate 🟠
+    assert client.sent                                  # a panel incident does NOT suppress
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None  # new bot_error opened
     store.close()
     tracker.close()
 
@@ -569,12 +603,20 @@ def test_first_detection_still_alerts_and_opens(tmp_path):
 
 
 def test_panel_healthy_resolves_open_incident(tmp_path):
-    # open a panel incident, then a healthy status card → exactly one ✅ Resolved
+    # open a panel incident (paired with the flag latch, as the real PC-OFF path
+    # does), then a healthy status card → exactly one ✅ Resolved closure.
+    from watcherdog import panel_rules
     from watcherdog.incident_tracker import IncidentTracker
     cfg = _cfg(tmp_path, {})
     tracker = IncidentTracker(str(tmp_path / "incidents.db"))
     tracker.open("panel", "SinFermera7", "panel:SinFermera7", "high",
                  "PC OFF / unreachable", fixable=False, now=100.0)
+    # Mirror production: a panel incident is always opened alongside a latch
+    # (PC-OFF sets flag_alerted) — that latch is what makes the recovery sweep an
+    # "episode" worth resolving (F2 had_episode gate).
+    ps = panel_rules.PanelState()
+    ps.flag_alerted = True
+    mcp_watcher._PANEL_STATE["SinFermera7"] = ps
     client = _FakeClient()
     state = {"tracker": tracker}
     healthy = ("📊 Panel status:\n├ 👥 Launched: 4 accounts\n├ 🟢 Status: LIVE\n"
@@ -586,6 +628,9 @@ def test_panel_healthy_resolves_open_incident(tmp_path):
     assert tracker.open_list_for_bot("SinFermera7") == []
     resolved = [t for _, t in client.sent if "✅ Resolved" in t]
     assert len(resolved) == 1
+    # EXACTLY one closure message overall (no stray "✅ back online" beside it).
+    check_marks = [t for _, t in client.sent if "✅" in t]
+    assert len(check_marks) == 1
     tracker.close()
 
 

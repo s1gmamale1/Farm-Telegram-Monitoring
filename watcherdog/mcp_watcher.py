@@ -422,39 +422,31 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         panel_rules.observe(status, ps, now, cfg)
     decision = panel_rules.decide(status, age, ps, now, cfg)
 
-    # Clear the cold-case latch as soon as the panel stops flagging. If we had
-    # alerted a PC-off / silent cold case and the panel is speaking again, confirm
-    # it's back ONCE so the owner who powered it on gets closure.
+    # The panel stopped flagging. An "episode" was in flight if we had alerted a
+    # cold case (flag_alerted/coldcase_reported) OR a recovery sequence ran
+    # (recover_attempts > 0). Capture that BEFORE clearing the latches so the
+    # healthy branch can emit EXACTLY ONE closure message and skip the per-sweep
+    # tracker SELECT for panels that were simply healthy this whole time.
+    had_episode = (ps.flag_alerted or ps.coldcase_reported or ps.recover_attempts > 0)
     if decision.kind != "flag":
-        # Only the cold-case points (PC-off, retry-cap, black-screen) open a panel
-        # incident — flag_alerted/coldcase_reported mark that. Skip the per-sweep
-        # tracker SELECT for panels that were simply healthy this whole time.
-        had_open_incident = ps.flag_alerted or ps.coldcase_reported
-        if ps.flag_alerted:
-            await _alert(state, client, target, f"✅ {name} | back online", deliver, cfg=cfg)
         ps.flag_alerted = False
         ps.last_probe_ts = None
-        if had_open_incident:
-            tracker = state.get("tracker")
-            if tracker is not None:
-                tracker.resolve_by_bot("panel", name, "self_healed", now=now)
 
     if decision.kind == "noop":
-        # Recovery: if a recovery episode was in flight and the panel is now
-        # healthy, report it ONCE (Panel | Issue | Fixed ✅) and reset the episode.
-        if getattr(decision, "healthy", False) and ps.recover_attempts > 0:
-            await _panel_report(state, client, target, name, ps.episode_issue or "issue",
-                                fixed=True, deliver=deliver, cfg=cfg)
+        if getattr(decision, "healthy", False):
+            announce_resolved = True
+            if ps.recover_attempts > 0:
+                # An FSM recovery episode (R2/R3/self-report relaunch) — its own
+                # `Fixed ✅` line IS the closure; close any tracked incident silently.
+                await _panel_report(state, client, target, name, ps.episode_issue or "issue",
+                                    fixed=True, deliver=deliver, cfg=cfg)
+                announce_resolved = False
+            if had_episode:
+                await _resolve_incidents_for(state, client, target, name, now, deliver, cfg,
+                                             announce=announce_resolved)
             ps.recover_attempts = 0
             ps.episode_issue = None
             ps.coldcase_reported = False
-        # The panel is operational again — close ANY open incident for it
-        # (PC-off, self-reported-silence, relaunch-failed, …) and announce the
-        # canonical ✅ Resolved. The status card classifies `unknown`, so the
-        # bot-normal resolve path would never reach these; this is what closes
-        # them. No-op (no message) when nothing is open.
-        if getattr(decision, "healthy", False):
-            await _resolve_incidents_for(state, client, target, name, now, deliver, cfg)
         return None
 
     # Already escalated this episode to a cold case (needs the PC) — stay quiet
@@ -635,48 +627,74 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
                                            deliver, state, target, ent):
     """The panel posted its own 'has not sent any messages … please check it'
     watchdog notice. That sentence is fresh traffic, so the age-based R6 probe
-    never fires for it — handle liveness HERE: /start-probe, then relaunch if the
-    app is alive (farm stalled) or report PC-off if it's dead. Returns a handled
-    note so monitor_once skips the generic _evaluate_bot alert for this message."""
+    never fires for it — handle liveness HERE as a first-class FSM episode:
+    /start-probe, then relaunch (arming the SAME state R2 does) if the app is
+    alive, report PC-off if it's dead, or escalate a cold case once the retry-cap
+    is hit. Recovery closure is owned by the _evaluate_panel healthy branch
+    (episode `Fixed ✅`), so the ALIVE/relaunch path does NOT open a tracker
+    incident — only the DEAD and retry-cap paths do. Returns a handled note so
+    monitor_once skips the generic _evaluate_bot alert for this message."""
     now = time.time()
     if not deliver:
         return "dry-run: would probe self-report silence"
-    # Debounce a repeat probe within the action window.
     ps = _PANEL_STATE.setdefault(name, panel_rules.PanelState())
-    debounce = getattr(cfg, "panel_action_debounce_seconds", 180)
-    if ps.last_probe_ts is not None and (now - ps.last_probe_ts) < debounce:
-        return "self-report silence: probe debounced"
-    ps.last_probe_ts = now
+    # Already escalated this episode to a cold case — stay quiet until recovery.
+    if ps.coldcase_reported:
+        return "self-report: cold-case awaiting PC"
+    # Debounce on the last ACTION (not the R6 probe timer — leave last_probe_ts to
+    # R6): don't re-act on a panel we just relaunched within the window.
+    if (ps.last_action_ts is not None
+            and (now - ps.last_action_ts) < cfg.panel_action_debounce_seconds):
+        return "self-report: debounced"
     alive = await _panel_responds(client, target_ref, cfg)
     if alive is None:
         log.warning("[panel] %s self-report silence: probe inconclusive", name)
-        return "self-report silence: probe inconclusive"
+        return "self-report: probe inconclusive"
     if alive is False:
         await _panel_report_pc_off(state, client, target, name, None,
                                    deliver=deliver, cfg=cfg)
+        ps.flag_alerted = True
         _open_panel_incident(state, name, "self-reported silent + no /start reply", now=now)
         log.info("[panel] %s self-report silence + no /start reply — PC off (HIGH)", name)
-        return "self-report silence: PC off"
-    # alive: app is up, farm stalled -> relaunch through the existing gate.
+        return "self-report: PC off"
+    # alive: the app is up but the farm stalled. Retry-cap first (mirror FSM): after
+    # N failed relaunches in this episode, escalate as a cold case and stay quiet.
+    if ps.recover_attempts >= getattr(cfg, "panel_max_attempts", 3):
+        await _panel_report(state, client, target, name,
+                            ps.episode_issue or "self-reported silence",
+                            fixed=False, deliver=deliver, cfg=cfg,
+                            extra=f" ({ps.recover_attempts} relaunches failed)")
+        ps.coldcase_reported = True
+        _open_panel_incident(state, name,
+                             f"{ps.episode_issue or 'self-reported silence'} — relaunches failed",
+                             now=now)
+        log.info("[panel] %s self-report silence: attempts exhausted -> cold case", name)
+        return "self-report: attempts exhausted"
+    # Relaunch through the existing gate, arming the SAME state R2 does.
     actions = ["select_unfarmed", "start_selected"]
-    _open_panel_incident(state, name, "self-reported silent (farm stalled)", now=now)
     if cfg.panel_auto_recover:
         results = await panel_actions.run_sequence(client, target_ref, actions, cfg, confirmed=True)
         ps.last_action_ts = now
+        ps.r2_attempted_ts = now
+        if ps.recover_attempts == 0:
+            ps.episode_issue = "self-reported silence"
+        ps.recover_attempts += 1
         ok = all(r.get("ok") for r in results)
         daily_report.record(cfg.daily_errors_path, panel=name,
                             error="self-reported silence", fix=",".join(actions),
                             result="ok" if ok else "failed")
         log.info("[panel] %s self-report silence: ran %s -> %s", name, actions,
                  "ok" if ok else "failed")
-        return f"self-report silence: relaunch {actions} -> {'ok' if ok else 'failed'}"
+        return f"self-report: relaunch {actions} -> {'ok' if ok else 'failed'}"
     posted = await _offer_card(
         state, f"🧰 {name} — panel reported silent; relaunch accounts?",
         buttons.confirm_options([_ACTION_LABELS.get(a, a) for a in actions]),
         panel_target=target_ref)
-    ps.last_action_ts = now
-    return f"self-report silence: confirm card {actions}" if posted else \
-           "self-report silence: alive, no card poster"
+    if posted is not None:
+        ps.last_action_ts = now
+        ps.r2_attempted_ts = now
+    return f"self-report: confirm card {actions}" if posted else \
+           "self-report: alive, no card poster"
 
 
 def _open_bot_incident(state, bot, severity, analysis, text, *, fixable, now=None):
@@ -764,14 +782,15 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
         log.info("error on %s already alerted %.0fs ago; not resending", bot, now - last)
         return
 
-    # Channel coordination: if a lifecycle incident is ALREADY open for this bot
-    # (opened by the first detection, the panel path, or silence), a fresh error
-    # for the same bot is a duplicate symptom — record it but don't re-alert. The
-    # FIRST detection (nothing open yet) still alerts+opens below; only repeats
-    # while an incident stays open are suppressed.
+    # Channel coordination: if a BOT_ERROR incident is ALREADY open for this bot,
+    # a fresh bot_error is a duplicate symptom of the same open incident — record
+    # it but don't re-alert. Scope this to the bot_error source ONLY: a panel or
+    # silence incident must NEVER swallow a new bot_error (different failure mode,
+    # different channel). The FIRST bot_error (none open yet) still alerts+opens
+    # below; only repeats while a bot_error incident stays open are suppressed.
     tracker = state.get("tracker")
-    if tracker is not None and tracker.open_list_for_bot(bot):
-        log.info("lifecycle incident already open for %s — suppressing duplicate alert", bot)
+    if tracker is not None and tracker.open_for_bot("bot_error", bot) is not None:
+        log.info("bot_error incident already open for %s — suppressing duplicate alert", bot)
         store.record(bot, severity, analysis, h, text, notified=False, ts=now)
         return
 
