@@ -273,6 +273,10 @@ def test_flag_alert_latched_once(monkeypatch):
 
 
 def test_flag_latch_clears_on_recovery(monkeypatch):
+    # Unified closure (F2): a PC-OFF cold case that recovers emits EXACTLY ONE
+    # closure — the canonical ✅ Resolved (no separate "✅ back online" line) — and
+    # clears the flag latch so a later stale episode can re-alert PC OFF.
+    from watcherdog.incident_tracker import IncidentTracker
     alerts = []
 
     async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
@@ -280,14 +284,18 @@ def test_flag_latch_clears_on_recovery(monkeypatch):
 
     monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
     monkeypatch.setattr(mcp_watcher.tg_actions, "panel_menu", _menu_no_reply)
+    tracker = IncidentTracker(":memory:")
+    state = {"tracker": tracker}
     cfg = _cfg()
-    _run(cfg, HEALTHY, age=3600)        # stale + no /start -> PC OFF alert #1
-    assert _run(cfg, HEALTHY, age=1) is None   # recovered -> back-online #2, clears latch
-    _run(cfg, HEALTHY, age=3600)        # stale again -> PC OFF alert #3
+    _run(cfg, HEALTHY, age=3600, state=state, target="ibo")   # PC OFF alert #1 + open incident
+    assert _run(cfg, HEALTHY, age=1, state=state, target="ibo") is None  # recovered -> ✅ Resolved #2
+    _run(cfg, HEALTHY, age=3600, state=state, target="ibo")   # stale again -> PC OFF alert #3
     assert len(alerts) == 3
     assert "PC OFF" in alerts[0].upper()
-    assert "back online" in alerts[1].lower()
+    assert "✅ Resolved" in alerts[1]
+    assert "back online" not in alerts[1].lower()   # F2: the old line is gone
     assert "PC OFF" in alerts[2].upper()
+    tracker.close()
 
 
 def test_probe_inconclusive_does_not_alert(monkeypatch):
@@ -543,3 +551,73 @@ def test_selfreport_silence_inconclusive_is_handled(monkeypatch):
     monkeypatch.setattr(mw, "_panel_responds", fake_responds)
     note = _run(_cfg(), SELFREPORT)
     assert note is not None       # handled, not escalated
+
+
+def test_selfreport_silence_arms_r2_attempted_ts(monkeypatch):
+    # F3: a self-report relaunch must arm the SAME state R2 does, so the R4
+    # black-screen follow-up and the recovery FSM see a real episode.
+    import watcherdog.mcp_watcher as mw
+
+    async def fake_responds(client, ref, cfg):
+        return True            # alive -> relaunch
+
+    async def fake_seq(client, ref, actions, cfg, *, confirmed=True):
+        return [{"ok": True}]
+
+    monkeypatch.setattr(mw, "_panel_responds", fake_responds)
+    monkeypatch.setattr(mw.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mw.daily_report, "record", lambda *a, **k: None)
+    _run(_cfg(panel_auto_recover=True), SELFREPORT, name="SinFermera7")
+    ps = mw._PANEL_STATE["SinFermera7"]
+    assert ps.r2_attempted_ts is not None
+    assert ps.last_action_ts is not None
+    assert ps.recover_attempts == 1
+    assert ps.episode_issue == "self-reported silence"
+
+
+def test_selfreport_silence_retry_cap_escalates_cold_case(monkeypatch):
+    # F3: after panel_max_attempts self-report relaunches, the next self-report
+    # escalates a cold case, opens a panel incident, and latches coldcase_reported.
+    import watcherdog.mcp_watcher as mw
+    from watcherdog.incident_tracker import IncidentTracker
+
+    async def fake_responds(client, ref, cfg):
+        return True            # always alive -> relaunch until the cap
+
+    async def fake_seq(client, ref, actions, cfg, *, confirmed=True):
+        return [{"ok": True}]
+
+    sent = []
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(mw, "_panel_responds", fake_responds)
+    monkeypatch.setattr(mw.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mw, "_alert", fake_alert)
+    monkeypatch.setattr(mw.daily_report, "record", lambda *a, **k: None)
+
+    tracker = IncidentTracker(":memory:")
+    state = {"tracker": tracker}
+    # debounce=0 so each relaunch counts; max_attempts=2 -> 2 relaunches then cap.
+    cfg = _cfg(panel_auto_recover=True, panel_action_debounce_seconds=0,
+               panel_max_attempts=2)
+    _run(cfg, SELFREPORT, name="SinFermera7", state=state, target="ibo")   # attempt 1
+    _run(cfg, SELFREPORT, name="SinFermera7", state=state, target="ibo")   # attempt 2
+    note = _run(cfg, SELFREPORT, name="SinFermera7", state=state, target="ibo")  # cap
+
+    assert note == "self-report: attempts exhausted"
+    ps = mw._PANEL_STATE["SinFermera7"]
+    assert ps.coldcase_reported is True
+    assert tracker.open_for_bot("panel", "SinFermera7") is not None
+    assert any("NOT fixed" in s and "needs PC" in s for s in sent)
+    # The ALIVE/relaunch path must NOT have opened an incident — only the cap did.
+    assert len(tracker.open_list_for_bot("SinFermera7")) == 1
+
+    # And a further self-report while latched stays quiet (no new action/alert).
+    sent_before = len(sent)
+    n4 = _run(cfg, SELFREPORT, name="SinFermera7", state=state, target="ibo")
+    assert n4 == "self-report: cold-case awaiting PC"
+    assert len(sent) == sent_before
+    tracker.close()

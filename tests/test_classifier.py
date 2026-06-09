@@ -130,3 +130,12 @@ def test_panel_silence_selfreport_negatives():
     assert not f("[SinFermera6] Got an error while launching accounts.")
     assert not f("All 4 accounts launched!")
     assert not f("")
+
+
+def test_panel_silence_selfreport_no_match_across_lines():
+    # F5: the trigger phrase and "please check" must be on the SAME line (within
+    # 80 chars). A multi-line message that merely happens to contain both phrases
+    # on different lines must NOT be misrouted into the liveness path.
+    from watcherdog.classifier import is_panel_silence_selfreport as f
+    assert not f("Panel has not sent any messages.\nUnrelated middle line.\n"
+                 "please check the logs")
