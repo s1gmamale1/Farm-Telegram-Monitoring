@@ -879,3 +879,101 @@ def test_coldcase_stays_latched_when_panel_posted_nonstatus_during_silence(monke
 
     assert mcp_watcher._PANEL_STATE["SinFermera5"].coldcase_reported is True
     assert ran == []
+
+
+def test_healthy_resolves_open_ledger_row_even_without_latches(monkeypatch):
+    # Latches wiped (restart / old latch bug) but the ledger still holds an open
+    # panel incident. A healthy card must close it and announce once.
+    resolved, alerts = [], []
+
+    class _FakeTracker:
+        def open_for_bot(self, source, bot):
+            return {"key": f"panel:{bot}"} if source == "panel" else None
+
+        def resolve_open_for_bot(self, bot, resolution, now=None):
+            resolved.append((bot, resolution))
+            return {"count": 1, "elapsed": 120.0, "we_fixed": False}
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    state = {"tracker": _FakeTracker()}
+
+    assert _run(_cfg(), HEALTHY, name="SinFermera24", state=state) is None
+    assert resolved == [("SinFermera24", "self_healed")]
+    assert len(alerts) == 1 and "Resolved" in alerts[0]
+
+
+def test_healthy_no_episode_no_ledger_row_skips_resolve(monkeypatch):
+    # Plain-healthy panel, no latches, no open row: must NOT call resolve at all
+    # (preserves the per-sweep no-SELECT-for-healthy-panels optimization intent —
+    # here we assert no resolve/alert side effects fire).
+    resolved, alerts = [], []
+
+    class _FakeTracker:
+        def open_for_bot(self, source, bot):
+            return None
+
+        def resolve_open_for_bot(self, bot, resolution, now=None):
+            resolved.append((bot, resolution))
+            return None
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    state = {"tracker": _FakeTracker()}
+
+    assert _run(_cfg(), HEALTHY, name="SinFermera3", state=state) is None
+    assert resolved == [] and alerts == []
+
+
+def test_coldcased_panel_returns_healthy_resolves_ledger_once(monkeypatch):
+    # PC was cold-cased (needs-PC), owner powers it back on, and the FIRST message
+    # after the silence gap is already a HEALTHY 4/4 card. The healthy branch must
+    # resolve the durable open ledger row exactly once (latches were set, but the
+    # ledger row is the durable identity) and clear the cold-case latch.
+    # recover_attempts>0 means the FSM ran a recovery episode, so the closure is the
+    # silent `Fixed ✅` panel-report path (announce=False) — the ledger row IS still
+    # closed (resolve called once) but no separate "Resolved" alert is emitted.
+    resolved, alerts = [], []
+
+    class _FakeTracker:
+        def open_for_bot(self, source, bot):
+            return {"key": f"panel:{bot}"} if source == "panel" else None
+
+        def resolve_open_for_bot(self, bot, resolution, now=None):
+            resolved.append((bot, resolution))
+            return {"count": 1, "elapsed": 600.0, "we_fixed": False}
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        alerts.append(text)
+        return True
+
+    async def fake_report(state, client, target, name, issue, *, fixed, deliver, cfg, extra=""):
+        alerts.append(f"report:{name}:{issue}:fixed={fixed}")
+        return True
+
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher, "_panel_report", fake_report)
+
+    cfg = _cfg(panel_stale_minutes=30)
+    now = time.time()
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True
+    ps.recover_attempts = 3
+    ps.episode_issue = "under-launch"
+    ps.last_msg_ts = now - 3600           # 60-min silence > 30m window
+    mcp_watcher._PANEL_STATE["SinFermera1"] = ps
+    state = {"tracker": _FakeTracker()}
+
+    note = _run(cfg, HEALTHY, name="SinFermera1", age=5.0, state=state)
+    assert note is None
+    # The durable ledger row is closed exactly once (announce=False, so the closure
+    # rides the silent `Fixed ✅` panel report rather than a separate Resolved alert).
+    assert resolved == [("SinFermera1", "self_healed")]
+    assert alerts == ["report:SinFermera1:under-launch:fixed=True"]
+    assert mcp_watcher._PANEL_STATE["SinFermera1"].coldcase_reported is False
