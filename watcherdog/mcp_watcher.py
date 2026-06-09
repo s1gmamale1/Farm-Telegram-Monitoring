@@ -449,6 +449,15 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                 await _panel_report(state, client, target, name, ps.episode_issue or "issue",
                                     fixed=True, deliver=deliver, cfg=cfg)
                 announce_resolved = False
+            tracker = state.get("tracker")
+            if not had_episode and tracker is not None:
+                # Latches are process-memory and can be wiped on restart; when they
+                # say "no episode" we consult the durable ledger to catch an
+                # orphaned open row a wiped latch would otherwise leak. Costs one
+                # cheap SELECT per healthy panel per sweep against the tiny
+                # open_incidents table (returns None -> no-op) — acceptable; the row
+                # is the only durable evidence a wiped-latch panel had an incident.
+                had_episode = tracker.open_for_bot("panel", name) is not None
             if had_episode:
                 await _resolve_incidents_for(state, client, target, name, now, deliver, cfg,
                                              announce=announce_resolved)
