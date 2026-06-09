@@ -694,37 +694,16 @@ def _open_bot_incident(state, bot, severity, analysis, text, *, fixable, now=Non
                  fixable=fixable, raw_excerpt=(text or "")[:1000], now=now)
 
 
-async def _resolve_bot_incident(state, client, target, bot, now, deliver, cfg):
-    """A bot posted a healthy message — close any open bot_error incident and tell
-    the owner it cleared. ``fix_attempted`` holds the status of our last re-fix
-    attempt (set only by the follow-up loop), so we only claim "fixed by
-    WatcherDog" when an attempt actually reported success — an attempted-and-failed
-    fix that then self-heals is correctly reported as "recovered on its own".
-    Inert when tracking is disabled (no tracker in state)."""
-    tracker = state.get("tracker")
-    if tracker is None:
-        return
-    row = tracker.open_for_bot("bot_error", bot)
-    if row is None:
-        return
-    we_fixed = row["fix_attempted"] == "fixed"
-    res = tracker.resolve_by_bot(
-        "bot_error", bot, "we_fixed" if we_fixed else "self_healed", now=now)
-    if res is not None:
-        await _alert(state, client, target,
-                     format_incident_resolved(bot, res["elapsed"], we_fixed=we_fixed),
-                     deliver, cfg=cfg)
-        log.info("RESOLVED %s after %.0fs (%s)", bot, res["elapsed"],
-                 "we_fixed" if we_fixed else "self_healed")
-
-
 async def _resolve_incidents_for(state, client, target, bot, now, deliver, cfg, *, announce=True):
     """Close EVERY open incident for a bot (any source) and, if announce, send one
-    canonical ✅ Resolved. Inert when tracking is disabled."""
+    canonical ✅ Resolved. ``fix_attempted=="fixed"`` on any row makes the closure
+    read "fixed by WatcherDog" (and stores resolution ``we_fixed``); otherwise it
+    reads "recovered on its own" and stores the passed base resolution.
+    Inert when tracking is disabled."""
     tracker = state.get("tracker")
     if tracker is None:
         return
-    res = tracker.resolve_open_for_bot(bot, "we_fixed_or_healed", now=now)
+    res = tracker.resolve_open_for_bot(bot, "self_healed", now=now)
     if res is None:
         return
     if announce:
