@@ -473,3 +473,73 @@ def test_cold_case_after_max_attempts(monkeypatch):
     assert len(alerts) == 1
     assert "NOT fixed" in alerts[0] and "needs PC" in alerts[0]
     assert "SinFermera7 | 2/4 launched" in alerts[0]
+
+
+# ---------------------------------------------------------------------------
+# Task 4: panel self-reported-silence reroute into the /start liveness path
+# ---------------------------------------------------------------------------
+
+SELFREPORT = ("[SinFermera7] ⚠️Panel has not sent any messages for the last "
+              "2 hours 0 minutes. Please check it!⚠️")
+
+
+def test_selfreport_silence_alive_runs_relaunch(monkeypatch):
+    import watcherdog.mcp_watcher as mw
+    ran = {}
+
+    async def fake_responds(client, ref, cfg):
+        return True            # alive
+
+    async def fake_seq(client, ref, actions, cfg, *, confirmed=True):
+        ran["actions"] = actions
+        return [{"ok": True}]
+
+    monkeypatch.setattr(mw, "_panel_responds", fake_responds)
+    monkeypatch.setattr(mw.panel_actions, "run_sequence", fake_seq)
+    monkeypatch.setattr(mw.daily_report, "record", lambda *a, **k: None)
+    note = _run(_cfg(panel_auto_recover=True), SELFREPORT)
+    assert note is not None                       # HANDLED — does not fall to _evaluate_bot
+    assert ran["actions"] == ["select_unfarmed", "start_selected"]
+
+
+def test_selfreport_silence_dead_reports_pc_off(monkeypatch):
+    import watcherdog.mcp_watcher as mw
+    sent = []
+
+    async def fake_responds(client, ref, cfg):
+        return False           # dead
+
+    async def fake_alert(state, client, target, text, deliver=True, *, cfg=None):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(mw, "_panel_responds", fake_responds)
+    monkeypatch.setattr(mw, "_alert", fake_alert)
+    note = _run(_cfg(), SELFREPORT)
+    assert note is not None
+    assert any("PC OFF" in s or "needs PC" in s for s in sent)
+
+
+def test_selfreport_silence_dry_run_does_not_probe(monkeypatch):
+    import watcherdog.mcp_watcher as mw
+    probed = []
+
+    async def fake_responds(client, ref, cfg):
+        probed.append(ref)
+        return True
+
+    monkeypatch.setattr(mw, "_panel_responds", fake_responds)
+    note = _run(_cfg(), SELFREPORT, deliver=False)
+    assert note is not None       # still handled (skips _evaluate_bot)
+    assert probed == []           # dry run never probes / presses
+
+
+def test_selfreport_silence_inconclusive_is_handled(monkeypatch):
+    import watcherdog.mcp_watcher as mw
+
+    async def fake_responds(client, ref, cfg):
+        return None              # probe itself failed -> inconclusive
+
+    monkeypatch.setattr(mw, "_panel_responds", fake_responds)
+    note = _run(_cfg(), SELFREPORT)
+    assert note is not None       # handled, not escalated

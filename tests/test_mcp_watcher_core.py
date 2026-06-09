@@ -527,6 +527,69 @@ def test_bot_error_then_healthy_emits_one_resolved(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Task 4: channel coordination + cross-source resolution
+# ---------------------------------------------------------------------------
+
+def test_open_incident_suppresses_duplicate_detection_alert(tmp_path, monkeypatch):
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "Bot1", "panel:Bot1", "high", "pc off", fixable=False, now=1.0)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Got an error while launching accounts.", 50.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    assert client.sent == []          # an incident is already open → no duplicate 🟠
+    store.close()
+    tracker.close()
+
+
+def test_first_detection_still_alerts_and_opens(tmp_path):
+    # The FIRST detection (no incident open yet) must still alert + open — the
+    # suppression guard only fires on repeats while an incident is open.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Got an error while launching accounts.", 50.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    assert client.sent                                  # alerted
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None  # opened
+    store.close()
+    tracker.close()
+
+
+def test_panel_healthy_resolves_open_incident(tmp_path):
+    # open a panel incident, then a healthy status card → exactly one ✅ Resolved
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {})
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SinFermera7", "panel:SinFermera7", "high",
+                 "PC OFF / unreachable", fixable=False, now=100.0)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    healthy = ("📊 Panel status:\n├ 👥 Launched: 4 accounts\n├ 🟢 Status: LIVE\n"
+               "├ Map: de_nuke\n└ Score: [1:0]")
+    date = SimpleNamespace(timestamp=lambda: time.time() - 1.0)
+    asyncio.run(mcp_watcher._evaluate_panel(
+        client, cfg, "SinFermera7", object(), healthy, date,
+        deliver=True, state=state, target="ibo"))
+    assert tracker.open_list_for_bot("SinFermera7") == []
+    resolved = [t for _, t in client.sent if "✅ Resolved" in t]
+    assert len(resolved) == 1
+    tracker.close()
+
+
+# ---------------------------------------------------------------------------
 # _incident_followup_tick — the only timer that ACTS on the world
 # ---------------------------------------------------------------------------
 
