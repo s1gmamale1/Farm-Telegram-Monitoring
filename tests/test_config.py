@@ -257,6 +257,14 @@ def test_incident_tracking_defaults(monkeypatch):
     assert cfg.incident_max_fix_retries == 2
 
 
+def test_special_forces_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("SPECIAL_FORCES_ENABLED", raising=False)
+    # Opt-in: posting in a shared group AS the owner must not happen implicitly.
+    assert Config({}).special_forces_enabled is False
+    # Still enableable explicitly.
+    assert Config({"SPECIAL_FORCES_ENABLED": "true"}).special_forces_enabled is True
+
+
 def test_allowlist_key_and_aliases(monkeypatch):
     for k in ("ALLOWLIST", "ALLOW_LIST", "ALLOWED_USERS", "IBO_CHAT_ID"):
         monkeypatch.delenv(k, raising=False)
