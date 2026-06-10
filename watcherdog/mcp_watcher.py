@@ -834,10 +834,26 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     # different channel). The FIRST bot_error (none open yet) still alerts+opens
     # below; only repeats while a bot_error incident stays open are suppressed.
     tracker = state.get("tracker")
-    if tracker is not None and tracker.open_for_bot("bot_error", bot) is not None:
-        log.info("bot_error incident already open for %s — suppressing duplicate alert", bot)
-        store.record(bot, severity, analysis, h, text, notified=False, ts=now)
-        return
+    open_row = tracker.open_for_bot("bot_error", bot) if tracker is not None else None
+    if open_row is not None:
+        # Compare hashes CONSISTENTLY: the open row stored raw_excerpt truncated to
+        # 1000 chars (see _open_bot_incident), so hash the new text the SAME way —
+        # otherwise a >1000-char message would falsely read as "different".
+        same_hash = (error_hash(open_row["raw_excerpt"] or "")
+                     == error_hash((text or "")[:1000]))
+        not_worse = (SEVERITY_ORDER.get(severity, 2)
+                     <= SEVERITY_ORDER.get(open_row["severity"], 2))
+        if same_hash and not_worse:
+            log.info("bot_error incident already open for %s — suppressing duplicate alert", bot)
+            store.record(bot, severity, analysis, h, text, notified=False, ts=now)
+            return
+        # A genuinely DIFFERENT error, or a HIGHER severity, while the incident is
+        # open: alert it and refresh the open row in place (open() is idempotent and
+        # would not update it). Then fall through to the normal auto-fix + alert path.
+        log.info("new/worse error for %s while incident open — alerting + refreshing", bot)
+        summary = (analysis or {}).get("summary") or (text or "").strip()[:160]
+        tracker.refresh(f"bot_error:{bot}", severity, summary,
+                        raw_excerpt=(text or "")[:1000])
 
     # Phase 2 — deterministic auto-fix router runs FIRST (no LLM). If the brain
     # already knows this error, handle it script-only and skip the model. Only

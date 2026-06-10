@@ -605,22 +605,24 @@ def test_fresh_normal_message_resolves_incident(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_open_incident_suppresses_duplicate_detection_alert(tmp_path, monkeypatch):
-    # A bot_error incident already open → a fresh bot_error for the SAME bot is a
-    # duplicate symptom and must be suppressed (recorded, not re-alerted).
+    # A bot_error incident already open → the SAME error (same hash, same severity)
+    # for the bot is a true duplicate symptom and must be suppressed (recorded, not
+    # re-alerted). The open row must carry the SAME excerpt/severity the gate will
+    # compute, or the gate treats it as a new/worse error and alerts (correctly).
     from watcherdog.incident_tracker import IncidentTracker
     cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
                           "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0"})
     store = IncidentStore(str(tmp_path / "incidents.db"))
     tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    text = "[Bot1] Got an error while launching accounts."
     tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
-                 fixable=False, now=1.0)
+                 fixable=False, raw_excerpt=text[:1000], now=1.0)  # DISABLE_AI → "high"
     client = _FakeClient()
     state = {"tracker": tracker}
     asyncio.run(mcp_watcher._evaluate_bot(
-        client, cfg, store, state, "ibo", "Bot1",
-        "[Bot1] Got an error while launching accounts.", 50.0,
+        client, cfg, store, state, "ibo", "Bot1", text, 50.0,
         asyncio.new_event_loop(), deliver=True, ent=None))
-    assert client.sent == []          # bot_error already open → no duplicate 🟠
+    assert client.sent == []          # same error already open → no duplicate 🟠
     store.close()
     tracker.close()
 
@@ -662,6 +664,92 @@ def test_first_detection_still_alerts_and_opens(tmp_path):
         asyncio.new_event_loop(), deliver=True, ent=None))
     assert client.sent                                  # alerted
     assert tracker.open_for_bot("bot_error", "Bot1") is not None  # opened
+    store.close()
+    tracker.close()
+
+
+def test_open_incident_alerts_on_different_error_and_refreshes(tmp_path):
+    # A bot_error incident is open for a FIRST error; a genuinely DIFFERENT error
+    # (different hash) for the same bot must NOT be swallowed — it alerts AND the
+    # open row is refreshed in place to the new error's summary/excerpt.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "low", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high",
+                 "launch error", fixable=False, raw_excerpt="boom", now=1.0)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Account banned permanently.", 50.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    assert client.sent                                # NEW distinct error → alerted
+    row = tracker.open_for_bot("bot_error", "Bot1")
+    assert row is not None and row["status"] == "open"
+    assert "Account banned" in (row["summary"] or "")  # refreshed in place
+    assert "Account banned" in (row["raw_excerpt"] or "")
+    store.close()
+    tracker.close()
+
+
+def test_open_incident_alerts_on_higher_severity_same_hash(tmp_path, monkeypatch):
+    # The SAME error text but the analyzer now scores it CRITICAL (severity rose
+    # above the open row's). Same-hash but worse → alert + refresh, not suppress.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "low", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    text = "[Bot1] Got an error while launching accounts."
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "medium",
+                 "launch error", fixable=False, raw_excerpt=text, now=1.0)
+
+    def crit_analyzer(*_a, **_k):
+        return {"is_error": True, "severity": "critical",
+                "summary": "ACCOUNT BANNED", "root_cause": "", "fix": ""}
+
+    monkeypatch.setattr(mcp_watcher, "analyze_message", crit_analyzer)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+
+    async def _run():
+        # The analyzer path uses loop.run_in_executor, so the loop passed in MUST
+        # be the one asyncio.run created (the running loop), not a detached one.
+        await mcp_watcher._evaluate_bot(
+            client, cfg, store, state, "ibo", "Bot1", text, 50.0,
+            asyncio.get_running_loop(), deliver=True, ent=None)
+
+    asyncio.run(_run())
+    assert client.sent                                  # severity ROSE → alerted
+    row = tracker.open_for_bot("bot_error", "Bot1")
+    assert row["severity"] == "critical"                # refreshed to worse severity
+    assert row["summary"] == "ACCOUNT BANNED"
+    store.close()
+    tracker.close()
+
+
+def test_open_incident_suppresses_same_error_same_severity(tmp_path):
+    # The SAME error (same hash) at the SAME severity while open is still a pure
+    # duplicate → suppressed (recorded, not re-alerted). Guards the fix did not
+    # break the original suppression behaviour.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "low", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    text = "[Bot1] Got an error while launching accounts."
+    # DISABLE_AI → severity "high", summary = text[:200]. Open the row with the
+    # SAME excerpt and severity the gate will compute so it is a true duplicate.
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high",
+                 text.strip()[:200], fixable=False, raw_excerpt=text[:1000], now=1.0)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", text, 50.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    assert client.sent == []          # same hash + same severity → suppressed
     store.close()
     tracker.close()
 
