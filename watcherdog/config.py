@@ -220,7 +220,11 @@ class Config:
         self.hourly_report_enabled = get("HOURLY_REPORT_ENABLED", "true").strip().lower() in ("1", "true", "yes")
         self.hourly_report_topic = get("HOURLY_REPORT_TOPIC", "").strip()
         raw_hourly_chat = get("HOURLY_REPORT_CHAT", "").strip()
-        self.hourly_report_chat = raw_hourly_chat if raw_hourly_chat else self.telegram_chat_id
+        # Target precedence (first truthy wins): explicit HOURLY_REPORT_CHAT >
+        # legacy TELEGRAM_CHAT_ID > allow-list primary (IBO_CHAT_ID/ALLOWLIST).
+        # Without the allow-list fallback an alerts-only deploy left this "" and
+        # run_hourly_report errored on get_entity("") every hour.
+        self.hourly_report_chat = raw_hourly_chat or self.telegram_chat_id or self.ibo_chat_id
         # A bot counts as "quiet" in the hourly report when its last message is
         # older than this many minutes (was 30; now 60 = 1 hour).
         self.quiet_threshold_minutes = float(get("QUIET_THRESHOLD_MINUTES", "60"))

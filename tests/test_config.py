@@ -203,6 +203,27 @@ def test_ibo_chat_ids_keeps_username_and_negative_id():
     assert cfg.ibo_chat_ids == ["@bob", "-1001234567890"]
 
 
+# --- hourly report target fallback -----------------------------------------
+
+def test_hourly_report_chat_falls_back_to_allowlist_primary():
+    # HOURLY_REPORT_CHAT and TELEGRAM_CHAT_ID unset, but the allow-list is set:
+    # the hourly report must target the allow-list primary, not "".
+    cfg = Config({"ALLOWLIST": "1406109190, @second"})
+    assert cfg.hourly_report_chat == "1406109190"
+    assert cfg.hourly_report_chat == cfg.ibo_chat_id
+
+
+def test_hourly_report_chat_prefers_explicit_over_fallback():
+    cfg = Config({"HOURLY_REPORT_CHAT": "-100999", "ALLOWLIST": "111"})
+    assert cfg.hourly_report_chat == "-100999"
+
+
+def test_hourly_report_chat_prefers_telegram_chat_over_allowlist():
+    # TELEGRAM_CHAT_ID (the legacy explicit) still wins over the allow-list fallback.
+    cfg = Config({"TELEGRAM_CHAT_ID": "555", "ALLOWLIST": "111"})
+    assert cfg.hourly_report_chat == "555"
+
+
 def test_validate_watcher_fails_when_ibo_blank():
     cfg = Config({"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "x", "IBO_CHAT_ID": "  "})
     problems = cfg.validate_watcher()

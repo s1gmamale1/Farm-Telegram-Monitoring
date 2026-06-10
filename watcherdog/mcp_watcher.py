@@ -1430,6 +1430,14 @@ async def run_hourly_report(client, cfg, watch, deliver=True):
         log.info("hourly report already sent this hour (%s); skipping", hour_key)
         return True
 
+    # A truly-unconfigured deploy (no HOURLY_REPORT_CHAT, TELEGRAM_CHAT_ID, or
+    # allow-list) leaves no target; skip BEFORE the roster scan/get_entity so we
+    # log once per call instead of erroring on get_entity("") every hour.
+    if not cfg.hourly_report_chat:
+        log.warning("hourly report: no target chat configured "
+                    "(set HOURLY_REPORT_CHAT or ALLOWLIST/IBO_CHAT_ID) — skipping")
+        return False
+
     report_time_str = now.strftime("%H:%M")
     # Deterministic roster scan (shared with /status, /problems, /silent) — no LLM.
     bot_statuses = await roster.scan(client, cfg, watch)
