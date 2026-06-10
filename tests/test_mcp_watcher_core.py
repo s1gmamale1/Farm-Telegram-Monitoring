@@ -456,6 +456,28 @@ def test_disable_ai_evaluate_bot_never_calls_agent_or_ollama(tmp_path, monkeypat
     store.close()
 
 
+def test_disable_ai_uses_deterministic_severity_not_blanket_high(tmp_path, monkeypatch):
+    # In DISABLE_AI mode a captcha must classify CRITICAL (via severity_of), not the
+    # old blanket "high". Spy on what severity gets recorded.
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "low", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    recorded = []
+    orig = store.record
+    def spy(bot, severity, *a, **k):
+        recorded.append(severity); return orig(bot, severity, *a, **k)
+    monkeypatch.setattr(store, "record", spy)
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {}, "ibo", "SinFermera9",
+        "captcha required to continue", 100.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+
+    assert "critical" in recorded            # severity_of -> critical, not "high"
+    store.close()
+
+
 def test_benign_drop_collection_error_does_not_alert(tmp_path, monkeypatch):
     # A routine, self-healing "Error collecting drop" must be recorded but NOT
     # escalated to a HIGH alert — even in DISABLE_AI mode at the default
