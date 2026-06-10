@@ -159,6 +159,32 @@ def test_drop_missing_file_is_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _acquire_singleton_lock — guards against two supervisors double-starting the
+# same watcher.session (the auth-key-corruption failure class)
+# ---------------------------------------------------------------------------
+
+def test_singleton_lock_blocks_second_helper(tmp_path):
+    lock = str(tmp_path / "restart.lock")
+    assert restart_helper._acquire_singleton_lock(lock) is True
+    assert restart_helper._acquire_singleton_lock(lock) is False
+
+
+def test_singleton_lock_reclaims_stale(tmp_path):
+    lock = str(tmp_path / "restart.lock")
+    # ttl=0 → any pre-existing lock is older than ttl → treated as stale (a
+    # crashed prior helper) and reclaimed, so the second call also wins.
+    assert restart_helper._acquire_singleton_lock(lock, ttl=0) is True
+    assert restart_helper._acquire_singleton_lock(lock, ttl=0) is True
+
+
+def test_singleton_lock_released_can_be_reacquired(tmp_path):
+    lock = str(tmp_path / "restart.lock")
+    assert restart_helper._acquire_singleton_lock(lock) is True
+    restart_helper._drop(lock)                      # supervisor finished
+    assert restart_helper._acquire_singleton_lock(lock) is True
+
+
+# ---------------------------------------------------------------------------
 # _stop — with grace period (uses a real subprocess that exits immediately)
 # ---------------------------------------------------------------------------
 

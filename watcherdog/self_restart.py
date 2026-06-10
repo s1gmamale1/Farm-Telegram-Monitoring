@@ -116,7 +116,7 @@ def _spec(cfg, python, root):
         "logfile": os.path.join(data_dir, "telegram.out.log"),
         "health_path": cfg.watcher_health_path,
         "edits_path": cfg.self_edits_path,
-        "delay": 6, "health_timeout": 45,
+        "delay": 6, "health_timeout": 90,
     }
 
 

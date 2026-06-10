@@ -74,6 +74,15 @@ def test_valid_code_launches_the_supervisor(tmp_path, monkeypatch):
     assert len(launched) == 1
 
 
+def test_spec_health_timeout_is_generous(tmp_path):
+    """A slow Telethon cold start (e.g. FloodWait) can take well over 45s; the
+    supervisor must wait at least 90s before declaring a valid self-edit dead and
+    rolling it back. Regression guard for the '45s rollback' false negative."""
+    cfg = _cfg(tmp_path)
+    spec = self_restart._spec(cfg, sys.executable, str(tmp_path))
+    assert spec["health_timeout"] >= 90
+
+
 def test_validate_detects_a_broken_import(tmp_path):
     (tmp_path / "run_watcher.py").write_text("import nonexistent_module_xyz\n")
     ok, _ = self_restart.validate(str(tmp_path), sys.executable, timeout=30)
