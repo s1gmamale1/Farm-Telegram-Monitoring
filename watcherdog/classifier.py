@@ -85,6 +85,36 @@ def is_benign_error(text):
     return bool(_BENIGN_ERROR_RE.search(text))
 
 
+def severity_of(text):
+    """Deterministic severity for a message, or None if it isn't an error.
+
+    No model. A STRONG failure signal (ban/captcha/Steam-Guard/crash/disconnect/
+    proxy-dead/…) is `critical`; a routine self-healing hiccup (`is_benign_error`)
+    is `low`; any other classified error is `high` (the conservative default that
+    matches the old model fallback). Normal/unknown/empty → None (not an error)."""
+    if not text or classify(text) != "error":
+        return None
+    if _STRONG_ERROR_RE.search(text):
+        return "critical"
+    if is_benign_error(text):
+        return "low"
+    return "high"
+
+
+def summarize(text):
+    """Deterministic one-line summary of an error message (no model). Names the
+    matched strong signal when present, else a bounded first-line excerpt.
+    Empty input → empty string."""
+    if not text or not text.strip():
+        return ""
+    m = _STRONG_ERROR_RE.search(text)
+    if m:
+        signal = m.group(0)
+        first = text.strip().splitlines()[0].strip()
+        return f"{signal}: {first}"[:160]
+    return text.strip().splitlines()[0].strip()[:160]
+
+
 # The FSM panel's OWN watchdog notice that it has gone quiet. This is a liveness
 # signal (route to a /start probe), NOT a generic error — see mcp_watcher.
 _PANEL_SILENCE_SELFREPORT_RE = re.compile(
