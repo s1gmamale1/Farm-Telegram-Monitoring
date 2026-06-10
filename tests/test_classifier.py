@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from watcherdog.classifier import bot_name_from, classify, is_benign_error
+from watcherdog.classifier import (
+    bot_name_from,
+    classify,
+    is_benign_error,
+    severity_of,
+    summarize,
+)
 
 
 # --- classify ---------------------------------------------------------------
@@ -101,6 +107,42 @@ def test_routine_message_without_error_is_not_benign():
 def test_benign_error_handles_none_and_empty():
     assert is_benign_error(None) is False
     assert is_benign_error("") is False
+
+
+# --- severity_of / summarize ------------------------------------------------
+# Deterministic (no-model) severity + one-line summary helpers.
+
+@pytest.mark.parametrize("text", [
+    "[SinFermera3] account BANNED on steam",
+    "captcha required to continue",
+    "Steam Guard code needed",
+    "proxy is dead, login failed",
+    "Traceback (most recent call last):",
+])
+def test_severity_of_strong_signals_are_critical(text):
+    assert severity_of(text) == "critical"
+
+def test_severity_of_benign_hiccup_is_low():
+    assert severity_of("Error collecting drop on: acc_5") == "low"
+
+def test_severity_of_generic_error_is_high():
+    assert severity_of("could not launch accounts; unknown failure") == "high"
+
+def test_severity_of_normal_message_is_none():
+    assert severity_of("[SinFermera7] collected drop · AK-47 - 0.27$") is None
+    assert severity_of("") is None
+
+def test_summarize_names_the_strong_signal():
+    out = summarize("[SinFermera3] account BANNED on steam")
+    assert "ban" in out.lower()
+    assert len(out) <= 160
+
+def test_summarize_generic_error_is_bounded_excerpt():
+    out = summarize("could not launch accounts " * 20)
+    assert out and len(out) <= 160
+
+def test_summarize_empty_is_empty_string():
+    assert summarize("") == ""
 
 
 # --- bot_name_from ----------------------------------------------------------
