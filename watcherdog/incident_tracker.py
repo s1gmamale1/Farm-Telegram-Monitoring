@@ -17,7 +17,10 @@ import time
 
 
 class IncidentTracker:
-    def __init__(self, db_path):
+    def __init__(self, db_path, *, dry_run=False):
+        """dry_run=True makes all mutating methods no-op (queries stay live) so a
+        rehearsal never writes the real ledger."""
+        self._dry_run = dry_run
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -79,6 +82,8 @@ class IncidentTracker:
              fix_attempted=None, raw_excerpt=None, now=None):
         """Open an incident. Idempotent: if one is already open for ``key`` the
         existing row is returned unchanged. Returns the open row."""
+        if self._dry_run:
+            return None
         now = now if now is not None else time.time()
         existing = self._open_by_key(key)
         if existing is not None:
@@ -105,6 +110,8 @@ class IncidentTracker:
         this is the path the suppression gate uses to record that the open
         incident's nature changed (new error hash, or risen severity). Returns the
         refreshed row, or None when nothing is open for ``key``."""
+        if self._dry_run:
+            return None
         row = self._open_by_key(key)
         if row is None:
             return None
@@ -128,6 +135,8 @@ class IncidentTracker:
         ``{"elapsed", "fix_attempted", "row"}`` or None if nothing was open. The
         original error's hash isn't known at heal time, so resolution is keyed by
         (source, bot) rather than the full open() key."""
+        if self._dry_run:
+            return None
         now = now if now is not None else time.time()
         row = self.open_for_bot(source, bot)
         if row is None:
@@ -153,6 +162,8 @@ class IncidentTracker:
         """Resolve ALL open incidents for a bot regardless of source (the bot/panel
         is healthy again — close everything). Returns {elapsed (from earliest
         opened_ts), we_fixed (any attempt reported 'fixed'), count} or None."""
+        if self._dry_run:
+            return None
         now = now if now is not None else time.time()
         rows = self.open_list_for_bot(bot)
         if not rows:
@@ -170,6 +181,8 @@ class IncidentTracker:
         return {"elapsed": now - earliest, "we_fixed": we_fixed, "count": len(rows)}
 
     def note_fix_attempt(self, key, fix_attempted):
+        if self._dry_run:
+            return
         row = self._open_by_key(key)
         if row is None:
             return
@@ -181,6 +194,8 @@ class IncidentTracker:
         self.conn.commit()
 
     def mark_followed_up(self, key, now=None):
+        if self._dry_run:
+            return
         now = now if now is not None else time.time()
         row = self._open_by_key(key)
         if row is None:
@@ -193,6 +208,8 @@ class IncidentTracker:
         self.conn.commit()
 
     def escalate(self, key, now=None):
+        if self._dry_run:
+            return
         now = now if now is not None else time.time()
         row = self._open_by_key(key)
         if row is None:
@@ -220,6 +237,8 @@ class IncidentTracker:
         return dict(row) if row is not None else None
 
     def note_fix_attempt_by_id(self, incident_id, fix_attempted):
+        if self._dry_run:
+            return
         self.conn.execute(
             "UPDATE open_incidents SET fix_attempted = ?, "
             "fix_retries = fix_retries + 1 WHERE id = ? AND status = 'open'",
@@ -228,6 +247,8 @@ class IncidentTracker:
         self.conn.commit()
 
     def mark_followed_up_by_id(self, incident_id, now=None):
+        if self._dry_run:
+            return
         now = now if now is not None else time.time()
         self.conn.execute(
             "UPDATE open_incidents SET last_update_ts = ?, "
@@ -237,6 +258,8 @@ class IncidentTracker:
         self.conn.commit()
 
     def escalate_by_id(self, incident_id, now=None):
+        if self._dry_run:
+            return
         now = now if now is not None else time.time()
         self.conn.execute(
             "UPDATE open_incidents SET status = 'escalated', resolved_ts = ?, "

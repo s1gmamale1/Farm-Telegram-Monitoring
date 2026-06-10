@@ -1144,7 +1144,7 @@ def register_ibo_listener(client, cfg, targets, system_prompt, state, deliver=Tr
             state["agent_history"] = history
         # A conversational reply: eligible for a skill-6 sticker. (Alerts,
         # needs-you and the weekly report go through _send with sticker_ok=False.)
-        ok = await _send(client, target, answer, cfg=cfg, sticker_ok=True)
+        ok = await _send(client, target, answer, deliver, cfg=cfg, sticker_ok=True)
         _append_chat_log(cfg.agent_chat_log, text, answer)
         log.info("answered ibo (%d chars, sent=%s)", len(answer), ok)
 
@@ -1661,7 +1661,7 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         # so they use one agent lock and never run the agent concurrently.
         state = {"system_prompt": system_prompt, "agent_lock": asyncio.Lock()}
         if cfg.incident_tracking_enabled:
-            state["tracker"] = IncidentTracker(cfg.db_path)
+            state["tracker"] = IncidentTracker(cfg.db_path, dry_run=not deliver)
             _rearm_panel_episodes(state)
 
         # Start the talking BOT (continuous mode only). On success it can own the
