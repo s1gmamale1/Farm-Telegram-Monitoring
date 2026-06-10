@@ -735,6 +735,15 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
            "self-report: alive, no card poster"
 
 
+def _entity_for(state, bot):
+    """Resolve a bot's panel entity from the watch roster (list of (name, ent)).
+    Returns the entity or None if the bot isn't currently watched."""
+    for name, ent in state.get("watch") or []:
+        if name == bot:
+            return ent
+    return None
+
+
 def _open_bot_incident(state, bot, severity, analysis, text, *, fixable, now=None):
     """Record an alerted bot error as an OPEN incident so the follow-up loop can
     track it to resolution/escalation. Keyed by bot (one open incident per bot,
@@ -1200,12 +1209,18 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
             tracker.escalate(key, now=now)
             log.info("ESCALATED %s after %.0fs", bot, elapsed)
             continue
-        # Only press real buttons when actually delivering; a dry run nags only.
-        did_refix = act["kind"] == "refix" and deliver
+        ent = _entity_for(state, bot) if act["kind"] == "refix" else None
+        # Only press real buttons when delivering AND we can resolve the panel
+        # entity. A refix without the entity would resolve the display NAME as a
+        # Telegram username (wrong target / stranger DM) and silently burn the
+        # retry budget — so skip it and just nag instead.
+        did_refix = act["kind"] == "refix" and deliver and ent is not None
+        if act["kind"] == "refix" and deliver and ent is None:
+            log.info("refix skipped for %s — not in watch roster", bot)
         if did_refix:
             try:
                 outcome = await auto_fix.try_auto_fix(
-                    client, cfg, bot, row["raw_excerpt"] or row["summary"])
+                    client, cfg, bot, row["raw_excerpt"] or row["summary"], chat=ent)
             except Exception:  # noqa: BLE001
                 log.exception("incident re-fix raised for %s", bot)
                 outcome = None
