@@ -46,6 +46,15 @@ def test_format_alert_truncates_long_excerpt():
     assert len(out) < 2000     # well under Telegram's 4096 limit
 
 
+def test_format_alert_caps_total_length_with_huge_llm_fields():
+    # summary/root_cause/fix are uncapped LLM text; the assembled alert must still
+    # fit under Telegram's 4096 limit or it's dropped (MessageTooLong).
+    analysis = {"summary": "s" * 5000, "root_cause": "r" * 5000, "fix": "f" * 5000}
+    out = format_alert("bot", "critical", analysis, "x" * 5000)
+    assert len(out) <= 4096
+    assert "Bot Error Detected" in out[:120]      # header survives the tail-truncation
+
+
 def test_format_alert_handles_missing_analysis():
     out = format_alert("bot", "low", None, "")
     assert "bot" in out

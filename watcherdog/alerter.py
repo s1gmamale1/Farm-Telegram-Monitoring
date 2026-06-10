@@ -47,7 +47,14 @@ def format_alert(bot_name, severity, analysis, raw_excerpt):
             excerpt = excerpt[-1200:]
             excerpt = "…" + excerpt
         lines += ["", "Error excerpt:", excerpt]
-    return "\n".join(lines)
+    msg = "\n".join(lines)
+    # Final safety net: summary/root_cause/fix are uncapped LLM text; an over-limit
+    # message raises MessageTooLong and the alert is lost. Keep the header + as much
+    # body as fits, well under Telegram's 4096.
+    LIMIT = 4000
+    if len(msg) > LIMIT:
+        msg = msg[:LIMIT - 1].rstrip() + "…"
+    return msg
 
 
 def format_alert_oneline(bot_name, severity, analysis):
