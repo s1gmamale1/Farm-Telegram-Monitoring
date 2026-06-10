@@ -965,11 +965,12 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
             elif not silent and was:
                 await _alert(state, client, target, format_recovery_alert(name), deliver)
                 state[key] = False
-                # format_recovery_alert already announced "back online"; close any
-                # open incident for this bot silently (announce=False) to avoid a
-                # duplicate ✅.
-                await _resolve_incidents_for(state, client, target, name, now,
-                                             deliver, cfg, announce=False)
+                # Scope the closure to the SILENCE source only: a bot_error that
+                # arrived as the silence-ending traffic must stay open (different
+                # failure mode/channel). recovery alert already announced.
+                tracker = state.get("tracker")
+                if tracker is not None:
+                    tracker.resolve_by_bot("silence", name, "self_healed", now=now)
                 log.info("RECOVERED: %s", name)
 
         if not state.get(name + "::err") and not state.get(name + "::silent"):
