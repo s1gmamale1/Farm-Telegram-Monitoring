@@ -265,6 +265,86 @@ def test_by_id_mutation_on_resolved_id_spares_reopened_row(tracker):
     assert fresh["update_count"] == 0
 
 
+# ---------------------------------------------------------------------------
+# dry-run isolation — a rehearsal (--dry-run) shares the SAME prod DB file but
+# must NEVER write the live ledger. dry_run=True makes every MUTATING method a
+# no-op while QUERIES stay live (they read the unchanged DB). This stops a
+# dry-run sweep/followup from opening rows or escalating real open incidents to
+# 'gave_up' and corrupting live state.
+# ---------------------------------------------------------------------------
+
+def test_dry_run_tracker_writes_nothing(tmp_path):
+    t = IncidentTracker(str(tmp_path / "dry.db"), dry_run=True)
+    t.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+           fixable=False, now=1.0)
+    t.resolve_by_bot("bot_error", "Bot1", "self_healed", now=2.0)
+    t.resolve_open_for_bot("Bot1", "self_healed", now=2.5)
+    t.refresh("bot_error:Bot1", "critical", "x")
+    t.note_fix_attempt("bot_error:Bot1", "retry")
+    t.mark_followed_up("bot_error:Bot1", now=3.0)
+    t.escalate("bot_error:Bot1", now=4.0)
+    t.note_fix_attempt_by_id(1, "retry")
+    t.mark_followed_up_by_id(1, now=5.0)
+    t.escalate_by_id(1, now=6.0)
+    assert t.open_list() == []           # nothing was ever written
+    t.close()
+
+
+def test_dry_run_does_not_mutate_existing_rows(tmp_path):
+    # The real danger: a dry-run run against the prod DB must not touch rows a
+    # PRIOR live run opened. Seed a real open row, then drive every UPDATE-style
+    # mutator from a dry_run tracker and assert the row is byte-for-byte unchanged.
+    db = str(tmp_path / "shared.db")
+    live = IncidentTracker(db)
+    live.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom", fixable=False, now=1.0)
+    rid = live.open_for_bot("bot_error", "Bot1")["id"]
+    live.close()
+
+    dry = IncidentTracker(db, dry_run=True)
+    dry.refresh("bot_error:Bot1", "critical", "BANNED")
+    dry.note_fix_attempt("bot_error:Bot1", "retry")
+    dry.mark_followed_up("bot_error:Bot1", now=9.0)
+    dry.note_fix_attempt_by_id(rid, "retry")
+    dry.mark_followed_up_by_id(rid, now=9.0)
+    dry.escalate("bot_error:Bot1", now=9.0)
+    dry.escalate_by_id(rid, now=9.0)
+    dry.resolve_by_bot("bot_error", "Bot1", "self_healed", now=9.0)
+    dry.resolve_open_for_bot("Bot1", "self_healed", now=9.0)
+    dry.close()
+
+    check = IncidentTracker(db)
+    after = check.open_for_bot("bot_error", "Bot1")
+    assert after is not None                 # not escalated/resolved away
+    assert after["status"] == "open"
+    assert after["severity"] == "high"       # refresh no-op'd
+    assert after["summary"] == "boom"
+    assert after["fix_retries"] == 0         # note_fix_attempt* no-op'd
+    assert after["update_count"] == 0        # mark_followed_up* no-op'd
+    check.close()
+
+
+def test_live_tracker_still_writes(tmp_path):
+    t = IncidentTracker(str(tmp_path / "live.db"))   # dry_run defaults False
+    t.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+           fixable=False, now=1.0)
+    assert len(t.open_list()) == 1
+    t.close()
+
+
+def test_dry_run_queries_stay_live(tmp_path):
+    # Queries must keep working against the (empty) DB without error — only the
+    # MUTATING methods are gated. A dry-run tracker reading an empty ledger
+    # returns the natural empty/None results, never an exception.
+    t = IncidentTracker(str(tmp_path / "dry_q.db"), dry_run=True)
+    assert t.open_for_bot("bot_error", "Bot1") is None
+    assert t.open_list() == []
+    assert t.open_list_for_bot("Bot1") == []
+    assert t.get_open_by_id(1) is None
+    assert t.due_for_followup(900, now=900.0) == []
+    assert t.due_for_giveup(3600, now=3600.0) == []
+    t.close()
+
+
 from watcherdog.incident_tracker import incident_followup_step
 
 
