@@ -106,28 +106,66 @@ def _drop(path):
         pass
 
 
+def _acquire_singleton_lock(path, ttl=300):
+    """True if we got the lock; False if another live supervisor holds it.
+
+    Two near-simultaneous restart requests would otherwise spawn two supervisors,
+    each starting its own watcher against the SAME ``watcher.session`` — which
+    corrupts the Telegram auth key (the known failure class this guards against).
+
+    The lock is an atomic ``O_CREAT | O_EXCL`` create, so out of N racing helpers
+    exactly one wins. A lock older than ``ttl`` seconds is assumed to belong to a
+    crashed prior helper and is reclaimed (one recursive retry; the retry either
+    creates a fresh lock or loses the race to another reclaimer → returns False,
+    so it can never spin).
+    """
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(path) > ttl:
+                os.remove(path)            # stale: a crashed prior supervisor
+                return _acquire_singleton_lock(path, ttl)
+        except OSError:
+            pass
+        return False
+
+
 def main():
     if len(sys.argv) < 2:
         return
     with open(sys.argv[1], "r", encoding="utf-8") as fh:
         spec = json.load(fh)
 
-    time.sleep(spec.get("delay", 6))
-    _stop(spec["pid"])
+    lock_path = sys.argv[1] + ".lock"
+    if not _acquire_singleton_lock(lock_path):
+        return  # another supervisor is already restarting — don't double-start the session
+    try:
+        time.sleep(spec.get("delay", 6))
+        _stop(spec["pid"])
 
-    since = time.time()
-    new_pid = _start(spec["python"], spec["argv"], spec["root"], spec["logfile"])
-    if _wait_healthy(spec["health_path"], since, new_pid, spec.get("health_timeout", 40)):
-        _drop(spec["edits_path"])          # the edits are good — commit them
+        since = time.time()
+        try:
+            new_pid = _start(spec["python"], spec["argv"], spec["root"], spec["logfile"])
+        except Exception:  # noqa: BLE001 — old process is already dead; one retry relaunches it
+            new_pid = _start(spec["python"], spec["argv"], spec["root"], spec["logfile"])
+
+        if _wait_healthy(spec["health_path"], since, new_pid, spec.get("health_timeout", 90)):
+            _drop(spec["edits_path"])      # the edits are good — commit them
+            _drop(sys.argv[1])
+            return
+
+        # The new code didn't come up healthy: stop it, roll the edits back, retry.
+        _stop(new_pid)
+        _rollback(spec["edits_path"])
+        _drop(spec["edits_path"])
+        _start(spec["python"], spec["argv"], spec["root"], spec["logfile"])
         _drop(sys.argv[1])
-        return
-
-    # The new code didn't come up healthy: stop it, roll the edits back, retry.
-    _stop(new_pid)
-    _rollback(spec["edits_path"])
-    _drop(spec["edits_path"])
-    _start(spec["python"], spec["argv"], spec["root"], spec["logfile"])
-    _drop(sys.argv[1])
+    finally:
+        _drop(lock_path)
 
 
 if __name__ == "__main__":
