@@ -45,7 +45,10 @@ def test_parse_env_file_missing_returns_empty(tmp_path):
 
 # --- Config defaults & coercion --------------------------------------------
 
-def test_config_defaults():
+def test_config_defaults(monkeypatch):
+    # A CI runner that exports DISABLE_AI would otherwise make the default
+    # assertion below misleading (os.environ wins over the passed dict).
+    monkeypatch.delenv("DISABLE_AI", raising=False)
     cfg = Config({})
     assert cfg.ollama_url == "http://127.0.0.1:11434"
     assert cfg.min_severity == "high"
