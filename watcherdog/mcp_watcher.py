@@ -1034,6 +1034,10 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
                 healthy += 1
         except Exception:  # noqa: BLE001
             log.exception("bot/silence eval failed for %s; continuing", name)
+            # Clear the per-bot eval memo so a chat that DETERMINISTICALLY raises is
+            # re-attempted (and re-logged) next sweep instead of being silently
+            # skipped forever by the unchanged-message memo it set before raising.
+            state.pop(name + "::last_eval_hash", None)
             continue
 
     state["_seeded"] = True
