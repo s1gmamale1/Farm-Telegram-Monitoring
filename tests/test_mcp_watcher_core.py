@@ -754,6 +754,51 @@ def test_open_incident_suppresses_same_error_same_severity(tmp_path):
     tracker.close()
 
 
+def test_dedupe_recurrence_reopens_incident_without_alert(tmp_path):
+    # Phase B Task 4: after a resolve, an IDENTICAL error recurring within the
+    # dedupe window hits the store.last_seen early-return. Before the fix that
+    # return left the bot broken with NO open incident (no followups, no alert).
+    # Now the recurrence must RE-OPEN the incident (idempotently, no alert spam)
+    # so the follow-up loop keeps tracking it to resolution/escalation.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true",             # deterministic HIGH, no Ollama
+        "AGENT_ACTIONS_ENABLED": "false",  # skip the auto-fix router -> plain alert
+        "MIN_SEVERITY": "high",
+        "DEDUPE_WINDOW": "300",            # non-zero so the second call dedupes
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    loop = asyncio.new_event_loop()
+    text = "[Bot1] Got an error while launching accounts."
+
+    # 1) First error -> HIGH alert + open incident. The alert path's store.record
+    #    stamps last_seen(h) at now=100.0, arming the dedupe window.
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", text,
+        100.0, loop, deliver=True, ent=None))
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None
+    first_sent = len(client.sent)
+    assert first_sent == 1                # exactly one alert for the first error
+
+    # 2) Simulate a resolve (e.g. a self-heal): the incident is now CLOSED.
+    tracker.resolve_by_bot("bot_error", "Bot1", "self_healed", now=150.0)
+    assert tracker.open_for_bot("bot_error", "Bot1") is None
+
+    # 3) The SAME error recurs within the dedupe window (200.0 - 100.0 = 100s < 300).
+    #    No NEW alert (dedupe), BUT the incident must be RE-OPENED so followups
+    #    continue instead of silently dropping the still-broken bot.
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", text,
+        200.0, loop, deliver=True, ent=None))
+    assert len(client.sent) == first_sent          # dedupe held → no alert spam
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None  # re-opened
+    store.close()
+    tracker.close()
+
+
 def test_panel_healthy_resolves_open_incident(tmp_path):
     # open a panel incident (paired with the flag latch, as the real PC-OFF path
     # does), then a healthy status card → exactly one ✅ Resolved closure.
