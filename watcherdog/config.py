@@ -369,9 +369,11 @@ class Config:
             self.min_severity = "high"
         # Suppress repeats of the same normalized error within this many seconds.
         self.dedupe_window = float(get("DEDUPE_WINDOW", "300"))
-        # If True, skip all model calls. Deterministic routing, scripted panel
-        # actions, command handlers, screenshots, reports, and alerts still work.
-        self.disable_ai = get("DISABLE_AI", "false").strip().lower() in ("1", "true", "yes")
+        # The deterministic core is the runtime default: no model on the hot path.
+        # When True (default), skip all model calls — deterministic routing, scripted
+        # panel actions, command handlers, screenshots, reports, and alerts still work.
+        # The model path is opt-in via DISABLE_AI=false.
+        self.disable_ai = get("DISABLE_AI", "true").strip().lower() in ("1", "true", "yes")
         if self.disable_ai:
             self.analyze_unknown = False
             self.hermes_enabled = False
