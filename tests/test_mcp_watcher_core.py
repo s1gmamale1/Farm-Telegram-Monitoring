@@ -1243,3 +1243,33 @@ def test_stale_normal_does_not_resolve_against_real_tracker(tmp_path):
     assert tracker.open_for_bot("bot_error", "Bot1") is not None  # stays open
     store.close()
     tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# _rearm_panel_episodes — re-arm panel latches from the ledger at startup
+# ---------------------------------------------------------------------------
+
+def test_rearm_panel_episodes_arms_open_panel_rows(tmp_path):
+    # After a (re)start the in-memory panel latches are empty, but open panel:
+    # rows persist in SQLite. _rearm_panel_episodes must re-arm coldcase_reported
+    # for panel sources only — a bot_error row creates NO panel state — so the
+    # followup loop doesn't falsely escalate a healed panel.
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SinFermera2", "panel:SinFermera2", "high",
+                 "needs PC", fixable=False)
+    tracker.open("bot_error", "Bot9", "bot_error:Bot9", "high",
+                 "boom", fixable=False)
+
+    mcp_watcher._rearm_panel_episodes({"tracker": tracker})
+
+    assert mcp_watcher._PANEL_STATE["SinFermera2"].coldcase_reported is True
+    assert "Bot9" not in mcp_watcher._PANEL_STATE  # bot_error makes no panel state
+    tracker.close()
+
+
+def test_rearm_panel_episodes_no_tracker_is_noop():
+    # Tracking disabled / no tracker in state: a safe no-op, no exception, and
+    # _PANEL_STATE stays empty (the autouse fixture cleared it).
+    mcp_watcher._rearm_panel_episodes({})
+    assert mcp_watcher._PANEL_STATE == {}

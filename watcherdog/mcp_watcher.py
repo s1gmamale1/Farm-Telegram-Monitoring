@@ -917,6 +917,20 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     log.info("ALERTED %s (%s, sent=%s)", bot, severity, ok and deliver)
 
 
+def _rearm_panel_episodes(state):
+    """After a (re)start, in-memory panel latches are empty but open panel: rows
+    persist in SQLite. Re-arm coldcase_reported from the ledger so the followup
+    loop doesn't falsely escalate a healed panel, and the next healthy sweep
+    resolves the row (ledger-aware closure). Inert when tracking is disabled."""
+    tracker = state.get("tracker")
+    if tracker is None:
+        return
+    for row in tracker.open_list():
+        if row["source"] == "panel":
+            ps = _PANEL_STATE.setdefault(row["bot"], panel_rules.PanelState())
+            ps.coldcase_reported = True
+
+
 async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
     """One proactive sweep: error + silence detection over the watch folder.
 
@@ -1606,6 +1620,7 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         state = {"system_prompt": system_prompt, "agent_lock": asyncio.Lock()}
         if cfg.incident_tracking_enabled:
             state["tracker"] = IncidentTracker(cfg.db_path)
+            _rearm_panel_episodes(state)
 
         # Start the talking BOT (continuous mode only). On success it can own the
         # group conversation and deliver proactive alerts as DMs to the owner.
