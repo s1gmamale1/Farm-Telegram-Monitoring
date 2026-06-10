@@ -251,7 +251,15 @@ truncated, not dropped (test); two concurrent `dispatch_bots` on one panel seria
 
 ---
 
-## Phase 3 — Deterministic triage (drop Ollama from the runtime path)
+## Phase 3 — Deterministic triage (drop Ollama from the runtime path)  ✅ SHIPPED (PR #11, 2026-06-11)
+
+**Status: DONE.** Deterministic `severity_of`/`summarize` (`classifier.py`) replace the model on the
+monitor path; `DISABLE_AI` now defaults ON so the deterministic core is the runtime default (model =
+opt-in via `DISABLE_AI=false`). The holistic review confirmed ZERO model calls reachable on a fresh
+deploy — not just the per-message triage but the ibo listener, Special Forces, and weekly digest are
+all gated too. Also shipped this increment: the read-only **capture tool** (`scripts/capture_panel_formats.py`)
+that unblocks Phases 1–2 — **owner runs `python -m scripts.capture_panel_formats` → `data/captures/` → Phase-1 fixtures.**
+Spec: `docs/superpowers/specs/2026-06-11-deterministic-core-design.md`.
 
 **Goal.** Error detection, severity, and dedupe run with no Ollama call; the local model is off the hot path by default.
 
