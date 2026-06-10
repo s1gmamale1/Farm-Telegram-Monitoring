@@ -53,7 +53,8 @@ def test_config_defaults():
     assert cfg.poll_interval == 2.0
     # SILENCE_THRESHOLD_MINUTES default 120 -> seconds
     assert cfg.silence_threshold == 120 * 60.0
-    assert cfg.disable_ai is False
+    # Deterministic core is the runtime default (model = opt-in via DISABLE_AI=false).
+    assert cfg.disable_ai is True
 
 
 def test_disable_ai_forces_model_helpers_off():
@@ -65,6 +66,13 @@ def test_disable_ai_forces_model_helpers_off():
     assert cfg.disable_ai is True
     assert cfg.analyze_unknown is False
     assert cfg.hermes_enabled is False
+
+
+def test_disable_ai_defaults_on(monkeypatch):
+    monkeypatch.delenv("DISABLE_AI", raising=False)
+    # Deterministic core is the default: no model on the runtime path unless opted in.
+    assert Config({}).disable_ai is True
+    assert Config({"DISABLE_AI": "false"}).disable_ai is False
 
 
 def test_env_overrides_file_value(monkeypatch):

@@ -736,7 +736,10 @@ def test_open_incident_alerts_on_higher_severity_same_hash(tmp_path, monkeypatch
     # The SAME error text but the analyzer now scores it CRITICAL (severity rose
     # above the open row's). Same-hash but worse → alert + refresh, not suppress.
     from watcherdog.incident_tracker import IncidentTracker
-    cfg = _cfg(tmp_path, {"AGENT_ACTIONS_ENABLED": "false",
+    # Exercises the MODEL path (analyze_message) so the analyzer can RAISE the
+    # severity to critical — opt into it explicitly now that the deterministic
+    # core is the default (DISABLE_AI defaults ON).
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "false", "AGENT_ACTIONS_ENABLED": "false",
                           "MIN_SEVERITY": "low", "DEDUPE_WINDOW": "0"})
     store = IncidentStore(str(tmp_path / "incidents.db"))
     tracker = IncidentTracker(str(tmp_path / "incidents.db"))
