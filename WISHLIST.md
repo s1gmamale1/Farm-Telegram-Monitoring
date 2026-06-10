@@ -72,7 +72,7 @@ No more per-sweep status spam. (`mcp_watcher._panel_report` / `_issue_label`.)
 
 ## 🧊 Phase D deferred (low-value infra — build on trigger)
 
-Phase D (PR #11) shipped the **3 high-value** infra fixes (drop-stats week-loss, alert truncation, restart double-start/timeout). The remaining 8 Tier-3 items were consciously deferred — each is real but low-frequency, cosmetic, or now-moot. Build each when its trigger arrives:
+Phase D (PR #10) shipped the **3 high-value** infra fixes (drop-stats week-loss, alert truncation, restart double-start/timeout). The remaining 8 Tier-3 items were consciously deferred — each is real but low-frequency, cosmetic, or now-moot. Build each when its trigger arrives:
 
 - 🐞 **[low] Special Forces listener hardening** — `watcherdog/mcp_watcher.py:1186-1233`; no bot-sender filter / no cooldown / `mentioned` set on replies → bot-to-bot ping-pong + agent-lock starvation. **Moot today**: `SPECIAL_FORCES_ENABLED` defaults OFF since PR #6. **Trigger:** build *before* re-enabling Special Forces. Effort: S.
 - 🐞 **[low] `IncidentStore` lacks `busy_timeout`** — `watcherdog/storage.py:15-17` (the tracker sets 5000ms; the store keeps default 0). Theoretical under the current single-loop-thread design (no contention). **Trigger:** if a CLI / 2nd process ever touches `data/incidents.db` while the watcher runs. Effort: S.
