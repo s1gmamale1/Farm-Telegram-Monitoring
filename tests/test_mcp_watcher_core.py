@@ -537,6 +537,70 @@ def test_bot_error_then_healthy_emits_one_resolved(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase B Task 1: freshness-gate the classify-normal incident resolve
+# ---------------------------------------------------------------------------
+
+class _FakeTracker:
+    """Minimal tracker stub: a bot_error incident is open at ``opened_ts`` and
+    records every resolve_open_for_bot call so the test can assert on it."""
+
+    def __init__(self, opened_ts):
+        self.opened_ts = opened_ts
+        self.resolve_calls = []
+
+    def open_for_bot(self, source, bot):
+        if source == "bot_error":
+            return {"key": f"bot_error:{bot}", "opened_ts": self.opened_ts,
+                    "severity": "high", "raw_excerpt": "boom"}
+        return None
+
+    def resolve_open_for_bot(self, bot, resolution, now=None):
+        self.resolve_calls.append((bot, resolution, now))
+        return {"count": 1, "elapsed": 1.0, "we_fixed": False}
+
+
+def test_stale_normal_message_does_not_resolve_incident(tmp_path):
+    # A silent bot's last (stale) message is a routine drop line. It classifies
+    # "normal" but predates the still-open incident → it must NOT resolve it.
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    now = time.time()
+    tracker = _FakeTracker(opened_ts=now - 10)        # incident opened 10s ago
+    state = {"tracker": tracker}
+    date = SimpleNamespace(timestamp=lambda: now - 600)  # message 10 min old (stale)
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "🎁 collected drop · AK-47 - 0.27$",
+        now, asyncio.new_event_loop(), deliver=True, ent=None, date=date))
+
+    assert tracker.resolve_calls == []   # stale proof → incident stays open
+    store.close()
+
+
+def test_fresh_normal_message_resolves_incident(tmp_path):
+    # A genuinely fresh "normal" message (newer than the open incident) proves
+    # the bot recovered → it must resolve the incident exactly once.
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    now = time.time()
+    tracker = _FakeTracker(opened_ts=now - 600)       # incident opened 10 min ago
+    state = {"tracker": tracker}
+    date = SimpleNamespace(timestamp=lambda: now)        # message is now (fresh)
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "🎁 collected drop · AK-47 - 0.27$",
+        now, asyncio.new_event_loop(), deliver=True, ent=None, date=date))
+
+    assert len(tracker.resolve_calls) == 1   # fresh proof → resolved once
+    assert tracker.resolve_calls[0][0] == "Bot1"
+    store.close()
+
+
+# ---------------------------------------------------------------------------
 # Task 4: channel coordination + cross-source resolution
 # ---------------------------------------------------------------------------
 
@@ -989,4 +1053,60 @@ def test_open_bot_incident_keyed_by_bot_avoids_leak(tmp_path):
                                    {"summary": "error B"}, "error B text",
                                    fixable=False, now=130.0)
     assert len(tracker.open_list()) == 1
+    tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase B Task 1: freshness gate exercised against the REAL IncidentTracker.
+# The dict _FakeTracker (above) cannot catch the row.get() vs row["..."] class
+# of bug because dicts have .get() but the real tracker returns sqlite3.Row
+# (conn.row_factory = sqlite3.Row), which does NOT. These tests run the real
+# tracker so the recovery path is genuinely exercised.
+# ---------------------------------------------------------------------------
+
+def test_fresh_normal_resolves_against_real_tracker(tmp_path):
+    # A fresh normal message must resolve a real open bot_error incident WITHOUT
+    # crashing. Guards against row.get() regressions on sqlite3.Row.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true"})
+    store = IncidentStore(str(tmp_path / "store.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    now = time.time()
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=now - 600)   # opened 10 min ago
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    fresh = SimpleNamespace(timestamp=lambda: now)  # message is now (fresh)
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "🎁 collected drop · AK-47 - 0.27$", now,
+        asyncio.new_event_loop(), deliver=True, ent=None, date=fresh))
+
+    assert tracker.open_for_bot("bot_error", "Bot1") is None  # resolved, no crash
+    store.close()
+    tracker.close()
+
+
+def test_stale_normal_does_not_resolve_against_real_tracker(tmp_path):
+    # A stale normal message (older than the open incident) must NOT resolve it,
+    # and must not crash, against the real sqlite3.Row-backed tracker.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true"})
+    store = IncidentStore(str(tmp_path / "store.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    now = time.time()
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=now)        # opened just now (recent)
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    stale = SimpleNamespace(timestamp=lambda: now - 600)  # message 10 min old
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "🎁 collected drop · AK-47 - 0.27$", now,
+        asyncio.new_event_loop(), deliver=True, ent=None, date=stale))
+
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None  # stays open
+    store.close()
     tracker.close()
