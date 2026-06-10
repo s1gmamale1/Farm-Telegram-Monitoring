@@ -66,6 +66,10 @@ No more per-sweep status spam. (`mcp_watcher._panel_report` / `_issue_label`.)
 - 🔵 **[low] AI-on tool-call markup stripping** — if `DISABLE_AI=false` is ever set, DeepSeek markup can still reach Telegram (`watcherdog/agent.py:950` returns `content` verbatim). Fix: strip/parse `<｜DSML｜…｜>` before send, or use a model that returns OpenAI `tool_calls`. Build when AI is re-enabled. Effort: S.
 - 🔵 **[low] Telegram-side black detection is best-effort** — R4 only fires after a relaunch and needs the panel `Screenshot` button to return a black image; a stale (non-black) frozen frame defeats it (the retry-cap is the backstop; the PC tool is the real detector). `watcherdog/panel_actions.py:84`. Effort: S to harden.
 
+## ✨ Follow-ups from the fix campaign
+
+- **[test] `monitor_once` end-to-end smoke test** — the Phase B holistic review (PR #8) flagged that all 34 lifecycle tests exercise `_evaluate_bot`/`_evaluate_panel`/`_incident_followup_tick`/the tracker **in isolation**; no single test drives a full `monitor_once` sweep (panel → bot → silence in one pass). The cross-commit ordering within one sweep is verified by reasoning + piecewise tests, not by an integration test. Low risk (the wiring is a sequential loop), but a `monitor_once` smoke test would lock it in. Build when touching the sweep loop next. Effort: M (no harness exists yet — that's why it's deferred).
+
 ## 🔬 Deep review findings (2026-06-10) — 5-agent audit, full phased plan in [ROADMAP.md](ROADMAP.md)
 
 Five parallel read-only investigators (panel FSM, incident lifecycle, bot-eval/channels, supporting modules, 24h log forensics over `data/gui_run.log`). Production evidence: 38 PC-off HIGHs in 24h, 10 incidents for one dead PC at an exact ~71-min period, dual-path doubles on SinFermera11/16/24, 4 incidents leaked 30+ h. Items marked **(repro)** were confirmed by executing the real code.
