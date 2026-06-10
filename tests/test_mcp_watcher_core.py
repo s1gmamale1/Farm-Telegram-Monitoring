@@ -373,6 +373,22 @@ def test_hourly_already_sent_different_hour_returns_false(tmp_path):
     assert mcp_watcher._hourly_already_sent(cfg, "2026-06-07 11") is False
 
 
+def test_hourly_report_skips_when_no_target(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, {"HOURLY_REPORT_ENABLED": "true", "DB_PATH": str(tmp_path / "monitor.db")})
+    # force an empty target (simulate a truly-unconfigured deploy)
+    cfg.hourly_report_chat = ""
+    calls = []
+
+    class _C:
+        async def get_entity(self, ref):
+            calls.append(ref)
+            raise AssertionError("must not resolve an empty target")
+
+    ok = asyncio.run(mcp_watcher.run_hourly_report(_C(), cfg, watch=[], deliver=True))
+    assert ok is False
+    assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # _status_emoji
 # ---------------------------------------------------------------------------
