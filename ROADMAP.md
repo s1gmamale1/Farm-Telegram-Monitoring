@@ -26,18 +26,23 @@ This ROADMAP is the single source of truth for what to build next.
 
 ---
 
-# Reliability fix campaign (2026-06-10 deep review) — Phases A–D  ⭐ runs before everything below
+# Reliability fix campaign (2026-06-10 deep review) — Phases A–D  ✅ COMPLETE (2026-06-10)
 
-A 5-agent audit + 24h log forensics confirmed 22 defects (full cited index:
-`WISHLIST.md` → "Deep review findings (2026-06-10)"; design:
-`docs/superpowers/specs/2026-06-10-deep-review-fix-campaign-design.md`). Production
-impact measured: 38 PC-off HIGHs in 24h, 10 incidents for ONE dead PC at a ~71-min
-period, dual-path doubles, 4 incidents leaked 30+ h, refix never working, hourly report
-dead, dry-run sending real messages. These phases fix correctness of what's already
-built and therefore run **before** the AI-removal Phases 1–6.
+**Status: ALL FOUR PHASES SHIPPED TO MAIN.** A 5-agent audit + 24h log forensics confirmed
+22 defects (full cited index: `WISHLIST.md` → "Deep review findings (2026-06-10)"; design:
+`docs/superpowers/specs/2026-06-10-deep-review-fix-campaign-design.md`). Production impact
+measured: 38 PC-off HIGHs in 24h, 10 incidents for ONE dead PC at a ~71-min period,
+dual-path doubles, 4 incidents leaked 30+ h, refix never working, hourly report dead,
+dry-run sending real messages — all fixed.
 
-Each phase = one branch → PR → two-stage review → push-first merge, regression tests
-written test-first, tracked suite green (`pytest $(git ls-files 'tests/*.py')`).
+- ✅ **Phase A** — alert storm (PR #7). Probe self-traffic filter, shared PC-off latch, seed/age guards, latch resets, cold-case unlatch, ledger-driven closure.
+- ✅ **Phase B** — incident lifecycle truthfulness (PR #8, 8 fixes). Freshness-gated resolves, source-scoped silence close, new/higher-severity suppression, dedupe re-open, startup re-arm, same-message memo, entity-resolving refix, row-id-keyed followup.
+- ✅ **Phase C** — sweep robustness / dry-run isolation / hourly report (PR #9). Per-chat exception isolation + memo-clear, tracker `dry_run` flag, agent-answer `deliver`, hourly allow-list fallback.
+- ✅ **Phase D** — infra hardening high-value subset (PR #10). Drop-stats week-loss (no-clobber + alert-once + hourly retry), alert truncation, restart health-timeout + singleton lock. 8 lower-value Tier-3 items deferred to `WISHLIST.md` with build-on-trigger rationale.
+
+Tracked suite at campaign end: **1026 passed, 2 skipped**. Each phase ran one branch → PR →
+per-task mutation-verification + tiered review (full review on subtle/object-touching tasks)
+→ holistic cross-commit pass → push-first merge. The AI-removal Phases 1–6 below are unchanged.
 
 ---
 
