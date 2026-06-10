@@ -375,7 +375,8 @@ async def _send(client, target, text, deliver=True):
 async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
     """Run the full skill-5 job once: stop farms, pull stats, buffer, push, report.
 
-    Returns ``{"week", "rows", "push", "path"}``.
+    Returns ``{"week", "rows", "push", "path", "ok"}`` (and ``"reason"`` on a
+    failure such as a 0-panel folder resolution).
     """
     now = now or datetime.now()
     week = iso_week(now)
@@ -383,7 +384,17 @@ async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
 
     panels = await load_panels(client, cfg)
     if not panels:
-        log.warning("No panels resolved in folder %r; nothing to collect.", cfg.panels_folder)
+        log.warning("No panels resolved in folder %r — NOT collecting (would clobber the "
+                    "week buffer with empty data); alerting + leaving last good data.",
+                    cfg.panels_folder)
+        msg = (f"⚠️ Weekly drop-stats ({week}): could not read the '{cfg.panels_folder}' "
+               "folder (0 panels). Skipped — last week's buffer is preserved. "
+               "Check the folder name / connection and re-run.")
+        if target is not None:
+            await _send(client, target, msg, deliver)
+        return {"week": week, "ok": False, "reason": "no panels",
+                "rows": None, "push": None, "path": None}
+
     rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat(),
                               deliver=deliver)
 
@@ -396,19 +407,36 @@ async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
     report = format_report(week, rows, push)
     if target is not None:
         await _send(client, target, report, deliver)
-    return {"week": week, "rows": rows, "push": push, "path": path}
+    return {"week": week, "ok": True, "rows": rows, "push": push, "path": path}
 
 
 async def weekly_loop(client, cfg, target=None, *, deliver=True):
-    """Sleep until the next Wednesday 00:00, run the job, repeat. Survives a
-    failed run (logged) and never double-fires within the trigger minute."""
+    """Sleep until the next Wednesday 00:00, run the job, repeat. On a transient
+    failure (e.g. a 0-panel folder hiccup or an exception) it retries in 1h
+    instead of losing the whole week; only a SUCCESS re-arms for next Wednesday.
+    Never double-fires within the trigger minute.
+
+    Alert fatigue guard: a persistent failure streak alerts the owner ONCE — the
+    first failed run carries ``target``; every subsequent hourly retry passes
+    ``target=None`` so ``run_weekly`` retries SILENTLY. A fresh weekly window (or
+    a recovery + new failure) re-arms the alert."""
     while True:
         delay = seconds_until(datetime.now())
         log.info("Next weekly drop-stats run in %.1f h (%s)",
                  delay / 3600.0, "Wed 00:00")
         await asyncio.sleep(delay)
-        try:
-            await run_weekly(client, cfg, target, deliver=deliver)
-        except Exception:  # noqa: BLE001
-            log.exception("weekly drop-stats run failed; continuing")
-        await asyncio.sleep(60)  # step past the trigger minute before re-arming
+        # Run, retrying hourly until it succeeds, THEN wait for next Wednesday.
+        alerted = False
+        while True:
+            try:
+                res = await run_weekly(client, cfg,
+                                       target if not alerted else None,  # alert once per streak
+                                       deliver=deliver)
+            except Exception:  # noqa: BLE001
+                log.exception("weekly drop-stats run failed; retry in 1h")
+                res = {"ok": False, "reason": "exception"}
+            if res.get("ok"):
+                break
+            alerted = True  # stay quiet on subsequent hourly retries
+            await asyncio.sleep(3600)  # transient (folder/conn) — retry in 1h, not a week
+        await asyncio.sleep(60)  # success: step past the trigger minute before re-arming

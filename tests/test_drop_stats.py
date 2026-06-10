@@ -642,3 +642,134 @@ def test_run_weekly_returns_structure(monkeypatch, tmp_path):
     assert result["week"] == "2026-W23"
     assert len(result["rows"]) == 1
     assert "path" in result
+    assert result.get("ok") is True
+
+
+def test_run_weekly_zero_panels_does_not_clobber_or_push(monkeypatch, tmp_path):
+    """A transient 0-panel resolution must NOT collect/clobber/push, and must
+    signal failure + alert ibo (so the loop retries instead of losing a week)."""
+    import asyncio
+
+    async def fake_load_panels(client, cfg):
+        return []
+
+    write_calls = []
+    push_calls = []
+    sent = []
+
+    def fake_write_buffer(path, week, rows, *, generated=None):
+        write_calls.append((path, week, rows))
+        return {"week": week, "rows": rows}
+
+    def fake_push(cfg, rows):
+        push_calls.append(rows)
+        return {"ok": True}
+
+    async def fake_send(client, target, text, deliver=True):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(drop_stats, "load_panels", fake_load_panels)
+    monkeypatch.setattr(drop_stats, "write_buffer", fake_write_buffer)
+    monkeypatch.setattr(drop_stats, "push_to_sheets", fake_push)
+    monkeypatch.setattr(drop_stats, "_send", fake_send)
+
+    cfg = Config({"DROP_STATS_DIR": str(tmp_path / "drop_stats"),
+                  "PANELS_FOLDER": "Panels"})
+    res = asyncio.run(drop_stats.run_weekly(object(), cfg, target="ibo", deliver=True,
+                                            now=datetime(2026, 6, 3, 0, 0)))
+
+    # No clobber, no push — the last good buffer is preserved.
+    assert write_calls == []
+    assert push_calls == []
+    # Result signals failure with a shape weekly_loop + callers can read.
+    assert res.get("ok") is False
+    assert res["rows"] is None
+    assert res["push"] is None
+    assert res["path"] is None
+    # ibo was alerted with a message mentioning the folder / the problem.
+    assert len(sent) == 1
+    low = sent[0].lower()
+    assert "panels" in low and ("couldn't" in low or "could not" in low
+                                or "0 panels" in low or "skipped" in low)
+
+
+def test_run_weekly_with_panels_still_writes_and_reports_ok(monkeypatch, tmp_path):
+    """Positive control: with panels resolved the happy path still writes + reports ok."""
+    import asyncio
+
+    async def fake_load_panels(client, cfg):
+        return [("P1", object())]
+
+    async def fake_collect(client, cfg, panels, *, week, date=None, deliver=True):
+        return [drop_stats.make_row(week, "Panel#1", {"drops": "5"}, date=date)]
+
+    write_calls = []
+    push_calls = []
+    sent = []
+
+    def fake_write_buffer(path, week, rows, *, generated=None):
+        write_calls.append((path, week, rows))
+        return {"week": week, "rows": rows}
+
+    def fake_push(cfg, rows):
+        push_calls.append(rows)
+        return {"ok": True}
+
+    async def fake_send(client, target, text, deliver=True):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(drop_stats, "load_panels", fake_load_panels)
+    monkeypatch.setattr(drop_stats, "collect_week", fake_collect)
+    monkeypatch.setattr(drop_stats, "write_buffer", fake_write_buffer)
+    monkeypatch.setattr(drop_stats, "push_to_sheets", fake_push)
+    monkeypatch.setattr(drop_stats, "_send", fake_send)
+
+    cfg = Config({"DROP_STATS_DIR": str(tmp_path / "drop_stats")})
+    res = asyncio.run(drop_stats.run_weekly(object(), cfg, target="ibo", deliver=True,
+                                            now=datetime(2026, 6, 3, 0, 0)))
+
+    assert len(write_calls) == 1            # buffer IS written
+    assert len(push_calls) == 1             # push DOES run
+    assert res.get("ok") is True
+    assert len(res["rows"]) == 1
+    assert res["push"] == {"ok": True}
+    assert len(sent) == 1                   # report sent
+
+
+def test_weekly_loop_alerts_once_per_failure_streak(monkeypatch):
+    """A persistent failure must alert the owner ONCE, not every hourly retry."""
+    import asyncio
+    import asyncio as _aio
+
+    cfg = Config({})
+    targets_seen = []
+    calls = {"n": 0}
+
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True):
+        targets_seen.append(target)
+        calls["n"] += 1
+        # fail 3 times, then succeed (call #4); the loop then sleeps 60s.
+        return {"ok": calls["n"] >= 4}
+
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+        # initial seconds_until wait + 3 hourly retries + post-success 60s = 5 sleeps.
+        if len(sleeps) >= 5:
+            raise _aio.CancelledError()
+
+    monkeypatch.setattr(drop_stats, "run_weekly", fake_run_weekly)
+    monkeypatch.setattr(drop_stats, "seconds_until", lambda *a, **k: 0)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    try:
+        asyncio.run(drop_stats.weekly_loop(object(), cfg, target="ibo", deliver=True))
+    except _aio.CancelledError:
+        pass
+
+    # First run got target="ibo" (alert once); the 3 retries + success got None.
+    assert targets_seen[0] == "ibo"
+    assert targets_seen[1:] == [None, None, None]

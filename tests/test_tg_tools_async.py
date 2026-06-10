@@ -142,6 +142,16 @@ def test_resolve_folder_not_found_returns_none():
     assert result is None
 
 
+def test_resolve_folder_matches_trailing_space_title():
+    """A live folder titled 'Panels ' (trailing space) must still match the
+    wanted name 'Panels' — the comparison strips both sides."""
+    filters = [_FakeFilter(9, "Panels ")]   # note the trailing space in the LIVE title
+    client = _FakeClient(filters=filters)
+    result = asyncio.run(tg_tools._resolve_folder(client, "Panels"))
+    assert result is not None
+    assert result.id == 9
+
+
 # ---------------------------------------------------------------------------
 # folder_chats
 # ---------------------------------------------------------------------------
