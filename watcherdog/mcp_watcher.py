@@ -825,6 +825,12 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     last = store.last_seen(h)
     if last is not None and (now - last) < cfg.dedupe_window:
         log.info("error on %s already alerted %.0fs ago; not resending", bot, now - last)
+        # Still TRACK it: a recurrence within the dedupe window must not leave the
+        # bot with no open incident (else followups/escalation stop). open() is
+        # idempotent per bot, so this never spams a new alert. fixable=False: the
+        # auto-fix outcome isn't known on this early-return path, and refix is gated
+        # on fixable anyway — conservative and correct.
+        _open_bot_incident(state, bot, severity, analysis, text, fixable=False, now=now)
         return
 
     # Channel coordination: if a BOT_ERROR incident is ALREADY open for this bot,
