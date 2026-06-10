@@ -771,7 +771,7 @@ async def _resolve_incidents_for(state, client, target, bot, now, deliver, cfg, 
 
 
 async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
-                        deliver=True, ent=None):
+                        deliver=True, ent=None, date=None):
     """Classify + (Ollama) analyze one bot's latest message; alert on a real
     error at/above MIN_SEVERITY, de-duped within DEDUPE_WINDOW. ``ent`` is the
     panel entity used to drive auto-fixes (defaults to looking up by ``bot``)."""
@@ -779,7 +779,14 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
         return
     bucket = classify(text)
     if bucket == "normal":
-        await _resolve_incidents_for(state, client, target, bot, now, deliver, cfg)
+        tracker = state.get("tracker")
+        row = tracker.open_for_bot("bot_error", bot) if tracker is not None else None
+        # Only a message NEWER than the incident proves health; a stale routine
+        # line re-read every sweep must not close a still-open error.
+        fresh = (row is None or date is None
+                 or date.timestamp() >= row["opened_ts"])
+        if fresh:
+            await _resolve_incidents_for(state, client, target, bot, now, deliver, cfg)
         state[bot + "::err"] = False
         return
     if bucket == "unknown" and not cfg.analyze_unknown:
@@ -923,7 +930,7 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
                 continue
 
         await _evaluate_bot(client, cfg, store, state, target, name, text, now, loop,
-                            deliver, ent=ent)
+                            deliver, ent=ent, date=date)
 
         if cfg.silence_enabled:
             age_min = ((now - date.timestamp()) / 60.0) if date else None
