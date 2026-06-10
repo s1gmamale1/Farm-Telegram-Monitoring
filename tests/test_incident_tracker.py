@@ -20,6 +20,33 @@ def test_open_is_idempotent_per_key(tracker):
     assert len(tracker.open_list()) == 1
 
 
+def test_refresh_updates_open_row_in_place(tracker):
+    # A worse/distinct error superseding the original must UPDATE the open row in
+    # place (open() is idempotent and would NOT change it). Same row id, still open.
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "medium", "launch error",
+                 fixable=False, now=100.0)
+    before = tracker.open_for_bot("bot_error", "Bot1")
+    out = tracker.refresh("bot_error:Bot1", "critical", "ACCOUNT BANNED",
+                          raw_excerpt="banned")
+    assert out is not None
+    after = tracker.open_for_bot("bot_error", "Bot1")
+    assert after["severity"] == "critical"
+    assert after["summary"] == "ACCOUNT BANNED"
+    assert after["raw_excerpt"] == "banned"
+    assert after["status"] == "open"
+    assert after["id"] == before["id"]          # same row, updated in place
+    assert len(tracker.open_list()) == 1
+
+
+def test_refresh_noop_on_unknown_or_closed_key(tracker):
+    # No open row for the key → refresh is a no-op (returns None, no error).
+    assert tracker.refresh("bot_error:Ghost", "critical", "x") is None
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=100.0)
+    tracker.resolve_by_bot("bot_error", "Bot1", "self_healed", now=200.0)
+    assert tracker.refresh("bot_error:Bot1", "critical", "x") is None   # closed → no-op
+
+
 def test_resolve_by_bot_returns_elapsed_and_fix_flag(tracker):
     tracker.open("bot_error", "Bot1", "bot_error:Bot1:h1", "high", "boom",
                  fixable=True, fix_attempted="relaunch", now=100.0)

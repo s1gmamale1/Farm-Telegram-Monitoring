@@ -97,6 +97,32 @@ class IncidentTracker:
         self.conn.commit()
         return self._open_by_key(key)
 
+    def refresh(self, key, severity, summary, *, raw_excerpt=None, fixable=None):
+        """Update an OPEN incident's severity/summary/excerpt in place (a worse or
+        distinct error superseded the original). No-op if the key isn't open.
+
+        ``open()`` is idempotent — it returns an already-open row UNCHANGED — so
+        this is the path the suppression gate uses to record that the open
+        incident's nature changed (new error hash, or risen severity). Returns the
+        refreshed row, or None when nothing is open for ``key``."""
+        row = self._open_by_key(key)
+        if row is None:
+            return None
+        sets = ["severity = ?", "summary = ?"]
+        vals = [severity, summary]
+        if raw_excerpt is not None:
+            sets.append("raw_excerpt = ?")
+            vals.append(raw_excerpt)
+        if fixable is not None:
+            sets.append("fixable = ?")
+            vals.append(1 if fixable else 0)
+        vals.append(row["id"])
+        self.conn.execute(
+            f"UPDATE open_incidents SET {', '.join(sets)} WHERE id = ?", vals
+        )
+        self.conn.commit()
+        return self._open_by_key(key)
+
     def resolve_by_bot(self, source, bot, resolution, now=None):
         """Resolve the most-recent open incident for a (source, bot). Returns
         ``{"elapsed", "fix_attempted", "row"}`` or None if nothing was open. The
