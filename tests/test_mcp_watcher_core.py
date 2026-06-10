@@ -1648,3 +1648,37 @@ def test_sweep_continues_after_one_chat_raises(tmp_path, monkeypatch):
     asyncio.run(mcp_watcher.monitor_once(
         client, cfg, store, {}, watch, "ibo", deliver=True))
     assert seen == ["Good"]   # the failing chat didn't abort the sweep
+
+
+def test_raising_chat_is_retried_next_sweep_not_memo_skipped(tmp_path, monkeypatch):
+    # _evaluate_bot writes its unchanged-message memo (bot::last_eval_hash) BEFORE
+    # the awaits that can raise. With the per-chat except now swallowing the raise,
+    # a chat that DETERMINISTICALLY raises would set the memo, then on the next
+    # sweep the memo matches → _evaluate_bot early-returns → the chat is SILENTLY
+    # skipped forever. The except must clear the memo so the chat is re-attempted
+    # (and re-logged) every sweep instead of going un-monitored invisibly.
+    cfg = _cfg(tmp_path, {"PANEL_RULES_ENABLED": "false", "SILENCE_ENABLED": "false"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    calls = []
+
+    async def fake_latest(client, ent, mark_read=False):
+        return "boom text", None
+
+    async def fake_eval(client, cfg, store, state, target, bot, text, now,
+                        loop, deliver=True, ent=None, date=None):
+        calls.append(bot)
+        # mimic the real memo write before raising
+        state[bot + "::last_eval_hash"] = "h"
+        raise RuntimeError("always boom")
+
+    monkeypatch.setattr(mcp_watcher.tg_tools, "latest_message", fake_latest)
+    monkeypatch.setattr(mcp_watcher, "_evaluate_bot", fake_eval)
+
+    state = {}
+    watch = [("Bad", object())]
+    # two sweeps; the memo must be cleared after the first so the second RE-CALLS
+    asyncio.run(mcp_watcher.monitor_once(client, cfg, store, state, watch, "ibo", deliver=True))
+    asyncio.run(mcp_watcher.monitor_once(client, cfg, store, state, watch, "ibo", deliver=True))
+    assert calls == ["Bad", "Bad"]                         # retried, not skipped
+    assert "Bad::last_eval_hash" not in state              # memo cleared by the except
