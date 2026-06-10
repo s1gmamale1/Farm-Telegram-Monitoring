@@ -1037,9 +1037,12 @@ def test_followup_tick_refix_attempts_fix_when_delivering(tmp_path, monkeypatch)
         return {"status": "failed"}
     monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", spy_fix)
 
+    # Bot1 must be in the watch roster so the refix can resolve its panel entity;
+    # without it the fix now (correctly) skips the refix as off-roster.
+    state = {"tracker": tracker, "watch": [("Bot1", object())]}
     # now == followup interval (900), well before give-up (3600).
     asyncio.run(mcp_watcher._incident_followup_tick(
-        client, cfg, tracker, "ibo", {"tracker": tracker}, 900.0, deliver=True))
+        client, cfg, tracker, "ibo", state, 900.0, deliver=True))
 
     assert len(called) == 1            # the known fix WAS re-attempted
     assert called[0] == ("Bot1", "boom raw")
@@ -1075,6 +1078,67 @@ def test_followup_tick_refix_skips_fix_in_dry_run(tmp_path, monkeypatch):
     row = tracker.open_for_bot("bot_error", "Bot1")
     assert row is not None
     assert row["fix_retries"] == 0     # not bumped (no attempt recorded)
+    followups = [m for m in msgs if "⏳" in m]
+    assert len(followups) == 1         # still nags
+    tracker.close()
+
+
+def test_followup_refix_passes_roster_entity_as_chat(tmp_path, monkeypatch):
+    """A re-fix must drive the REAL panel entity from the watch roster, not the
+    bot's display name — passing chat=<entity> (never None) to try_auto_fix."""
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "SinFermera2", "bot_error:SinFermera2:h", "high",
+                 "boom", fixable=True, raw_excerpt="boom raw", now=0.0)
+    client = _FakeClient()
+    _capture_alerts(monkeypatch)
+
+    sentinel_entity = object()
+    captured = {}
+    async def spy_fix(client_, cfg_, bot, text, **k):
+        captured["bot"] = bot
+        captured["chat"] = k.get("chat", "MISSING")
+        return {"status": "failed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", spy_fix)
+
+    state = {"tracker": tracker, "watch": [("SinFermera2", sentinel_entity)]}
+    # now == followup interval (900), well before give-up (3600): refix-eligible.
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", state, 900.0, deliver=True))
+
+    assert captured.get("bot") == "SinFermera2"
+    # The bug today: chat is None -> try_auto_fix resolves the DISPLAY NAME as a
+    # username. The fix passes the roster entity instead.
+    assert captured.get("chat") is sentinel_entity
+    tracker.close()
+
+
+def test_followup_refix_skipped_when_bot_not_in_roster(tmp_path, monkeypatch):
+    """When the bot isn't in the watch roster we can't resolve its panel entity —
+    the tick must DEGRADE to a plain nag: no try_auto_fix call, retry budget intact."""
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "SinFermera2", "bot_error:SinFermera2:h", "high",
+                 "boom", fixable=True, raw_excerpt="boom raw", now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    called = []
+    async def spy_fix(*a, **k):
+        called.append(a)   # MUST NOT happen — bot is off-roster
+        return {"status": "failed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", spy_fix)
+
+    state = {"tracker": tracker, "watch": []}   # bot absent from roster
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", state, 900.0, deliver=True))
+
+    assert called == []                # refix skipped: no off-roster button press
+    row = tracker.open_for_bot("bot_error", "SinFermera2")
+    assert row is not None
+    assert row["fix_retries"] == 0     # budget NOT burned — degraded to plain nag
     followups = [m for m in msgs if "⏳" in m]
     assert len(followups) == 1         # still nags
     tracker.close()
