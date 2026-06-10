@@ -128,3 +128,8 @@ Five parallel read-only investigators (panel FSM, incident lifecycle, bot-eval/c
 ### Design decisions surfaced (not plain bugs)
 - ⚖️ **Generic silence channel is dead code for panels** — `PANEL_STALE_MINUTES(70) < SILENCE_THRESHOLD_MINUTES(120)` + "note ⇒ skip" contract + probe traffic re-arming: zero `silence:` rows ever created in production. Decide: document as panel-shadowed, or run silence detection before the panel `continue`. The alive-but-unproductive gap (panel answers `/start` but farms nothing for hours) is currently invisible.
 - ⚖️ **`kill_all` relaunch failures (2× in log) look PC-side** — likely Watchdog-repo territory (Boot.exe), not this repo; track there.
+
+## ✨ Deterministic-core follow-ups (after PR #11)
+
+- **[low] `summarize()` multi-line excerpt picks line 1, not the matched-signal line** — `watcherdog/classifier.py` `summarize`; for a multi-line error whose strong signal isn't on the first line, the summary reads `"<signal>: <unrelated-first-line>"` (e.g. `"captcha: [SinFermera3]"`). Cosmetic alert-text only — severity routing names the correct signal and is unaffected. Fix: excerpt the line containing the matched signal rather than `splitlines()[0]`. Build when real captured panel messages (from the capture tool) show this in practice. Effort: S.
+- **[task] Phase 1–2 (parser + reports) await capture samples** — run `python -m scripts.capture_panel_formats` against the live fleet → `data/captures/` → brainstorm + build the `BotStats` parser (extend `farm_stats.py`) and wire the 9 existing `commands.py` handlers to compute from it (drop OpenRouter from the report path). Blocked on owner running capture. Effort: L.
