@@ -52,7 +52,7 @@ from watcherdog.alerter import (
     format_silence_alert,
 )
 from watcherdog.analyzer import analyze_message
-from watcherdog.classifier import classify, is_benign_error, is_panel_silence_selfreport
+from watcherdog.classifier import classify, is_benign_error, is_panel_silence_selfreport, severity_of, summarize
 from watcherdog.config import SEVERITY_ORDER
 from watcherdog.incident_tracker import IncidentTracker, incident_followup_step
 from watcherdog.monitor import error_hash
@@ -815,8 +815,10 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
 
     h = error_hash(text)
     if cfg.disable_ai:
-        analysis = {"is_error": True, "severity": "high",
-                    "summary": text.strip()[:200], "root_cause": "", "fix": ""}
+        sev = severity_of(text) or "high"   # None only for non-errors; classify already
+                                            # said this isn't "normal", so high is the safe default
+        analysis = {"is_error": True, "severity": sev,
+                    "summary": summarize(text), "root_cause": "", "fix": ""}
     else:
         analysis = await loop.run_in_executor(None, functools.partial(
             analyze_message, text, bot_name=bot, ollama_url=cfg.ollama_url,
