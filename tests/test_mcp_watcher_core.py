@@ -1145,6 +1145,135 @@ def test_followup_refix_skipped_when_bot_not_in_roster(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Task 8: the tick mutates incidents BY ROW ID and skips rows resolved during a
+# prior action's await — so a monitor sweep that resolves+reopens a key mid-tick
+# never lands a stale mutation on the fresh row (budget pre-burned, stale alert).
+# ---------------------------------------------------------------------------
+
+def test_followup_tick_marks_same_row_by_id_on_normal_path(tmp_path, monkeypatch):
+    # The non-race baseline: a still-open incident must be followed up exactly as
+    # before, bumping THE SAME row's update_count (proof the tick re-fetched and
+    # mutated by id, not just by key).
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("silence", "Bot1", "silence:Bot1", "high", "quiet",
+                 fixable=False, now=0.0)
+    iid = tracker.open_for_bot("silence", "Bot1")["id"]
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 900.0, deliver=True))
+
+    row = tracker.get_open_by_id(iid)
+    assert row is not None
+    assert row["update_count"] == 1           # SAME row bumped
+    assert row["last_update_ts"] == 900.0
+    followups = [m for m in msgs if "⏳" in m]
+    assert len(followups) == 1
+    tracker.close()
+
+
+def test_followup_tick_skips_followup_for_preresolved_row(tmp_path, monkeypatch):
+    # If the snapshotted incident is already resolved by the time the tick goes to
+    # act on it (resolved during a prior action's await), the tick must SKIP it:
+    # no stale ⏳ nag, no mutation. Simulate by resolving the row, then planning
+    # the action manually and feeding the stale snapshot into the tick.
+    from watcherdog.incident_tracker import IncidentTracker, incident_followup_step
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("silence", "Bot1", "silence:Bot1", "high", "quiet",
+                 fixable=False, now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    # Plan the action against the OPEN row, capturing its (now valid) snapshot...
+    planned = incident_followup_step(
+        tracker, 900.0, followup_interval_s=900, giveup_s=3600, max_fix_retries=2)
+    assert [a["kind"] for a in planned] == ["followup"]
+    snap_id = planned[0]["row"]["id"]
+
+    # ...then resolve the incident (as a monitor sweep would, mid-await) and patch
+    # the planner so the tick re-uses the STALE snapshot.
+    tracker.resolve_by_bot("silence", "Bot1", "self_healed", now=850.0)
+    monkeypatch.setattr(mcp_watcher, "incident_followup_step", lambda *a, **k: planned)
+
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 900.0, deliver=True))
+
+    # The resolved snapshot id is no longer open → tick skips it.
+    assert tracker.get_open_by_id(snap_id) is None
+    assert [m for m in msgs if "⏳" in m] == []   # NO stale follow-up alert
+    tracker.close()
+
+
+def test_followup_tick_skips_giveup_for_preresolved_row(tmp_path, monkeypatch):
+    # Same skip property on the give-up branch: a snapshot that resolved mid-await
+    # must NOT trigger the ❌ escalation alert or burn the escalate path.
+    from watcherdog.incident_tracker import IncidentTracker, incident_followup_step
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "Panel1", "panel:Panel1", "high", "PC OFF",
+                 fixable=False, now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    planned = incident_followup_step(
+        tracker, 3600.0, followup_interval_s=900, giveup_s=3600, max_fix_retries=2)
+    assert [a["kind"] for a in planned] == ["giveup"]
+    snap_id = planned[0]["row"]["id"]
+
+    tracker.resolve_by_bot("panel", "Panel1", "self_healed", now=3500.0)
+    monkeypatch.setattr(mcp_watcher, "incident_followup_step", lambda *a, **k: planned)
+
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 3600.0, deliver=True))
+
+    assert tracker.get_open_by_id(snap_id) is None
+    assert [m for m in msgs if "❌" in m] == []   # NO stale escalation alert
+    tracker.close()
+
+
+def test_followup_tick_refix_resolved_midawait_spares_reopened_row(tmp_path, monkeypatch):
+    # The headline race: a refix presses buttons (await). If a monitor sweep
+    # resolves the snapshotted incident DURING that await and reopens a fresh row
+    # under the same key, the tick's mutation must target the OLD (now-resolved)
+    # id and NO-OP — never pre-burning the fresh row's retry budget, never nagging.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=True, raw_excerpt="boom raw", now=0.0)
+    old_id = tracker.open_for_bot("bot_error", "Bot1")["id"]
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    # try_auto_fix simulates the mid-await monitor sweep: it resolves the open
+    # incident AND reopens a fresh episode under the same key, then returns.
+    async def racing_fix(client_, cfg_, bot, text, **k):
+        tracker.resolve_by_bot("bot_error", bot, "self_healed", now=850.0)
+        tracker.open("bot_error", bot, "bot_error:Bot1", "high", "boom again",
+                     fixable=True, raw_excerpt="boom again", now=860.0)
+        return {"status": "fixed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", racing_fix)
+
+    state = {"tracker": tracker, "watch": [("Bot1", object())]}
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", state, 900.0, deliver=True))
+
+    fresh = tracker.open_for_bot("bot_error", "Bot1")
+    assert fresh is not None
+    assert fresh["id"] != old_id                 # the reopened episode
+    assert fresh["fix_retries"] == 0             # budget NOT pre-burned by old id
+    assert fresh["update_count"] == 0            # not nagged by the stale action
+    # The old id is resolved and must stay so; note_fix_attempt/mark_followed_up
+    # both no-op against it.
+    assert tracker.get_open_by_id(old_id) is None
+    tracker.close()
+
+
+# ---------------------------------------------------------------------------
 # flush_daily_report (integration with daily_report module)
 # ---------------------------------------------------------------------------
 

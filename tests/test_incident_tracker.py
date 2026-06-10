@@ -145,6 +145,126 @@ def test_escalate_removes_from_open(tracker):
     assert tracker.open_list() == []
 
 
+# ---------------------------------------------------------------------------
+# by-id mutations — the race fix. The follow-up tick snapshots a row, AWAITS
+# network/buttons (tens of seconds), then mutates. If a monitor sweep
+# resolves+REOPENS the same key during the await, a KEY-based mutation lands on
+# the NEW row. These id-targeted methods + the `AND status='open'` guard make a
+# mutation on an already-resolved id a safe NO-OP, so the old episode's id never
+# touches the fresh row's budget.
+# ---------------------------------------------------------------------------
+
+def test_get_open_by_id_returns_row_for_open_id(tracker):
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=100.0)
+    opened = tracker.open_for_bot("bot_error", "Bot1")
+    row = tracker.get_open_by_id(opened["id"])
+    assert row is not None
+    assert row["id"] == opened["id"]
+    assert row["key"] == "bot_error:Bot1"
+    assert row["status"] == "open"
+
+
+def test_get_open_by_id_none_for_unknown_id(tracker):
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=100.0)
+    opened = tracker.open_for_bot("bot_error", "Bot1")
+    assert tracker.get_open_by_id(opened["id"] + 999) is None
+
+
+def test_get_open_by_id_none_after_resolved(tracker):
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=100.0)
+    opened = tracker.open_for_bot("bot_error", "Bot1")
+    tracker.resolve_by_bot("bot_error", "Bot1", "self_healed", now=200.0)
+    assert tracker.get_open_by_id(opened["id"]) is None   # resolved → not open
+
+
+def test_note_fix_attempt_by_id_bumps_retries(tracker):
+    tracker.open("bot_error", "Bot1", "k", "high", "x", fixable=True, now=0.0)
+    iid = tracker.open_for_bot("bot_error", "Bot1")["id"]
+    tracker.note_fix_attempt_by_id(iid, "relaunch")
+    tracker.note_fix_attempt_by_id(iid, "relaunch")
+    row = tracker.get_open_by_id(iid)
+    assert row["fix_retries"] == 2
+    assert row["fix_attempted"] == "relaunch"
+
+
+def test_mark_followed_up_by_id_resets_the_clock(tracker):
+    tracker.open("bot_error", "Bot1", "k", "high", "x", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("bot_error", "Bot1")["id"]
+    tracker.mark_followed_up_by_id(iid, now=900.0)
+    row = tracker.get_open_by_id(iid)
+    assert row["update_count"] == 1
+    assert row["last_update_ts"] == 900.0
+    assert tracker.due_for_followup(900, now=1000.0) == []
+    assert len(tracker.due_for_followup(900, now=1800.0)) == 1
+
+
+def test_escalate_by_id_removes_from_open(tracker):
+    tracker.open("panel", "Bot1", "k", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "Bot1")["id"]
+    tracker.escalate_by_id(iid, now=3600.0)
+    assert tracker.open_list() == []
+    assert tracker.get_open_by_id(iid) is None
+
+
+def test_by_id_mutations_noop_on_resolved_id(tracker):
+    # THE RACE FIX. Open an incident, snapshot its id, then resolve it (as a
+    # monitor sweep would mid-await). Every _by_id mutation on the now-resolved
+    # id must be a SILENT NO-OP — the resolved row's fields stay frozen and no
+    # exception is raised. This is what prevents the old episode's id from
+    # pre-burning a freshly-reopened row's budget.
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=True, fix_attempted="relaunch", now=100.0)
+    iid = tracker.open_for_bot("bot_error", "Bot1")["id"]
+    res = tracker.resolve_by_bot("bot_error", "Bot1", "self_healed", now=200.0)
+    assert res is not None
+
+    # All four no-op against a resolved id (no exceptions).
+    assert tracker.get_open_by_id(iid) is None
+    tracker.note_fix_attempt_by_id(iid, "should-not-apply")
+    tracker.mark_followed_up_by_id(iid, now=500.0)
+    tracker.escalate_by_id(iid, now=600.0)
+
+    # The resolved row is untouched: still resolved (not 'escalated'), fields
+    # frozen at their resolve-time values.
+    after = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE id = ?", (iid,)).fetchone()
+    assert after["status"] == "resolved"             # escalate_by_id no-op'd
+    assert after["resolution"] == "self_healed"      # NOT 'gave_up'
+    assert after["fix_attempted"] == "relaunch"      # NOT "should-not-apply"
+    assert after["fix_retries"] == 0                 # note_fix_attempt no-op'd
+    assert after["update_count"] == 0                # mark_followed_up no-op'd
+    assert after["resolved_ts"] == 200.0             # escalate did NOT bump it
+
+
+def test_by_id_mutation_on_resolved_id_spares_reopened_row(tracker):
+    # The end-to-end race property: a stale id from a resolved episode must NOT
+    # mutate the FRESH row reopened under the same key. Old id no-ops; new row
+    # keeps its pristine budget.
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=True, now=100.0)
+    old_id = tracker.open_for_bot("bot_error", "Bot1")["id"]
+    tracker.resolve_by_bot("bot_error", "Bot1", "self_healed", now=200.0)
+    # A new sweep reopens the same key — a brand-new episode/row.
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom again",
+                 fixable=True, now=300.0)
+    new_row = tracker.open_for_bot("bot_error", "Bot1")
+    assert new_row["id"] != old_id
+
+    # Mutating the STALE id must leave the fresh row entirely alone.
+    tracker.note_fix_attempt_by_id(old_id, "x")
+    tracker.mark_followed_up_by_id(old_id, now=400.0)
+    tracker.escalate_by_id(old_id, now=500.0)
+
+    fresh = tracker.open_for_bot("bot_error", "Bot1")
+    assert fresh["id"] == new_row["id"]
+    assert fresh["status"] == "open"
+    assert fresh["fix_retries"] == 0
+    assert fresh["update_count"] == 0
+
+
 from watcherdog.incident_tracker import incident_followup_step
 
 

@@ -204,6 +204,47 @@ class IncidentTracker:
         )
         self.conn.commit()
 
+    # --- by-id mutations (race-safe) ---------------------------------------
+    # The follow-up tick snapshots a row, AWAITS (network/buttons), then mutates.
+    # During the await a monitor sweep can resolve+REOPEN the same key, so a
+    # KEY-based mutation would land on the NEW row (pre-burning its budget /
+    # sending a stale alert). These target the snapshotted ROW ID instead; the
+    # ``AND status = 'open'`` guard makes a mutation on an already-resolved id a
+    # safe NO-OP (the new row's budget is left untouched).
+    def get_open_by_id(self, incident_id):
+        """The OPEN row with this id, or None (resolved/escalated/unknown all None)."""
+        row = self.conn.execute(
+            "SELECT * FROM open_incidents WHERE id = ? AND status = 'open'",
+            (incident_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def note_fix_attempt_by_id(self, incident_id, fix_attempted):
+        self.conn.execute(
+            "UPDATE open_incidents SET fix_attempted = ?, "
+            "fix_retries = fix_retries + 1 WHERE id = ? AND status = 'open'",
+            (fix_attempted, incident_id),
+        )
+        self.conn.commit()
+
+    def mark_followed_up_by_id(self, incident_id, now=None):
+        now = now if now is not None else time.time()
+        self.conn.execute(
+            "UPDATE open_incidents SET last_update_ts = ?, "
+            "update_count = update_count + 1 WHERE id = ? AND status = 'open'",
+            (now, incident_id),
+        )
+        self.conn.commit()
+
+    def escalate_by_id(self, incident_id, now=None):
+        now = now if now is not None else time.time()
+        self.conn.execute(
+            "UPDATE open_incidents SET status = 'escalated', resolved_ts = ?, "
+            "resolution = 'gave_up' WHERE id = ? AND status = 'open'",
+            (now, incident_id),
+        )
+        self.conn.commit()
+
     # --- queries ------------------------------------------------------------
     def open_list(self):
         return [dict(r) for r in self.conn.execute(
