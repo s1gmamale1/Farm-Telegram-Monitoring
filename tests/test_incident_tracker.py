@@ -33,6 +33,27 @@ def test_resolve_by_bot_none_when_nothing_open(tracker):
     assert tracker.resolve_by_bot("bot_error", "Ghost", "self_healed", now=1.0) is None
 
 
+def test_resolve_by_bot_is_scoped_to_source(tracker):
+    # Pins the scoping property the silence-recovery fix relies on: a bot can have
+    # BOTH a silence incident and a bot_error incident open at once. Closing the
+    # SILENCE source (e.g. the bot went quiet then a message arrives) must resolve
+    # ONLY the silence row and leave the bot_error untouched — that bot_error may
+    # have arrived as the very traffic that ended the silence and is a distinct
+    # failure mode/channel that is still unresolved.
+    tracker.open("silence", "Bot1", "silence:Bot1", "high", "quiet",
+                 fixable=False, now=100.0)
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=120.0)
+
+    res = tracker.resolve_by_bot("silence", "Bot1", "self_healed", now=200.0)
+
+    assert res is not None                                       # silence WAS open
+    assert tracker.open_for_bot("silence", "Bot1") is None       # silence resolved
+    bot_err = tracker.open_for_bot("bot_error", "Bot1")
+    assert bot_err is not None                                   # bot_error STILL open
+    assert bot_err["status"] == "open"
+
+
 def test_resolve_open_for_bot_closes_all_sources(tracker):
     tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "x", fixable=False, now=100.0)
     tracker.open("panel", "Bot1", "panel:Bot1", "high", "pc", fixable=False, now=120.0)
