@@ -64,7 +64,7 @@ async def _resolve_folder(client, folder_ref):
     for flt in filters:
         if want_id is not None and getattr(flt, "id", None) == want_id:
             return flt
-        if want_name is not None and filter_title(flt).lower() == want_name:
+        if want_name is not None and filter_title(flt).strip().lower() == want_name:
             return flt
     return None
 
