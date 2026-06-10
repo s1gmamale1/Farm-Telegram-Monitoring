@@ -1197,7 +1197,16 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
         max_fix_retries=cfg.incident_max_fix_retries)
     for act in actions:
         row = act["row"]
-        bot, key = row["bot"], row["key"]
+        bot = row["bot"]
+        incident_id = row["id"]
+        # Re-fetch by ROW ID before touching the world. A prior action's await may
+        # have let a monitor sweep resolve+REOPEN this key; mutating by key would
+        # then hit the NEW row (pre-burned budget) or send a stale alert after the
+        # owner already got ✅. If the snapshotted id is no longer open, skip it
+        # entirely (no stale alert, no mutation) and let the next tick re-plan.
+        current = tracker.get_open_by_id(incident_id)
+        if current is None:
+            continue
         elapsed = now - row["opened_ts"]
         if act["kind"] == "giveup":
             needs_pc = row["source"] == "panel"
@@ -1206,7 +1215,7 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
                              bot, row["summary"], elapsed, needs_pc=needs_pc,
                              retried=(row["fix_retries"] > 0)),
                          deliver, cfg=cfg)
-            tracker.escalate(key, now=now)
+            tracker.escalate_by_id(incident_id, now=now)
             log.info("ESCALATED %s after %.0fs", bot, elapsed)
             continue
         ent = _entity_for(state, bot) if act["kind"] == "refix" else None
@@ -1224,13 +1233,16 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
             except Exception:  # noqa: BLE001
                 log.exception("incident re-fix raised for %s", bot)
                 outcome = None
-            tracker.note_fix_attempt(
-                key, (outcome or {}).get("status") or "retry")
+            # The fix above awaited; a sweep may have resolved+reopened this key
+            # meanwhile. note_fix_attempt_by_id no-ops on a resolved id, so the
+            # reopened row's budget is never pre-burned.
+            tracker.note_fix_attempt_by_id(
+                incident_id, (outcome or {}).get("status") or "retry")
         await _alert(state, client, target,
                      format_incident_followup(
                          bot, row["summary"], elapsed, retrying=did_refix),
                      deliver, cfg=cfg)
-        tracker.mark_followed_up(key, now=now)
+        tracker.mark_followed_up_by_id(incident_id, now=now)
 
 
 async def _incident_followup_loop(client, cfg, tracker, target, state, deliver=True):
