@@ -38,12 +38,16 @@ class IncidentStore:
         )
         self.conn.commit()
 
-    def last_seen(self, raw_hash):
-        """Return the most recent timestamp for this error hash, or None."""
-        cur = self.conn.execute(
-            "SELECT ts FROM incidents WHERE raw_hash = ? ORDER BY ts DESC LIMIT 1",
-            (raw_hash,),
-        )
+    def last_seen(self, raw_hash, notified_only=False):
+        """Most recent ts for this error hash, or None. With notified_only, consider
+        only rows that were actually alerted (notified=1) — so an un-alerted,
+        below-threshold record can't keep a hash 'fresh' and suppress a later real
+        alert."""
+        sql = "SELECT ts FROM incidents WHERE raw_hash = ?"
+        if notified_only:
+            sql += " AND notified = 1"
+        sql += " ORDER BY ts DESC LIMIT 1"
+        cur = self.conn.execute(sql, (raw_hash,))
         row = cur.fetchone()
         return row["ts"] if row else None
 
