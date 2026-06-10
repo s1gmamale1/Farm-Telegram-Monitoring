@@ -985,52 +985,56 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
             if note is not None:
                 continue
 
-        await _evaluate_bot(client, cfg, store, state, target, name, text, now, loop,
-                            deliver, ent=ent, date=date)
+        try:
+            await _evaluate_bot(client, cfg, store, state, target, name, text, now, loop,
+                                deliver, ent=ent, date=date)
 
-        if cfg.silence_enabled:
-            age_min = ((now - date.timestamp()) / 60.0) if date else None
-            silent = age_min is not None and age_min > threshold_min
-            key = name + "::silent"
-            was = state.get(key, False)
-            if first:
-                state[key] = silent
-                if silent:
-                    already_silent.append(name)
-            elif silent and not was:
-                # Offer a one-tap relaunch card in the group (anyone can tap);
-                # fall back to a plain text alert if no bot is available.
-                posted = None
-                if deliver and cfg.agent_actions_enabled:
-                    posted = await _offer_card(
-                        state,
-                        f"🔇 {name} — silent ~{age_min:.0f}m "
-                        "(device may be on, farm dead)",
-                        buttons.relaunch_options(),
-                        panel_target=_panel_target(ent, name))
-                if posted is None:
-                    await _alert(state, client, target,
-                                 format_silence_alert(name, age_min * 60.0), deliver)
-                state[key] = True
-                tracker = state.get("tracker")
-                if tracker is not None:
-                    tracker.open("silence", name, f"silence:{name}", "high",
-                                 f"silent ~{age_min:.0f}m", fixable=False, now=now)
-                log.info("SILENT: %s (~%.0fm ago)%s", name, age_min,
-                         " [card]" if posted is not None else "")
-            elif not silent and was:
-                await _alert(state, client, target, format_recovery_alert(name), deliver)
-                state[key] = False
-                # Scope the closure to the SILENCE source only: a bot_error that
-                # arrived as the silence-ending traffic must stay open (different
-                # failure mode/channel). recovery alert already announced.
-                tracker = state.get("tracker")
-                if tracker is not None:
-                    tracker.resolve_by_bot("silence", name, "self_healed", now=now)
-                log.info("RECOVERED: %s", name)
+            if cfg.silence_enabled:
+                age_min = ((now - date.timestamp()) / 60.0) if date else None
+                silent = age_min is not None and age_min > threshold_min
+                key = name + "::silent"
+                was = state.get(key, False)
+                if first:
+                    state[key] = silent
+                    if silent:
+                        already_silent.append(name)
+                elif silent and not was:
+                    # Offer a one-tap relaunch card in the group (anyone can tap);
+                    # fall back to a plain text alert if no bot is available.
+                    posted = None
+                    if deliver and cfg.agent_actions_enabled:
+                        posted = await _offer_card(
+                            state,
+                            f"🔇 {name} — silent ~{age_min:.0f}m "
+                            "(device may be on, farm dead)",
+                            buttons.relaunch_options(),
+                            panel_target=_panel_target(ent, name))
+                    if posted is None:
+                        await _alert(state, client, target,
+                                     format_silence_alert(name, age_min * 60.0), deliver)
+                    state[key] = True
+                    tracker = state.get("tracker")
+                    if tracker is not None:
+                        tracker.open("silence", name, f"silence:{name}", "high",
+                                     f"silent ~{age_min:.0f}m", fixable=False, now=now)
+                    log.info("SILENT: %s (~%.0fm ago)%s", name, age_min,
+                             " [card]" if posted is not None else "")
+                elif not silent and was:
+                    await _alert(state, client, target, format_recovery_alert(name), deliver)
+                    state[key] = False
+                    # Scope the closure to the SILENCE source only: a bot_error that
+                    # arrived as the silence-ending traffic must stay open (different
+                    # failure mode/channel). recovery alert already announced.
+                    tracker = state.get("tracker")
+                    if tracker is not None:
+                        tracker.resolve_by_bot("silence", name, "self_healed", now=now)
+                    log.info("RECOVERED: %s", name)
 
-        if not state.get(name + "::err") and not state.get(name + "::silent"):
-            healthy += 1
+            if not state.get(name + "::err") and not state.get(name + "::silent"):
+                healthy += 1
+        except Exception:  # noqa: BLE001
+            log.exception("bot/silence eval failed for %s; continuing", name)
+            continue
 
     state["_seeded"] = True
     if first and already_silent:

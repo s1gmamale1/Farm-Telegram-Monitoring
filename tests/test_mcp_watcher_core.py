@@ -1605,3 +1605,30 @@ def test_rearm_panel_episodes_no_tracker_is_noop():
     # _PANEL_STATE stays empty (the autouse fixture cleared it).
     mcp_watcher._rearm_panel_episodes({})
     assert mcp_watcher._PANEL_STATE == {}
+
+
+def test_sweep_continues_after_one_chat_raises(tmp_path, monkeypatch):
+    # A raise inside the per-chat tail (_evaluate_bot / silence / healthy count)
+    # must NOT abort the whole sweep: every chat after the failing one was being
+    # skipped. The tail is now wrapped so one bad chat is logged and skipped.
+    cfg = _cfg(tmp_path, {"PANEL_RULES_ENABLED": "false", "SILENCE_ENABLED": "false"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    seen = []
+
+    async def fake_latest(client, ent, mark_read=False):
+        return "some text", None
+
+    async def fake_eval(client, cfg, store, state, target, bot, text, now, loop,
+                        deliver=True, ent=None, date=None):
+        if bot == "Bad":
+            raise RuntimeError("boom in Bad")
+        seen.append(bot)
+
+    monkeypatch.setattr(mcp_watcher.tg_tools, "latest_message", fake_latest)
+    monkeypatch.setattr(mcp_watcher, "_evaluate_bot", fake_eval)
+
+    watch = [("Bad", object()), ("Good", object())]
+    asyncio.run(mcp_watcher.monitor_once(
+        client, cfg, store, {}, watch, "ibo", deliver=True))
+    assert seen == ["Good"]   # the failing chat didn't abort the sweep
