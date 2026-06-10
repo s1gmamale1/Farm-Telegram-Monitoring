@@ -777,6 +777,17 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     panel entity used to drive auto-fixes (defaults to looking up by ``bot``)."""
     if not text or not text.strip():
         return
+    # Skip re-processing the SAME latest message on consecutive sweeps: avoids a
+    # wasted analysis call and the below-threshold re-record spam that inflates
+    # the recurring-error count. The FIRST sight of any message still runs fully
+    # (resolve, alert, open); only an unchanged repeat is skipped. A real change
+    # (error->normal->error) changes the hash and is NOT skipped, so the dedupe
+    # re-open still fires on a genuine recurrence.
+    msg_hash = error_hash(text)
+    memo_key = bot + "::last_eval_hash"
+    if state.get(memo_key) == msg_hash:
+        return
+    state[memo_key] = msg_hash
     bucket = classify(text)
     if bucket == "normal":
         tracker = state.get("tracker")
@@ -822,7 +833,7 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
         return
 
     state[bot + "::err"] = True
-    last = store.last_seen(h)
+    last = store.last_seen(h, notified_only=True)
     if last is not None and (now - last) < cfg.dedupe_window:
         log.info("error on %s already alerted %.0fs ago; not resending", bot, now - last)
         # Still TRACK it: a recurrence within the dedupe window must not leave the

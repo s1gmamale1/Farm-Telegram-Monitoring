@@ -36,6 +36,36 @@ def test_last_seen_returns_most_recent_ts(store):
     assert store.last_seen("dup") == 2000.0
 
 
+# --- last_seen notified_only: an un-alerted below-threshold row must NOT keep a
+#     hash "fresh" so a later REAL alert for the same text is wrongly suppressed.
+
+def test_last_seen_notified_only_ignores_unnotified_rows(store):
+    # Two rows for the same hash: an OLDER notified=True row, then a NEWER
+    # notified=False (below-threshold) row.
+    store.record("bot", "low", ANALYSIS, "H", "raw", True, ts=1000.0)   # alerted
+    store.record("bot", "low", ANALYSIS, "H", "raw", False, ts=2000.0)  # un-alerted
+    # Default: newest ts regardless of notified.
+    assert store.last_seen("H") == 2000.0
+    # notified_only: only the alerted row counts → the OLDER notified ts.
+    assert store.last_seen("H", notified_only=True) == 1000.0
+
+
+def test_last_seen_notified_only_picks_newest_notified(store):
+    # Newer notified row wins among multiple notified rows.
+    store.record("bot", "high", ANALYSIS, "H", "raw", True, ts=1000.0)
+    store.record("bot", "high", ANALYSIS, "H", "raw", False, ts=1500.0)  # un-alerted
+    store.record("bot", "high", ANALYSIS, "H", "raw", True, ts=2000.0)
+    assert store.last_seen("H", notified_only=True) == 2000.0
+
+
+def test_last_seen_notified_only_none_when_only_unnotified(store):
+    # A hash that was ONLY ever recorded below-threshold (never alerted) has no
+    # notified row → notified_only is None, so it can't suppress a real alert.
+    store.record("bot", "low", ANALYSIS, "H", "raw", False, ts=2000.0)
+    assert store.last_seen("H") == 2000.0                  # default still sees it
+    assert store.last_seen("H", notified_only=True) is None
+
+
 def test_recurring_flags_repeated_hash(store):
     now = 10_000.0
     for i in range(3):

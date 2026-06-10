@@ -783,20 +783,159 @@ def test_dedupe_recurrence_reopens_incident_without_alert(tmp_path):
     first_sent = len(client.sent)
     assert first_sent == 1                # exactly one alert for the first error
 
-    # 2) Simulate a resolve (e.g. a self-heal): the incident is now CLOSED.
-    tracker.resolve_by_bot("bot_error", "Bot1", "self_healed", now=150.0)
-    assert tracker.open_for_bot("bot_error", "Bot1") is None
+    # 2) The bot recovers via a NORMAL message (the realistic resolve path — in
+    #    production a bot_error only closes when a FRESH normal line arrives, never
+    #    via a direct resolve call). This also moves the per-bot memo OFF the error
+    #    hash and ONTO the normal hash, so the recurrence in step 3 is not skipped.
+    #    The date must be at/after the incident's opened_ts (Task 1 freshness gate).
+    fresh = SimpleNamespace(timestamp=lambda: 150.0)
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "🎁 collected drop · AK-47 - 0.27$",
+        150.0, loop, deliver=True, ent=None, date=fresh))
+    assert tracker.open_for_bot("bot_error", "Bot1") is None  # freshness resolve closed it
+    after_resolve_sent = len(client.sent)
 
     # 3) The SAME error recurs within the dedupe window (200.0 - 100.0 = 100s < 300).
-    #    No NEW alert (dedupe), BUT the incident must be RE-OPENED so followups
-    #    continue instead of silently dropping the still-broken bot.
+    #    The memo now holds the NORMAL hash, so this genuine recurrence is NOT
+    #    skipped. No NEW alert (dedupe gate sees the notified error row from step 1),
+    #    BUT the incident must be RE-OPENED so followups continue instead of
+    #    silently dropping the still-broken bot.
     asyncio.run(mcp_watcher._evaluate_bot(
         client, cfg, store, state, "ibo", "Bot1", text,
         200.0, loop, deliver=True, ent=None))
-    assert len(client.sent) == first_sent          # dedupe held → no alert spam
+    assert len(client.sent) == after_resolve_sent  # dedupe held → no new error alert
     assert tracker.open_for_bot("bot_error", "Bot1") is not None  # re-opened
     store.close()
     tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 6: per-bot memo — skip re-processing the SAME latest message on
+# consecutive sweeps (no wasted analysis, no below-threshold re-record spam).
+# ---------------------------------------------------------------------------
+
+def test_memo_skips_reprocessing_same_message_consecutively(tmp_path):
+    # The SAME error fed twice in a row for one bot: the analysis/record path runs
+    # only ONCE; the second identical sight early-returns on the memo.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+        "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {}
+    loop = asyncio.new_event_loop()
+    text = "[Bot1] Got an error while launching accounts."
+
+    calls = {"record": 0}
+    real_record = store.record
+
+    def counting_record(*a, **k):
+        calls["record"] += 1
+        return real_record(*a, **k)
+    store.record = counting_record  # type: ignore[assignment]
+
+    # First sight: processes fully (classify, alert, record).
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", text,
+        100.0, loop, deliver=True, ent=None))
+    assert calls["record"] == 1
+    assert len(client.sent) == 1
+
+    # Second IDENTICAL sight on the next sweep: memo match → early-return, no
+    # second analysis/record, no extra alert.
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", text,
+        200.0, loop, deliver=True, ent=None))
+    assert calls["record"] == 1          # NOT re-recorded
+    assert len(client.sent) == 1         # NOT re-alerted
+    store.close()
+
+
+def test_memo_does_not_skip_a_different_message(tmp_path):
+    # A genuinely DIFFERENT message between identical sights is NOT skipped: the
+    # memo is keyed on the content hash, so a hash change always processes.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+        "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {}
+    loop = asyncio.new_event_loop()
+    err_a = "[Bot1] Got an error while launching accounts."
+    err_b = "[Bot1] Account banned permanently."
+
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", err_a,
+        100.0, loop, deliver=True, ent=None))
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", err_b,
+        200.0, loop, deliver=True, ent=None))
+    # Two distinct messages → two alerts (memo never matched err_b against err_a).
+    assert len(client.sent) == 2
+    store.close()
+
+
+def test_memo_first_sight_still_resolves_open_incident(tmp_path):
+    # The memo must NOT swallow the FIRST sight of any message: a fresh "normal"
+    # message on its first sight must still resolve an open incident (Task 1).
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+        "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    loop = asyncio.new_event_loop()
+
+    # error at now=100 → open incident.
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Got an error while launching accounts.",
+        100.0, loop, deliver=True, ent=None))
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None
+
+    # FIRST sight of a fresh normal message → resolves (memo was on the error hash).
+    fresh = SimpleNamespace(timestamp=lambda: 150.0)
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "🎁 collected drop · AK-47 - 0.27$",
+        150.0, loop, deliver=True, ent=None, date=fresh))
+    assert tracker.open_for_bot("bot_error", "Bot1") is None  # resolved on first sight
+    store.close()
+    tracker.close()
+
+
+def test_unnotified_below_threshold_row_does_not_suppress_later_real_alert(tmp_path):
+    # Bug 2: a below-threshold (notified=False) row for hash H must NOT keep H
+    # "fresh" and suppress a later REAL at/above-threshold alert for the same text.
+    # The dedupe gate uses notified_only=True, so an un-alerted row never gates.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+        "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "300",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {}
+    loop = asyncio.new_event_loop()
+    text = "[Bot1] Got an error while launching accounts."
+    h = mcp_watcher.error_hash(text)
+
+    # Pre-seed a below-threshold, un-alerted row for H at t=100 (as the
+    # below-threshold path would record). Under last_seen(h) this would make H
+    # "fresh" and suppress the real alert below; under notified_only it must not.
+    store.record("Bot1", "low", {"summary": "x"}, h, text, notified=False, ts=100.0)
+
+    # A REAL high-severity sight of the SAME text within the dedupe window.
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1", text,
+        200.0, loop, deliver=True, ent=None))
+    assert client.sent          # NOT suppressed by the stale un-alerted row → ALERTS
+    store.close()
 
 
 def test_panel_healthy_resolves_open_incident(tmp_path):
