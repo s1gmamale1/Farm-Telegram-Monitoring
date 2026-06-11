@@ -149,3 +149,26 @@ def parse_drop_report(text):
         for name, amt, price in _table_rows(skin_section):
             r.skins.append(DropItem(name=name, amount=amt, price=price))
     return r
+
+
+_EVENT_PATTERNS = [
+    ("launch_error",    re.compile(r"error while launching", re.I)),
+    ("crash_recovered", re.compile(r"crashed and restarted", re.I)),
+    ("match_cancelled", re.compile(r"match cancelled", re.I)),
+    ("match_ended",     re.compile(r"match ended", re.I)),
+    ("lobby_creating",  re.compile(r"starting lobby creation", re.I)),
+    ("warmup",          re.compile(r"warmup started", re.I)),
+    ("launched",        re.compile(r"all\s+\d+\s+accounts?\s+launched", re.I)),
+]
+
+
+def parse_status_event(text):
+    """Map a panel's latest message to a canonical event name, or None if novel.
+    Order matters: error/crash signals win over the routine activity lines. The
+    bot-tag ([...], incl. the SinFarmera typo / odd casing) is ignored — matching
+    is on the message body substring. No model."""
+    text = text if isinstance(text, str) else ""
+    for name, rx in _EVENT_PATTERNS:
+        if rx.search(text):
+            return name
+    return None
