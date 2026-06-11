@@ -40,14 +40,15 @@ from telethon.utils import get_peer_id
 
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         daily_report, drop_stats, farm_stats, fast_commands,
-                        fleet_report, panel_actions, panel_rules, roster,
-                        self_restart,
+                        fleet_report, novel_recovery, panel_actions, panel_rules,
+                        roster, self_restart,
                         tg_actions, tg_tools)
 from watcherdog.alerter import (
     format_alert,
     format_incident_escalated,
     format_incident_followup,
     format_incident_resolved,
+    format_novel_alert,
     format_recovery_alert,
     format_recurring_alert,
     format_silence_alert,
@@ -263,39 +264,6 @@ async def _offer_card(state, title, options, *, panel_target):
     except Exception:  # noqa: BLE001
         log.exception("posting action card failed")
         return None
-
-
-async def _incident_via_agent(client, cfg, state, target, bot, severity, text, deliver):
-    """Skill 2: hand a freshly-detected error to the action-capable agent so it
-    can apply a SAVED fix automatically or ask ibo what to do. Shares the agent
-    history + lock with the ibo conversation, so a follow-up 'yes' lands in the
-    same context. Returns whether the reply was sent. `execute=deliver` keeps a
-    dry run from pressing real buttons."""
-    directive = (
-        f"INCIDENT detected on '{bot}' (severity {severity}). Its latest message:\n"
-        f'"""{(text or "")[:1500]}"""\n'
-        "Handle it per skill 2: call lookup_fix first; apply a saved, "
-        "non-destructive ai-fix automatically (then log_fix) and report one line; "
-        "otherwise ask ibo what to do — and for destructive steps ask "
-        "'Want me to do this? (yes/no)' before acting."
-    )
-    sysp = state.get("system_prompt", "")
-    lock = state.get("agent_lock")
-
-    async def _go():
-        ans, history = await agent.answer(
-            cfg, client, directive, system_prompt=sysp,
-            history=state.get("agent_history"), execute=deliver)
-        state["agent_history"] = history
-        return ans
-
-    if lock is not None:
-        async with lock:
-            answer = await _go()
-    else:
-        answer = await _go()
-    _append_chat_log(cfg.agent_chat_log, f"[incident:{bot}]", answer)
-    return await _send(client, target, answer, deliver, cfg=cfg)
 
 
 # --- deterministic panel watch/recover (R1-R6, no model) --------------------
@@ -745,19 +713,22 @@ def _entity_for(state, bot):
     return None
 
 
-def _open_bot_incident(state, bot, severity, analysis, text, *, fixable, now=None):
+def _open_bot_incident(state, bot, severity, analysis, text, *, fixable,
+                       novel=False, now=None):
     """Record an alerted bot error as an OPEN incident so the follow-up loop can
     track it to resolution/escalation. Keyed by bot (one open incident per bot,
     not per error-hash): a second distinct error while one is already open is a
     no-op, so a later healthy message reliably closes the bot's open incident
     instead of leaving an orphan that the follow-up loop would falsely escalate.
+    ``novel=True`` flags an error with no learned fix (Phase 4).
     Inert when tracking is disabled."""
     tracker = state.get("tracker")
     if tracker is None:
         return
     summary = (analysis or {}).get("summary") or (text or "").strip()[:160]
     tracker.open("bot_error", bot, f"bot_error:{bot}", severity, summary,
-                 fixable=fixable, raw_excerpt=(text or "")[:1000], now=now)
+                 fixable=fixable, novel=novel,
+                 raw_excerpt=(text or "")[:1000], now=now)
 
 
 async def _resolve_incidents_for(state, client, target, bot, now, deliver, cfg, *, announce=True):
@@ -927,13 +898,28 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
             # No bot to post the card -> fall through to the AI to ask.
         # status in (None, "failed", unposted needs_confirm) -> fall through to the AI.
 
-    # Skill 2: when the agent can act and model calls are enabled, route the
-    # incident through it. In DISABLE_AI mode, stay deterministic: scripted
-    # fixes above may still run, but unresolved incidents become plain alerts.
-    if (not cfg.disable_ai) and cfg.agent_actions_enabled and state.get("system_prompt"):
-        ok = await _incident_via_agent(client, cfg, state, target, bot, severity, text, deliver)
-    else:
-        ok = await _alert(state, client, target, format_alert(bot, severity, analysis, text), deliver)
+    # Phase 4: a TRULY novel error (no learned mapping at all -> fix_status None)
+    # gets the deterministic generic-restart ladder — the old _incident_via_agent
+    # model path is gone in every mode. A KNOWN fix that failed (or an unposted
+    # confirm card) keeps the plain alert: re-driving a different destructive
+    # sequence on top of a learned fix would double-press the panel.
+    if fix_status is None:
+        recovery = await novel_recovery.attempt(client, cfg, bot, text,
+                                                chat=ent, deliver=deliver)
+        ok = await _alert(state, client, target,
+                          format_novel_alert(bot, severity, analysis, text, recovery),
+                          deliver)
+        store.record(bot, severity, analysis, h, text, notified=ok and deliver, ts=now)
+        ladder_ran = recovery.get("status") in ("attempted", "failed")
+        _open_bot_incident(state, bot, severity, analysis, text,
+                           fixable=ladder_ran, novel=True, now=now)
+        tracker = state.get("tracker")
+        if ladder_ran and tracker is not None:
+            tracker.note_fix_attempt(f"bot_error:{bot}", "novel-ladder")
+        log.info("ALERTED %s (%s, novel, recovery=%s, sent=%s)",
+                 bot, severity, recovery.get("status"), ok and deliver)
+        return
+    ok = await _alert(state, client, target, format_alert(bot, severity, analysis, text), deliver)
     store.record(bot, severity, analysis, h, text, notified=ok and deliver, ts=now)
     _open_bot_incident(state, bot, severity, analysis, text,
                        fixable=(fix_status == "failed"), now=now)
