@@ -114,3 +114,17 @@ def test_format_novel_alert_human_needed_and_skipped():
     assert "not auto-restarting" in human
     plain = format_novel_alert("SF7", "high", {}, "raw", {"status": "skipped"})
     assert "🛠" not in plain and "🚫" not in plain      # plain alert, no recovery line
+
+
+# --- mcp_watcher wiring -------------------------------------------------------
+
+def test_open_bot_incident_passes_novel_flag(tmp_path):
+    from watcherdog.incident_tracker import IncidentTracker
+    from watcherdog import mcp_watcher
+    t = IncidentTracker(str(tmp_path / "i.db"))
+    state = {"tracker": t}
+    mcp_watcher._open_bot_incident(state, "SF7", "high", {"summary": "weird"},
+                                   "raw text", fixable=True, novel=True, now=100.0)
+    row = t.open_for_bot("bot_error", "SF7")
+    assert row["novel"] == 1 and row["fixable"] == 1
+    t.close()
