@@ -34,7 +34,8 @@ from telethon import Button, TelegramClient, events
 from telethon.utils import get_peer_id
 
 from watcherdog import (agent, bot_access, buttons, commands, daily_report,
-                        fast_commands, task_store, tg_actions, tg_tools)
+                        fast_commands, fleet_report, task_store, tg_actions,
+                        tg_tools)
 
 log = logging.getLogger("watcherdog.bot")
 
@@ -550,6 +551,14 @@ class BotInterface:
             task.add_done_callback(self._inflight.discard)
             return
 
+        # Report commands — deterministic from the weekly buffer + roster (Phase 2).
+        report = commands.report_parse(text)
+        if report is not None:
+            task = asyncio.create_task(self._run_report_command(event, *report))
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
+            return
+
         # Spawn the turn as its own task so the handler returns at once and the
         # bot keeps accepting messages — multiple run concurrently (capped by the
         # semaphore; only action turns serialize, inside _run_agent_task).
@@ -605,6 +614,22 @@ class BotInterface:
             text = "⚠️ couldn't run that command."
         await self._reply(event, text)
         log.info("bot → fast /%s (%d chars, no AI)", cmd, len(text or ""))
+
+    async def _run_report_command(self, event, cmd, args):
+        """Answer a deterministic report command with no model (Phase 2). Reads the
+        weekly drop buffer + a roster sweep via fleet_report.handle."""
+        try:
+            async with self.bot.action(event.chat_id, "typing"):
+                text = await fleet_report.handle(
+                    cmd, args, cfg=self.cfg, client=self.user_client,
+                    watch=self.state.get("watch") or [])
+        except Exception:  # noqa: BLE001
+            log.exception("report command /%s failed", cmd)
+            text = "⚠️ couldn't build that report."
+        if text is None:
+            text = "⚠️ couldn't build that report."
+        await self._reply(event, text)
+        log.info("bot → report /%s (%d chars, no AI)", cmd, len(text or ""))
 
     def _status_header(self, text, *, resume=False):
         title = commands.friendly_title(text)
