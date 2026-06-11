@@ -316,3 +316,13 @@ def test_novel_recovery_defaults_on(monkeypatch):
     # Phase 4: the generic-restart ladder for novel errors is on by default.
     assert Config({}).novel_recovery is True
     assert Config({"NOVEL_RECOVERY": "false"}).novel_recovery is False
+
+
+def test_overseer_defaults_off(monkeypatch):
+    monkeypatch.delenv("OVERSEER_SOCKET", raising=False)
+    monkeypatch.delenv("OVERSEER_TOKEN", raising=False)
+    cfg = Config({})
+    assert cfg.overseer_socket == ""        # unset -> surface off
+    assert cfg.overseer_token == ""
+    assert Config({"OVERSEER_SOCKET": "data/overseer.sock"}).overseer_socket.endswith(
+        "data/overseer.sock")
