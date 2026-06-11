@@ -238,7 +238,9 @@ the report path.
 
 ---
 
-## Phase 2 — Deterministic report commands
+## Phase 2 — Deterministic report commands  ✅ SHIPPED (PR #14, 2026-06-11)
+
+**Shipped.** New `watcherdog/fleet_report.py` (`snapshot` → `Fleet[FleetEntry]` from one cheap `latest_message` sweep merged with the weekly drop buffer; 8 pure formatters; `handle()` dispatcher) + `commands.report_parse`. Both Telegram dispatchers route `/weekly /today /top /worst /value /check /compare /bans` (and `/drops`→today) to `fleet_report.handle` **before** the model branch — OpenRouter dropped from the report path entirely (deterministic even when AI is on). `run_weekly_digest` is now deterministic + always-on. Parser convergence: `drop_stats.collect_week` adopts the Phase 1 `farm_stats.parse_drop_report` (and the garbage-recording `parse_drop_stats` is removed) — the weekly buffer/Sheets now record correct `cases/value` (validated on all real captures). `/whatsnew` + `/improve` intentionally left on their existing paths; image-only `farmed/N` stays `needs_vision` (rendered `?`, never fabricated). Spec `docs/superpowers/specs/2026-06-11-phase2-deterministic-report-commands-design.md`; plan `docs/superpowers/plans/2026-06-11-phase2-deterministic-report-commands.md`.
 
 **Goal.** `/weekly /today /top /worst /value /check /bans /compare /whatsnew` and the weekly digest answer from parsed text with **no model call**.
 
