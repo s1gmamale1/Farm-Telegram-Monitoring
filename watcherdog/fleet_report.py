@@ -80,3 +80,51 @@ def _load_latest_buffer(drop_stats_dir):
         if m:
             by_num[int(m.group(1))] = r
     return by_num, payload.get("week"), _short_date(payload.get("generated"))
+
+
+def _coerce_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+async def snapshot(client, cfg, watch):
+    """One cheap latest_message sweep merged with the latest weekly buffer ->
+    Fleet(list[FleetEntry]). No button presses, no model. Never raises on a single
+    bot's read; bots without a number in their name are skipped."""
+    pc_map = roster.load_pc_map(cfg)
+    by_num, week, collected = _load_latest_buffer(getattr(cfg, "drop_stats_dir", None))
+    now_ts = time.time()
+    entries = []
+    for name, ent in (watch or []):
+        m = _NUM_RE.search(name or "")
+        if not m:
+            continue
+        num = int(m.group(1))
+        try:
+            text, date = await tg_tools.latest_message(client, ent, mark_read=False)
+        except Exception:  # noqa: BLE001
+            text, date = None, None
+        age_min = ((now_ts - date.timestamp()) / 60.0) if date else 1_000_000.0
+        st = BotStats(bot=name)
+        st.last_status = farm_stats.parse_status_event(text)
+        st.accounts_up = roster.extract_account_count(text) if text else None
+        row = by_num.get(num)
+        if row:
+            st.drops = _coerce_int(row.get("drops"))
+            st.value_usd = _coerce_float(row.get("value"))
+            st.data_source = ("text" if (st.drops is not None or st.value_usd is not None)
+                              else "missing")
+        entries.append(FleetEntry(num=num, name=name, pc=pc_map.get(num, "?"),
+                                  status=roster.classify_status(text, age_min, cfg),
+                                  age_min=age_min, last_text=text or "", stats=st))
+    entries.sort(key=lambda e: e.num)
+    return Fleet(entries=entries, week=week, collected=collected)
