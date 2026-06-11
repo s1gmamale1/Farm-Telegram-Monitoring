@@ -58,6 +58,14 @@ def _int(rx, text):
     return int(m.group(1)) if m else None
 
 
+def _to_float(s):
+    """float(s) or None — never raises (a multi-dot/garbage token -> None)."""
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_panel_status(text):
     """Parse a panel status message. Never raises; unknown fields stay None."""
     text = text if isinstance(text, str) else ""
@@ -112,7 +120,9 @@ class DropReport:
 def _table_rows(section):
     """Yield (name, amount, third) for 'Name | int | num' rows in a section."""
     for m in _ROW_RE.finditer(section):
-        yield _clean(m.group(1)), int(m.group(2)), float(m.group(3))
+        amt = int(m.group(2))           # (\d+) is pure digits -> int is safe
+        third = _to_float(m.group(3))   # case-% or skin-price; multi-dot -> None
+        yield _clean(m.group(1)), amt, third
 
 
 def parse_drop_report(text):
@@ -126,7 +136,7 @@ def parse_drop_report(text):
     if not _DROP_HEADER_RE.search(text):
         return r                       # echo/empty -> only the problem (if any) is set
     m = _PRICE_RE.search(text)
-    r.value_usd = float(m.group(1)) if m else None
+    r.value_usd = _to_float(m.group(1)) if m else None
     m = _TOTALCASES_RE.search(text)
     r.total_cases = int(m.group(1)) if m else None
     m = _REPORT_ACCTS_RE.search(text)
@@ -207,6 +217,7 @@ def parse_bot_stats(record):
     s.cases = rep.cases
     s.skins = rep.skins
     s.problems = list(rep.problems)
-    s.data_source = "text" if (rep.value_usd is not None or rep.total_cases is not None) else "missing"
+    s.data_source = "text" if (rep.value_usd is not None or rep.total_cases is not None
+                               or rep.accounts is not None) else "missing"
     s.needs_vision = True
     return s
