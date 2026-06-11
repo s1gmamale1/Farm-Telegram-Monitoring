@@ -130,3 +130,77 @@ def test_malformed_json_and_unknown_method_keep_serving(tmp_path):
 
     bad, unknown, alive = _run_with_server(cfg, state, go)
     assert "error" in bad and "error" in unknown and "result" in alive
+
+
+# --- action endpoints ----------------------------------------------------------
+
+def test_press_button_destructive_requires_confirmed(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_press(client, ent, button, *, confirmed=False, timeout=20.0):
+        calls.append((button, confirmed))
+        if overseer_api.tg_actions.is_destructive(button) and not confirmed:
+            return {"need_confirm": True, "button": button}
+        return {"pressed": button, "destructive": False}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        refuse = await _call(sock, "press_button",
+                             {"bot": "SF7", "button": "kill all cs"})
+        allow = await _call(sock, "press_button",
+                            {"bot": "SF7", "button": "kill all cs", "confirmed": True})
+        return refuse, allow
+
+    refuse, allow = _run_with_server(cfg, state, go)
+    assert refuse["result"].get("need_confirm") is True     # gate held
+    assert allow["result"].get("pressed") == "kill all cs"
+    assert calls == [("kill all cs", False), ("kill all cs", True)]
+
+
+def test_press_button_dry_run_refuses(tmp_path, monkeypatch):
+    async def fake_press(*a, **k):
+        raise AssertionError("dry-run must not press")
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "press_button",
+                           {"bot": "7", "button": "drop stats", "confirmed": False})
+
+    resp = _run_with_server(cfg, state, go, deliver=False)
+    assert "dry-run" in resp["error"]
+
+
+def test_run_ladder_honors_attempt_gates(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_attempt(client, cfg, bot, text, *, chat=None, deliver=True):
+        seen["bot"], seen["deliver"] = bot, deliver
+        return {"status": "skipped", "reason": "dry-run"}
+
+    monkeypatch.setattr(overseer_api.novel_recovery, "attempt", fake_attempt)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "run_ladder", {"bot": "SinFermera7"})
+
+    resp = _run_with_server(cfg, state, go, deliver=False)
+    assert resp["result"]["status"] == "skipped"
+    assert seen == {"bot": "SinFermera7", "deliver": False}
+
+
+def test_unknown_bot_is_error_not_username_resolution(tmp_path):
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "read_bot", {"bot": "stranger99x"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert "unknown bot" in resp["error"]
