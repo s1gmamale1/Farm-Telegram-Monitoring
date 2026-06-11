@@ -323,7 +323,9 @@ Spec: `docs/superpowers/specs/2026-06-11-deterministic-core-design.md`.
 
 ---
 
-## Phase 5 — Hermes overseer endpoint surface
+## Phase 5 — Hermes overseer endpoint surface  ✅ SHIPPED (PR #16, 2026-06-12)
+
+**Shipped.** `watcherdog/overseer_api.py`: opt-in UNIX-socket ndjson server (binds only when `OVERSEER_SOCKET` is set), 8 endpoints wrapping the loop's own functions — `list_flagged read_bot list_buttons press_button run_ladder get_stats resolve_flagged teach_fix` (`grant_access` dropped as YAGNI; `teach_fix` added — the learn-loop is the point). Token auth (`OVERSEER_TOKEN`), umask-guarded `0600` socket, roster-only bot resolution, destructive presses confirm-gated + result-keyed audit, dry-run propagation. Teaching policy: control chars rejected (closed a live-verified newline injection); `auto:yes`+destructive refused — the owner keeps confirm authority. Reference client `scripts/overseer_cli.py`; docs `docs/wiki/reference/Overseer Endpoints.md`; E2E DoD via the real CLI. Spec `docs/superpowers/specs/2026-06-12-phase5-overseer-endpoints-design.md`.
 
 **Goal.** An external Hermes agent can monitor the script and perform manual fixes through a defined interface, without the core importing any AI.
 
