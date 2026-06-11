@@ -284,3 +284,39 @@ def today(fleet):
     else:
         lines.append("No drop collection yet this week.")
     return "\n".join(lines)
+
+
+def _bot_num(args):
+    m = _NUM_RE.search(args or "")
+    return int(m.group(1)) if m else None
+
+
+async def handle(cmd, args, *, cfg, client, watch):
+    """Run one deterministic report command -> reply text (or None if cmd isn't a
+    report command). Never raises — a failure returns a friendly one-liner."""
+    try:
+        fleet = await snapshot(client, cfg, watch or [])
+    except Exception:  # noqa: BLE001
+        logger.exception("fleet snapshot failed for /%s", cmd)
+        return "⚠️ couldn't read the fleet just now — try again in a moment."
+    if cmd == "weekly":
+        return weekly(fleet)
+    if cmd == "value":
+        return value(fleet)
+    if cmd == "top":
+        return top(fleet)
+    if cmd == "worst":
+        return worst(fleet)
+    if cmd == "today":
+        return today(fleet)
+    if cmd == "bans":
+        return bans(fleet)
+    if cmd == "check":
+        num = _bot_num(args)
+        return check(fleet, num) if num is not None else "🔬 Which bot? e.g. /check 5"
+    if cmd == "compare":
+        toks = _NUM_RE.findall(args or "")
+        if len(toks) < 2:
+            return "⚖️ Give two bots, e.g. /compare 3 7"
+        return compare(fleet, int(toks[0]), int(toks[1]))
+    return None

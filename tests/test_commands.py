@@ -279,3 +279,14 @@ def test_names_includes_core_and_new_and_help():
                 "top", "worst", "value", "silent", "compare", "whatsnew",
                 "help", "commands"):
         assert cmd in n
+
+
+# --- report_parse -----------------------------------------------------------
+
+def test_report_parse_recognizes_report_commands():
+    from watcherdog import commands
+    assert commands.report_parse("/weekly") == ("weekly", "")
+    assert commands.report_parse("/check 5") == ("check", "5")
+    assert commands.report_parse("/drops") == ("today", "")   # alias resolves
+    assert commands.report_parse("/whatsnew") is None         # not deterministic
+    assert commands.report_parse("hello") is None
