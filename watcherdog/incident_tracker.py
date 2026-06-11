@@ -11,6 +11,7 @@ See docs/superpowers/specs/2026-06-09-incident-lifecycle-tracking-design.md.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -63,8 +64,13 @@ class IncidentTracker:
         try:
             self.conn.execute(
                 "ALTER TABLE open_incidents ADD COLUMN novel INTEGER NOT NULL DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass  # column already exists (new DB or already migrated)
+        except sqlite3.OperationalError as exc:
+            # Duplicate column = already migrated (the normal case). Anything
+            # else (e.g. database is locked) degrades safely — open()/novel_list
+            # tolerate a missing column — but is worth a log line.
+            if "duplicate column" not in str(exc).lower():
+                logging.getLogger("watcherdog.incident_tracker").warning(
+                    "novel-column migration failed: %s", exc)
         self.conn.commit()
 
     # --- internal lookups ---------------------------------------------------

@@ -164,3 +164,108 @@ def test_refix_tick_routes_novel_to_ladder(tmp_path, monkeypatch):
     assert calls["novel"] == ["SF7"]
     assert calls["auto"] == ["SF8"]
     t.close()
+
+
+def test_transient_strong_error_still_ladders(monkeypatch):
+    """Design fidelity: crash/stuck/timeout novel errors are EXACTLY what the
+    restart ladder is for — only the account-level family (ban/captcha/guard)
+    is exempt. Regression for the over-broad severity_of gate."""
+    seen = {}
+
+    async def fake_seq(client, panel, actions, cfg, *, confirmed=False):
+        seen["actions"] = list(actions)
+        return [{"ok": True}] * len(actions)
+
+    monkeypatch.setattr(novel_recovery.panel_actions, "run_sequence", fake_seq)
+    out = _run(novel_recovery.attempt(object(), _cfg(), "SF7",
+                                      "[SinFermera7] CS2 crash detected, restart timed out",
+                                      chat=object(), deliver=True))
+    assert out["status"] == "attempted"
+    assert seen["actions"] == ["kill_all", "select_unfarmed", "start_selected"]
+
+
+# --- _evaluate_bot novel-branch wiring (real tracker + store) -----------------
+
+import time as _time
+
+from watcherdog.config import Config
+from watcherdog.storage import IncidentStore
+
+
+class _FakeClient:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, target, text, **kwargs):
+        self.sent.append((target, text))
+
+
+def _wiring_env(tmp_path, monkeypatch, attempt_status):
+    """Real Config/IncidentStore/IncidentTracker; auto_fix finds nothing;
+    novel_recovery.attempt returns the given status."""
+    from watcherdog import mcp_watcher
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = Config({"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "true",
+                  "MIN_SEVERITY": "low", "DEDUPE_WINDOW": "0",
+                  "DAILY_ERRORS_PATH": str(tmp_path / "daily.jsonl")})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "open.db"))
+
+    async def no_fix(*_a, **_k):
+        return None
+
+    async def fake_attempt(client, c, bot, text, *, chat=None, deliver=True):
+        return {"status": attempt_status}
+
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", no_fix)
+    monkeypatch.setattr(mcp_watcher.novel_recovery, "attempt", fake_attempt)
+    monkeypatch.setattr(mcp_watcher.learned_fixes, "find_fix", lambda *a, **k: None)
+    return mcp_watcher, cfg, store, tracker
+
+
+def test_evaluate_bot_novel_branch_opens_flagged_incident(tmp_path, monkeypatch):
+    mcp_watcher, cfg, store, tracker = _wiring_env(tmp_path, monkeypatch, "attempted")
+    client = _FakeClient()
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {"tracker": tracker}, "ibo", "SinFermera9",
+        "Got an error while launching accounts.", _time.time(),
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    row = tracker.open_for_bot("bot_error", "SinFermera9")
+    assert row is not None
+    assert row["novel"] == 1                  # flagged for the overseer queue
+    assert row["fixable"] == 1                # ladder ran -> refix loop retries
+    assert row["fix_retries"] == 1            # inline attempt burned budget #1
+    assert client.sent                        # owner alerted
+    store.close(); tracker.close()
+
+
+def test_evaluate_bot_human_needed_no_budget_burn(tmp_path, monkeypatch):
+    mcp_watcher, cfg, store, tracker = _wiring_env(tmp_path, monkeypatch, "human_needed")
+    client = _FakeClient()
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {"tracker": tracker}, "ibo", "SinFermera9",
+        "Got an error while launching accounts.", _time.time(),
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    row = tracker.open_for_bot("bot_error", "SinFermera9")
+    assert row["novel"] == 1
+    assert row["fixable"] == 0                # never refix a human-needed error
+    assert row["fix_retries"] == 0            # no attempt burned
+    store.close(); tracker.close()
+
+
+def test_evaluate_bot_known_fix_not_flagged_novel(tmp_path, monkeypatch):
+    """Actions-off mislabel regression: an error WITH a learned fix must not be
+    flagged novel even when try_auto_fix produced no outcome."""
+    mcp_watcher, cfg, store, tracker = _wiring_env(tmp_path, monkeypatch, "attempted")
+    monkeypatch.setattr(mcp_watcher.learned_fixes, "find_fix",
+                        lambda *a, **k: {"signature": "known thing"})
+    client = _FakeClient()
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {"tracker": tracker}, "ibo", "SinFermera9",
+        "Got an error while launching accounts.", _time.time(),
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    row = tracker.open_for_bot("bot_error", "SinFermera9")
+    assert row is not None
+    assert row["novel"] == 0                  # known error: plain alert path
+    assert row["fix_retries"] == 0
+    store.close(); tracker.close()

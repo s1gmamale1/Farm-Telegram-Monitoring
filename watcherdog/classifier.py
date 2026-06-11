@@ -69,6 +69,22 @@ _STRONG_ERROR_PATTERNS = [
 _BENIGN_ERROR_RE = re.compile("|".join(_BENIGN_ERROR_PATTERNS), re.IGNORECASE)
 _STRONG_ERROR_RE = re.compile("|".join(_STRONG_ERROR_PATTERNS), re.IGNORECASE)
 
+# The ACCOUNT-LEVEL subset of the strong family — problems no panel restart can
+# fix (ban / suspension / captcha / verification / Steam Guard). Phase 4's
+# novel-error ladder never auto-presses on these; the rest of the strong family
+# (crash / stuck / timeout / disconnect) is exactly what a restart fixes.
+_HUMAN_PATTERNS = [
+    r"\bban(ned)?\b", r"\bblocked\b", r"\bsuspend", r"\bkick(ed)?\b",
+    r"\bcaptcha\b", r"\bverif(y|ication)\b", r"\b2fa\b", r"steam ?guard",
+]
+_HUMAN_RE = re.compile("|".join(_HUMAN_PATTERNS), re.IGNORECASE)
+
+
+def needs_human(text):
+    """True for the account-level error family a restart can't fix (ban /
+    suspension / captcha / Steam Guard) — these always go to the owner."""
+    return bool(_HUMAN_RE.search(text or ""))
+
 # Pull a "[SinFermera3]" style bot tag off the front of a message.
 _BOT_TAG_RE = re.compile(r"\[([^\]]{1,40})\]")
 

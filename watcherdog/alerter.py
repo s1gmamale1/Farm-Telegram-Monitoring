@@ -75,7 +75,11 @@ def format_novel_alert(bot_name, severity, analysis, raw_excerpt, recovery):
     else:
         return base
     msg = f"{base}\n\n{line}"
-    return msg[:4000]   # same Telegram safety cap as format_alert
+    if len(msg) > 4000:
+        # Trim the BASE, never the recovery line — it's the actionable part.
+        base = base[:4000 - len(line) - 3].rstrip() + "…"
+        msg = f"{base}\n\n{line}"
+    return msg
 
 
 def format_alert_oneline(bot_name, severity, analysis):
