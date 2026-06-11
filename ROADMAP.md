@@ -349,7 +349,11 @@ Spec: `docs/superpowers/specs/2026-06-11-deterministic-core-design.md`.
 
 ---
 
-## Phase 6 — Vision-on-demand via the overseer (optional)
+## Phase 6 — Vision-on-demand via the overseer (optional)  ✅ SHIPPED (PR #17, 2026-06-12) — **TRACK COMPLETE**
+
+**Shipped.** 9th overseer endpoint `screenshot(bot)` (fresh capture at diagnosis time — vision data pulled, never carried stale; roster-only, dry-run gated). Panel cold-cases (`_open_panel_incident`) now open `novel=True` and enter the overseer's `list_flagged` queue — the points where the core has exhausted text-based understanding. `farmed/N` stays a rendered `?` (standing condition, not an incident). With no overseer connected, behavior is byte-identical to before — the deterministic baseline holds. Spec `docs/superpowers/specs/2026-06-12-phase6-vision-on-demand-design.md`.
+
+**With this, ADR-001 is fully realized:** the core script is 100% AI-independent (zero model imports/calls on every runtime path — triage, reports, recovery, digest), and ALL AI affordances live behind the opt-in overseer surface. Building the actual Hermes overseer agent (the socket client with the chat + vision models) is a separate project.
 
 **Goal.** Screenshot-only signals (farmed/total, "can't launch" diagnosis) are resolved by the overseer's vision, with the core still AI-free.
 
