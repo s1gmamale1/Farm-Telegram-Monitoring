@@ -1240,9 +1240,16 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
         if act["kind"] == "refix" and deliver and ent is None:
             log.info("refix skipped for %s — not in watch roster", bot)
         if did_refix:
+            err_text = row["raw_excerpt"] or row["summary"]
             try:
-                outcome = await auto_fix.try_auto_fix(
-                    client, cfg, bot, row["raw_excerpt"] or row["summary"], chat=ent)
+                if row.get("novel"):
+                    # Phase 4: novel incidents re-run the generic ladder (no
+                    # learned fix exists for auto_fix to find).
+                    outcome = await novel_recovery.attempt(
+                        client, cfg, bot, err_text, chat=ent, deliver=deliver)
+                else:
+                    outcome = await auto_fix.try_auto_fix(
+                        client, cfg, bot, err_text, chat=ent)
             except Exception:  # noqa: BLE001
                 log.exception("incident re-fix raised for %s", bot)
                 outcome = None

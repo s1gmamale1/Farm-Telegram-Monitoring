@@ -128,3 +128,39 @@ def test_open_bot_incident_passes_novel_flag(tmp_path):
     row = t.open_for_bot("bot_error", "SF7")
     assert row["novel"] == 1 and row["fixable"] == 1
     t.close()
+
+
+def test_refix_tick_routes_novel_to_ladder(tmp_path, monkeypatch):
+    from watcherdog.incident_tracker import IncidentTracker
+    from watcherdog import mcp_watcher
+    t = IncidentTracker(str(tmp_path / "i.db"))
+    t.open("bot_error", "SF7", "bot_error:SF7", "high", "weird", fixable=True,
+           novel=True, raw_excerpt="weird novel text", now=0.0)
+    t.open("bot_error", "SF8", "bot_error:SF8", "high", "known", fixable=True,
+           raw_excerpt="known text", now=0.0)
+    calls = {"novel": [], "auto": []}
+
+    async def fake_attempt(client, cfg, bot, text, *, chat=None, deliver=True):
+        calls["novel"].append(bot)
+        return {"status": "attempted"}
+
+    async def fake_autofix(client, cfg, bot, text, *, chat=None):
+        calls["auto"].append(bot)
+        return {"status": "failed"}
+
+    async def fake_alert(*a, **k):
+        return True
+
+    monkeypatch.setattr(mcp_watcher.novel_recovery, "attempt", fake_attempt)
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", fake_autofix)
+    monkeypatch.setattr(mcp_watcher, "_alert", fake_alert)
+    monkeypatch.setattr(mcp_watcher, "_entity_for", lambda state, bot: object())
+
+    cfg = types.SimpleNamespace(incident_followup_interval=10,
+                                incident_giveup_seconds=10_000,
+                                incident_max_fix_retries=3)
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        object(), cfg, t, "target", {}, now=1000.0, deliver=True))
+    assert calls["novel"] == ["SF7"]
+    assert calls["auto"] == ["SF8"]
+    t.close()
