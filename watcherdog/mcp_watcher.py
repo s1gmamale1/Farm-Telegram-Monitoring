@@ -40,8 +40,8 @@ from telethon.utils import get_peer_id
 
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         daily_report, drop_stats, farm_stats, fast_commands,
-                        fleet_report, novel_recovery, panel_actions, panel_rules,
-                        roster, self_restart,
+                        fleet_report, learned_fixes, novel_recovery,
+                        panel_actions, panel_rules, roster, self_restart,
                         tg_actions, tg_tools)
 from watcherdog.alerter import (
     format_alert,
@@ -898,12 +898,17 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
             # No bot to post the card -> fall through to the novel-error path below.
         # status in (None, "failed", unposted needs_confirm) -> falls through below.
 
-    # Phase 4: a TRULY novel error (no learned mapping at all -> fix_status None)
-    # gets the deterministic generic-restart ladder — the old _incident_via_agent
-    # model path is gone in every mode. A KNOWN fix that failed (or an unposted
-    # confirm card) keeps the plain alert: re-driving a different destructive
-    # sequence on top of a learned fix would double-press the panel.
-    if fix_status is None:
+    # Phase 4: a TRULY novel error gets the deterministic generic-restart
+    # ladder — the old _incident_via_agent model path is gone in every mode.
+    # "Truly novel" = auto_fix produced no outcome AND no learned fix exists at
+    # all (the read-only lookup matters when actions are off / dry-run, where
+    # try_auto_fix never ran: a known error must not be mislabeled novel and
+    # pollute the overseer queue). A KNOWN fix that failed, has free-text-only
+    # steps, or an unposted confirm card keeps the plain alert: re-driving a
+    # different destructive sequence on top of a learned fix would double-press
+    # the panel.
+    if fix_status is None and learned_fixes.find_fix(
+            text, path=getattr(cfg, "learned_fixes_path", None)) is None:
         recovery = await novel_recovery.attempt(client, cfg, bot, text,
                                                 chat=ent, deliver=deliver)
         ok = await _alert(state, client, target,

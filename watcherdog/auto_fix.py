@@ -4,21 +4,24 @@ The whole point: handle errors WITHOUT calling the LLM whenever the brain
 already knows what to do. Every detected error hits :func:`try_auto_fix` first.
 It uses only stdlib + the existing deterministic pieces (``classify``,
 ``learned_fixes.find_fix``, ``tg_actions``) — no ``agent.answer``, so a known
-error costs **zero tokens**. Only genuinely novel errors fall through to the AI.
+error costs **zero tokens**. Genuinely novel errors fall through to the
+deterministic novel-error ladder (``novel_recovery``, Phase 4).
 
 Outcome contract — :func:`try_auto_fix` returns ``None`` to escalate, or a dict
 ``{"status": ...}`` the caller acts on:
 
   * ``suppressed`` — a known no-op (``action: ignore``); drop it silently.
   * ``fixed``      — executed the mapped panel actions; report what was done.
-  * ``failed``     — tried but a button press errored; escalate to the AI.
+  * ``failed``     — tried but a button press errored; the caller alerts and
+                    the incident follow-up loop may retry the learned fix.
   * ``human``      — a ``type: human`` fix; alert the owner, don't auto-act.
   * ``needs_confirm`` — a destructive fix not marked ``auto: yes``; escalate so
-                    the AI (or, later, a button card) can confirm.
+                    a one-tap confirm card can ask.
 
 ``None`` means "no learned mapping" (novel error, or a known fix with free-text
-steps but no executable ``action:``) — the caller escalates to the AI exactly
-once, which should ``save_fix`` with an ``action`` so next time is script-only.
+steps but no executable ``action:``) — the caller distinguishes the two with a
+read-only ``find_fix`` and either runs the Phase 4 ladder (truly novel) or
+plain-alerts (free-text fix a person must apply).
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ async def try_auto_fix(client, cfg, bot, text, *, chat=None):
 
     fix = learned_fixes.find_fix(text, path=getattr(cfg, "learned_fixes_path", None))
     if not fix:
-        return None  # novel error — escalate to the AI once
+        return None  # novel error — caller runs the Phase 4 ladder
 
     if learned_fixes.is_human_fix(fix):
         return {"status": "human", "fix": fix}
@@ -83,8 +86,8 @@ async def try_auto_fix(client, cfg, bot, text, *, chat=None):
 
     steps = parse_action(fix.get("action", ""))
     if not steps:
-        # Known fix but only free-text guidance — can't run it safely. Escalate
-        # so the AI applies it and saves an executable `action` for next time.
+        # Known fix but only free-text guidance — can't run it safely. The
+        # caller plain-alerts so a person applies it (and saves an `action`).
         return None
 
     destructive = any(tg_actions.is_destructive(s) for s in steps)
