@@ -40,7 +40,8 @@ from telethon.utils import get_peer_id
 
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         daily_report, drop_stats, farm_stats, fast_commands,
-                        panel_actions, panel_rules, roster, self_restart,
+                        fleet_report, panel_actions, panel_rules, roster,
+                        self_restart,
                         tg_actions, tg_tools)
 from watcherdog.alerter import (
     format_alert,
@@ -1125,6 +1126,22 @@ def register_ibo_listener(client, cfg, targets, system_prompt, state, deliver=Tr
                 reply = "⚠️ couldn't run that command."
             await _send(client, target, reply, deliver, cfg=cfg)
             return
+        # Report commands (/weekly /today /top /worst /value /check /compare /bans)
+        # are answered DETERMINISTICALLY from the weekly buffer + roster scan — no
+        # model, even when AI is enabled (Phase 2: OpenRouter dropped from reports).
+        report = commands.report_parse(text)
+        if report is not None:
+            try:
+                async with client.action(target, "typing"):
+                    reply = await fleet_report.handle(
+                        report[0], report[1], cfg=cfg, client=client,
+                        watch=state.get("watch") or [])
+            except Exception:  # noqa: BLE001
+                log.exception("ibo report command /%s failed", report[0])
+                reply = "⚠️ couldn't build that report."
+            if reply is not None:
+                await _send(client, target, reply, deliver, cfg=cfg)
+                return
         # Slash-command? Expand it into a rich, structured prompt for the agent
         # (e.g. /weekly, /problems, /check 5). Unknown commands fall through to
         # normal conversation so a stray "/" never gets swallowed.
@@ -1365,22 +1382,18 @@ def register_special_forces_listener(client, cfg, sf_entity, base_system_prompt,
 
 # --- auto weekly digest (read-only report to ibo) ---------------------------
 async def run_weekly_digest(client, cfg, target, system_prompt, state, deliver=True):
-    """Compile the /weekly report via the agent and send it to ibo. Read-only —
-    this does NOT stop farms (that's the Wednesday drop-stats job)."""
-    if cfg.disable_ai:
-        log.info("weekly digest skipped — DISABLE_AI=true.")
+    """Compile the deterministic /weekly report and send it to ibo. Read-only —
+    this does NOT stop farms (that's the Wednesday drop-stats job). No model
+    (Phase 2): always-on, free. `system_prompt` is accepted for caller
+    compatibility but unused."""
+    try:
+        fleet = await fleet_report.snapshot(client, cfg, state.get("watch") or [])
+        body = fleet_report.weekly(fleet)
+    except Exception:  # noqa: BLE001
+        log.exception("weekly digest failed to build; skipping this run")
         return
-    if not cfg.agent_api_key:
-        log.warning("weekly digest skipped — no agent API key configured.")
-        return
-    prompt = commands.expand("/weekly", cfg)
-    lock = state.get("agent_lock") or asyncio.Lock()
-    async with lock:
-        answer, _ = await agent.answer(
-            cfg, client, prompt, system_prompt=system_prompt,
-            history=None, execute=False)
-    await _alert(state, client, target, "🗓 Weekly digest\n\n" + (answer or ""), deliver, cfg=cfg)
-    log.info("sent weekly digest (%d chars)", len(answer or ""))
+    await _alert(state, client, target, "🗓 Weekly digest\n\n" + body, deliver, cfg=cfg)
+    log.info("sent weekly digest (%d chars, deterministic)", len(body or ""))
 
 
 async def _weekly_digest_loop(client, cfg, target, system_prompt, state, deliver=True):
