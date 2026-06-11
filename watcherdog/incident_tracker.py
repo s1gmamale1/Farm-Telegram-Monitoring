@@ -172,7 +172,7 @@ class IncidentTracker:
             return None
         self.conn.execute(
             "UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
-            "resolution = ? WHERE id = ?",
+            "resolution = ? WHERE id = ? AND status = 'open'",
             (now, resolution, row["id"]),
         )
         self.conn.commit()
@@ -296,6 +296,20 @@ class IncidentTracker:
             (now, incident_id),
         )
         self.conn.commit()
+
+    def resolve_by_id(self, incident_id, resolution, now=None):
+        """Resolve ONE open row by id (the overseer's resolve_flagged). Returns
+        True iff a row was actually closed; a resolved/unknown id is False."""
+        if self._dry_run:
+            return False
+        now = now if now is not None else time.time()
+        cur = self.conn.execute(
+            "UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
+            "resolution = ? WHERE id = ? AND status = 'open'",
+            (now, resolution, incident_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # --- queries ------------------------------------------------------------
     def open_list(self):
