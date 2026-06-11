@@ -148,7 +148,7 @@ def _has_data(e):
     return e.stats.drops is not None or e.stats.value_usd is not None
 
 
-def _no_data(fleet):
+def _no_data(_fleet=None):
     return ("🐕 No drop collection yet — send `drop stats` to pull this week's "
             "numbers now (it stops the farms briefly).")
 
