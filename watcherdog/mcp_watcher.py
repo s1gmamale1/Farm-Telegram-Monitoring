@@ -41,8 +41,8 @@ from telethon.utils import get_peer_id
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         daily_report, drop_stats, farm_stats, fast_commands,
                         fleet_report, learned_fixes, novel_recovery,
-                        panel_actions, panel_rules, roster, self_restart,
-                        tg_actions, tg_tools)
+                        overseer_api, panel_actions, panel_rules, roster,
+                        self_restart, tg_actions, tg_tools)
 from watcherdog.alerter import (
     format_alert,
     format_incident_escalated,
@@ -1762,6 +1762,9 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
         if cfg.incident_tracking_enabled and state.get("tracker") is not None:
             client.loop.create_task(_incident_followup_loop(
                 client, cfg, state["tracker"], ibos, state, deliver))
+        # Phase 5: opt-in overseer endpoint surface (local UNIX socket, no AI in-core).
+        if cfg.overseer_socket:
+            client.loop.create_task(overseer_api.serve(client, cfg, state, deliver))
         # Auto weekly digest: a /weekly report to all allowed users on Sunday evening.
         if cfg.weekly_digest_enabled:
             client.loop.create_task(
