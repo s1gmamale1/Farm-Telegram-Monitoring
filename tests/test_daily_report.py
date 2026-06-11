@@ -167,3 +167,10 @@ def test_build_report_cleared_false_has_no_footer(tmp_path):
     out = daily_report.build_report(str(p), cleared=False)
     assert out is not None
     assert "(file cleared)" not in out
+
+
+def test_record_none_path_never_raises():
+    """record(None, ...) honors the 'never raises' contract (no TypeError) and
+    still returns the entry (Phase 4 regression: novel_recovery relies on it)."""
+    entry = daily_report.record(None, panel="SF1", error="e", fix="f", result="ok")
+    assert entry["panel"] == "SF1" and entry["result"] == "ok"

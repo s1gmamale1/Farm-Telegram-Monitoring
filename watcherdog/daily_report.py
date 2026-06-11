@@ -46,6 +46,11 @@ def record(path, *, panel, error, fix, result="ok", ts=None):
         "fix": fix,
         "result": result,
     }
+    if not path:
+        # No log path configured: honor the "never raises" contract (a None
+        # path used to TypeError inside os.path.dirname) and still return the
+        # entry so the caller can report it.
+        return entry
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
