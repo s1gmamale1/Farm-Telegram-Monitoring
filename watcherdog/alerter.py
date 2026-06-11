@@ -57,6 +57,27 @@ def format_alert(bot_name, severity, analysis, raw_excerpt):
     return msg
 
 
+def format_novel_alert(bot_name, severity, analysis, raw_excerpt, recovery):
+    """``format_alert`` plus one deterministic-recovery line (Phase 4).
+
+    ``recovery`` is the ``novel_recovery.attempt`` outcome; ``skipped`` renders
+    the plain alert unchanged."""
+    base = format_alert(bot_name, severity, analysis, raw_excerpt)
+    status = (recovery or {}).get("status")
+    if status == "attempted":
+        line = ("🛠 Novel error — ran the generic restart "
+                "(kill all → relaunch); will verify next sweep.")
+    elif status == "failed":
+        step = (recovery or {}).get("failed_step", "?")
+        line = f"🛠 Novel error — generic restart FAILED at '{step}'. Needs you."
+    elif status == "human_needed":
+        line = "🚫 Novel error in the ban/captcha class — not auto-restarting. Needs you."
+    else:
+        return base
+    msg = f"{base}\n\n{line}"
+    return msg[:4000]   # same Telegram safety cap as format_alert
+
+
 def format_alert_oneline(bot_name, severity, analysis):
     """Single-line alert for GUI typing (newlines would send the message early)."""
     emoji = _SEVERITY_EMOJI.get(severity, "⚠️")
