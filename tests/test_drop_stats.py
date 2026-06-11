@@ -42,25 +42,48 @@ def test_panel_label(name, expected):
     assert drop_stats.panel_label(name) == expected
 
 
-# --- parse_drop_stats -------------------------------------------------------
+# --- _report_to_row (parser convergence: farm_stats.parse_drop_report) -------
 
-def test_parse_drop_stats_typical():
-    text = "Drops this week: 312\nItems: 18\nValue: $45.50"
-    parsed = drop_stats.parse_drop_stats(text)
-    assert parsed["drops"] == "312"
-    assert parsed["items"] == "18"
-    assert parsed["value"] == "45.50"
+_REAL_DROP_TEXT = """=-=-= FSM PANEL | DROP REPORT =-=-=
+
+Date: 10.06.2026 - 17.06.2026
+Accounts: 28
+
+Case                      | Amount | % of drops
+--------------------------+--------+-----------
+Sealed Genesis Terminal   | 8      | 28.6
+Revolution Case           | 5      | 17.9
+--------------------------+--------+-----------
+
+Skin (>0.6$)                        | Amount | Price $
+------------------------------------+--------+--------
+USP-S | Royal Guard (Minimal Wear)  | 1      | 4.76
+M4A1-S | Rose Hex (Minimal Wear)    | 1      | 0.6
+------------------------------------+--------+--------
+
+= Price of all drop: ~ 31.5$.
+= Total cases: 28 pcs.
+"""
 
 
-def test_parse_drop_stats_strips_commas_and_inverted_order():
-    parsed = drop_stats.parse_drop_stats("1,204 drops · worth $1,050")
-    assert parsed["drops"] == "1204"
-    assert parsed["value"] == "1050"
+def test_report_to_row_real_panel_correct_numbers():
+    # Regression: the OLD parser returned drops=31 (from the price) value=28 (from
+    # the account count). The new path must record cases=28, value=31.5, items=2.
+    row = drop_stats._report_to_row(_REAL_DROP_TEXT)
+    assert row["drops"] == 28
+    assert row["value"] == 31.5
+    assert row["items"] == 2          # 2 valuable skins pulled
+    assert row["notes"] == ""
 
 
-def test_parse_drop_stats_empty():
-    parsed = drop_stats.parse_drop_stats("")
-    assert parsed == {"drops": "", "items": "", "value": "", "notes": ""}
+def test_report_to_row_empty_text_is_blank():
+    row = drop_stats._report_to_row("")
+    assert row == {"drops": "", "items": "", "value": "", "notes": ""}
+
+
+def test_report_to_row_records_problems_in_notes():
+    row = drop_stats._report_to_row("DROP REPORT\nCan't get drop on 3 accounts")
+    assert "Can't get drop on 3 accounts" in row["notes"]
 
 
 # --- make_row ---------------------------------------------------------------
