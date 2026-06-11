@@ -275,3 +275,50 @@ def test_press_button_audit_keyed_on_result(tmp_path, monkeypatch):
     # the REAL pressed label; a failed press records nothing (no false "ok").
     assert records == [("SinFermera7", "pressed Kill All CS & Steam", "ok")]
     assert "error" in failed["result"]
+
+
+# --- Phase 6: screenshot endpoint ----------------------------------------------
+
+def test_screenshot_returns_download_path(tmp_path, monkeypatch):
+    async def fake_shot(client, ent, *, cfg=None, timeout=30.0):
+        return {"downloaded": "/tmp/sf7.jpg", "caption": "Screenshot"}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "screenshot", fake_shot)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "screenshot", {"bot": "SF7"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert resp["result"]["downloaded"] == "/tmp/sf7.jpg"
+
+
+def test_screenshot_dry_run_refuses(tmp_path, monkeypatch):
+    shots = []
+
+    async def fake_shot(*a, **k):
+        shots.append(a)
+        raise AssertionError("BUG: real screenshot press happened")
+
+    monkeypatch.setattr(overseer_api.tg_actions, "screenshot", fake_shot)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "screenshot", {"bot": "7"})
+
+    resp = _run_with_server(cfg, state, go, deliver=False)
+    assert "dry-run" in resp["error"]
+    assert shots == []               # the guard fired BEFORE any press
+
+
+def test_screenshot_unknown_bot(tmp_path):
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "screenshot", {"bot": "stranger99x"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert "unknown bot" in resp["error"]
