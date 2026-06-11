@@ -161,3 +161,44 @@ def test_weekly_top_bottom_no_overlap_with_five_bots():
     # SF3 is the middle bot — must NOT appear in both Top and Bottom (i.e. once total)
     assert out.count("SF3") == 1
     assert "SF1" in out and "SF5" in out      # top and bottom extremes present
+
+
+def test_check_one_bot_reports_status_and_drops():
+    fl = _fleet([_entry(3, 28, 31.5, text="[SinFermera3] warmup started")])
+    out = fleet_report.check(fl, 3)
+    assert "SF3" in out and "28 cases" in out and "$31.50" in out
+
+
+def test_check_unknown_bot():
+    fl = _fleet([_entry(3, 28, 31.5)])
+    assert "SF8" in fleet_report.check(fl, 8) and "not" in fleet_report.check(fl, 8).lower()
+
+
+def test_compare_two_bots_side_by_side():
+    fl = _fleet([_entry(3, 28, 31.5), _entry(7, 10, 4.0)])
+    out = fleet_report.compare(fl, 3, 7)
+    assert "SF3" in out and "SF7" in out
+    assert out.index("SF3") < out.index("SF7")
+
+
+def test_bans_lists_critical_bots_only():
+    fl = _fleet([
+        _entry(3, 28, 31.5, text="[SinFermera3] warmup started"),
+        _entry(7, 0, 0.0, status="🔴 needs attention",
+               text="[SinFermera7] account banned by VAC"),
+    ])
+    out = fleet_report.bans(fl)
+    assert "SF7" in out and "SF3" not in out
+
+
+def test_bans_none_clean_message():
+    fl = _fleet([_entry(3, 28, 31.5, text="[SinFermera3] warmup started")])
+    assert "no bans" in fleet_report.bans(fl).lower()
+
+
+def test_today_shows_live_status_and_week_drops():
+    fl = _fleet([_entry(3, 28, 31.5, status="✅ farming"),
+                 _entry(7, 10, 4.0, status="💀 dead", age=400.0)])
+    out = fleet_report.today(fl)
+    assert "1/2 farming" in out          # one farming of two
+    assert "38 cases" in out             # 28+10 this week so far
