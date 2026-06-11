@@ -15,10 +15,21 @@ One JSON object per line (ndjson), request → response:
 ← {"id": 1, "result": [...]}            (or {"id": 1, "error": "message"})
 ```
 
-Socket file is `0600` in a `0700` dir; request lines are capped at 64 KB.
-Every call is audit-logged. Under a dry run (`--dry-run`), `press_button`
-refuses and `run_ladder` returns `skipped` — the overseer can never press
-what the loop couldn't.
+The socket file is created `0600` (umask-guarded during bind, so there is no
+permissive window). Note: a pre-existing parent dir (e.g. `data/`) keeps its
+own permissions — protection rests on the socket file itself, so **setting
+`OVERSEER_TOKEN` is recommended** even though the surface is local-only.
+Request lines are capped at 64 KB. Every call is audit-logged, including
+unauthorized and unknown-method requests; confirmed destructive presses are
+additionally recorded to the daily fix log with the actually-pressed label.
+Under a dry run, `press_button` refuses and `run_ladder` returns `skipped` —
+the overseer can never press what the loop couldn't.
+
+Teaching policy: `teach_fix` rejects control characters in every field (the
+brain file is line-oriented), and refuses `auto: yes` combined with a
+destructive `action` — the overseer may teach a destructive fix, but the first
+recurrence goes through the existing confirm card so the owner keeps confirm
+authority. Teach destructive fixes with `auto: ""`.
 
 ## Endpoints
 

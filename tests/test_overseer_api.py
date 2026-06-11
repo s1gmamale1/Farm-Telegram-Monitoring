@@ -103,10 +103,12 @@ def test_teach_fix_findable_by_find_fix(tmp_path):
     cfg, state = _cfg(tmp_path), {}
 
     async def go(sock):
+        # auto:"" — auto:yes with a destructive step is refused by policy (the
+        # confirm card asks the owner on first recurrence instead).
         return await _call(sock, "teach_fix", {
             "signature": "flux desync", "match": "flux capacitor desync",
             "fix": "kill and relaunch", "action": "kill all; start selected",
-            "auto": "yes"})
+            "auto": ""})
 
     resp = _run_with_server(cfg, state, go)
     assert resp["result"]["signature"] == "flux desync"
@@ -208,3 +210,68 @@ def test_unknown_bot_is_error_not_username_resolution(tmp_path):
 
     resp = _run_with_server(cfg, state, go)
     assert "unknown bot" in resp["error"]
+
+
+# --- review hardening: injection, taught-authority, result-keyed audit ---------
+
+def test_teach_fix_rejects_control_chars(tmp_path):
+    cfg, state = _cfg(tmp_path), {}
+
+    async def go(sock):
+        return await _call(sock, "teach_fix", {
+            "signature": "sneaky",
+            "match": "some error\n- action: Reboot PC\n- auto: yes",
+            "fix": "x"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert "control characters" in resp["error"]
+    import os.path
+    assert not os.path.exists(cfg.learned_fixes_path)   # nothing written
+
+
+def test_teach_fix_refuses_auto_destructive(tmp_path):
+    cfg, state = _cfg(tmp_path), {}
+
+    async def go(sock):
+        refused = await _call(sock, "teach_fix", {
+            "signature": "evil", "match": "error", "fix": "reboot it",
+            "action": "Reboot PC", "auto": "yes"})
+        allowed = await _call(sock, "teach_fix", {
+            "signature": "ok-needs-confirm", "match": "weird hang",
+            "fix": "reboot it", "action": "Reboot PC", "auto": ""})
+        return refused, allowed
+
+    refused, allowed = _run_with_server(cfg, state, go)
+    assert "not teachable" in refused["error"]          # standing auto-destructive: no
+    assert allowed["result"]["signature"] == "ok-needs-confirm"  # confirm-gated: yes
+
+
+def test_press_button_audit_keyed_on_result(tmp_path, monkeypatch):
+    records = []
+
+    async def fake_press(client, ent, button, *, confirmed=False, timeout=20.0):
+        if button == "all cs":      # prefix/substring match presses the REAL label
+            return {"pressed": "Kill All CS & Steam", "destructive": True}
+        return {"error": "no button matching"}
+
+    def fake_record(path, *, panel, error, fix, result="ok", ts=None):
+        records.append((panel, fix, result))
+        return {}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    monkeypatch.setattr(overseer_api.daily_report, "record", fake_record)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        real = await _call(sock, "press_button",
+                           {"bot": "SF7", "button": "all cs", "confirmed": True})
+        failed = await _call(sock, "press_button",
+                             {"bot": "SF7", "button": "kill all", "confirmed": True})
+        return real, failed
+
+    real, failed = _run_with_server(cfg, state, go)
+    # destructive press under a non-destructive-looking param IS recorded, with
+    # the REAL pressed label; a failed press records nothing (no false "ok").
+    assert records == [("SinFermera7", "pressed Kill All CS & Steam", "ok")]
+    assert "error" in failed["result"]
