@@ -402,6 +402,12 @@ class Config:
         self.novel_recovery = get(
             "NOVEL_RECOVERY", "true").strip().lower() in ("1", "true", "yes")
 
+        # Phase 5: opt-in overseer endpoint surface (local UNIX socket). Unset
+        # (the default) = no socket, zero new surface. Token optional.
+        _ovsock = get("OVERSEER_SOCKET", "").strip()
+        self.overseer_socket = resolve_path(_ovsock) if _ovsock else ""
+        self.overseer_token = get("OVERSEER_TOKEN", "").strip()
+
         # --- Deterministic panel monitoring & recovery (panel_rules.py) -------
         self.panel_rules_enabled = get(
             "PANEL_RULES_ENABLED", "true").strip().lower() in ("1", "true", "yes")
