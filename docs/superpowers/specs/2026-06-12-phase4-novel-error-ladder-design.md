@@ -89,7 +89,11 @@ can forget it. `attempt` never raises (press errors → `failed`).
 
 **`_evaluate_bot` final branch (`mcp_watcher.py:930-940`).** Delete the
 `_incident_via_agent` call and the `(not cfg.disable_ai) and ...` condition.
-New flow when auto_fix yielded `None`/`failed`/unposted-confirm:
+The ladder fires ONLY when auto_fix found **no learned mapping at all**
+(`fix_status is None` — truly novel). A known fix that failed, or an unposted
+confirm card, keeps the existing plain-alert path: re-driving a different
+destructive sequence on top of a learned fix would double-press the panel and
+bypass the saved fix's confirm intent. New flow for the truly-novel case:
 
 ```python
 recovery = await novel_recovery.attempt(client, cfg, bot, text, chat=ent, deliver=deliver)
