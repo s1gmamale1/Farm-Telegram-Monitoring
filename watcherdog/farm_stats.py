@@ -172,3 +172,41 @@ def parse_status_event(text):
         if rx.search(text):
             return name
     return None
+
+
+@dataclass
+class BotStats:
+    bot: str | None = None
+    last_status: str | None = None       # parse_status_event(latest_text)
+    accounts_up: int | None = None       # len(record["accounts"])
+    accounts_total: int | None = None    # "Accounts: N" from the Drop Stats report (count IN the report; farmed/N total is image-only)
+    drops: int | None = None             # DropReport.total_cases
+    value_usd: float | None = None       # DropReport.value_usd
+    cases: list = field(default_factory=list)
+    skins: list = field(default_factory=list)
+    problems: list = field(default_factory=list)
+    data_source: str = "missing"         # "text" if any drop data parsed, else "missing"
+    needs_vision: bool = False           # farmed/total is image-only -> always True for now
+
+
+def parse_bot_stats(record):
+    """Combine a capture record into BotStats. Never raises; missing data stays None.
+    value_usd/drops come from the Drop Stats text; farmed/total is image-only so
+    needs_vision is always True (don't fabricate it)."""
+    record = record if isinstance(record, dict) else {}
+    s = BotStats(bot=record.get("panel"))
+    s.last_status = parse_status_event(record.get("latest_text"))
+    accts = record.get("accounts")
+    s.accounts_up = len(accts) if isinstance(accts, list) else None
+    stats = record.get("stats")
+    drop_text = stats.get("Drop Stats", "") if isinstance(stats, dict) else ""
+    rep = parse_drop_report(drop_text)
+    s.drops = rep.total_cases
+    s.value_usd = rep.value_usd
+    s.accounts_total = rep.accounts
+    s.cases = rep.cases
+    s.skins = rep.skins
+    s.problems = list(rep.problems)
+    s.data_source = "text" if (rep.value_usd is not None or rep.total_cases is not None) else "missing"
+    s.needs_vision = True
+    return s

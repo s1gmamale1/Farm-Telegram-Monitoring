@@ -131,3 +131,59 @@ def test_parse_status_event_unknown_is_none():
     assert farm_stats.parse_status_event("[SinFermera2] something totally novel") is None
     assert farm_stats.parse_status_event("") is None
     assert farm_stats.parse_status_event(None) is None
+
+
+def _record(**kw):
+    base = {"panel": "SinFermera7", "latest_text": "[SinFermera7] Warmup started.",
+            "accounts": ["a", "b", "c", "d"], "stats": {"Drop Stats": ""}}
+    base.update(kw); return base
+
+
+def test_parse_bot_stats_from_full_record():
+    rec = _record(panel="SinFermera10", latest_text="[SinFermera10] Match ended with score 8:8",
+                  accounts=["a","b","c","d"], stats={"Drop Stats": FULL_REPORT})
+    s = farm_stats.parse_bot_stats(rec)
+    assert s.bot == "SinFermera10"
+    assert s.last_status == "match_ended"
+    assert s.accounts_up == 4
+    assert s.value_usd == 31.5
+    assert s.drops == 28
+    assert s.needs_vision is True
+    assert s.data_source == "text"
+
+
+def test_parse_bot_stats_no_drop_data_marks_missing():
+    rec = _record(stats={"Drop Stats": "[SinFermera7] Warmup started."})  # echo, no report
+    s = farm_stats.parse_bot_stats(rec)
+    assert s.value_usd is None and s.drops is None
+    assert s.data_source == "missing"
+    assert s.needs_vision is True
+
+
+def test_parse_bot_stats_cant_get_drop_surfaces_problem():
+    rec = _record(stats={"Drop Stats": CANT_GET})
+    s = farm_stats.parse_bot_stats(rec)
+    assert s.problems and "Can't get drop" in s.problems[0]
+
+
+def test_parse_bot_stats_never_raises_on_garbage():
+    s = farm_stats.parse_bot_stats({"panel": "X"})         # missing keys
+    assert s.bot == "X" and s.value_usd is None and s.accounts_up in (0, None)
+    s2 = farm_stats.parse_bot_stats({})                    # empty
+    assert s2.bot is None
+    s3 = farm_stats.parse_bot_stats(None)                  # None
+    assert s3.bot is None
+
+
+def test_parse_bot_stats_non_dict_stats_does_not_raise():
+    for bad in ["notadict", 123, ["Drop Stats", "x"], True]:
+        s = farm_stats.parse_bot_stats({"panel": "P", "stats": bad})
+        assert s.value_usd is None and s.drops is None      # no crash, no data
+
+
+def test_parse_bot_stats_carries_accounts_total_from_report():
+    rec = {"panel": "P", "latest_text": "[P] Warmup started.", "accounts": ["a","b"],
+           "stats": {"Drop Stats": FULL_REPORT}}
+    s = farm_stats.parse_bot_stats(rec)
+    assert s.accounts_total == 28        # "Accounts: 28" in the report
+    assert s.accounts_up == 2            # roster len (live accounts), distinct from report total
