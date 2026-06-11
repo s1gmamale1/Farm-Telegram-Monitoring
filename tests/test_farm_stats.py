@@ -112,6 +112,32 @@ def test_parse_drop_report_echo_or_empty_is_all_none():
         assert r.cases == [] and r.skins == [] and r.problems == []
 
 
+def test_parse_drop_report_multidot_price_does_not_raise():
+    junk = "=-=-= DROP REPORT =-=-=\n➙ Price of all drop: ~ 12.5.5$.\n➙ Total cases: 3 pcs.\n"
+    r = farm_stats.parse_drop_report(junk)      # must NOT raise
+    assert r.value_usd is None                  # unparseable price -> None, not a crash
+    assert r.total_cases == 3
+
+
+def test_parse_drop_report_malformed_skin_price_does_not_raise():
+    rep = ("=-=-= DROP REPORT =-=-=\n\n"
+           "Skin (>0.6$)        | Amount | Price $\n"
+           "--------------------+--------+--------\n"
+           "AK-47 | Redline     | 1      | 9.9.9\n"          # malformed price
+           "--------------------+--------+--------\n"
+           "➙ Price of all drop: ~ 5.0$.\n➙ Total cases: 1 pcs.\n")
+    r = farm_stats.parse_drop_report(rep)       # must NOT raise
+    assert r.value_usd == 5.0
+    # the malformed-price skin row is kept with price None (no crash)
+    assert any(s.price is None for s in r.skins) or r.skins == []
+
+
+def test_parse_bot_stats_multidot_price_does_not_raise():
+    rec = {"panel": "P", "stats": {"Drop Stats": "DROP REPORT\nPrice of all drop: ~12.5.5$.\nTotal cases: 2 pcs.\n"}}
+    s = farm_stats.parse_bot_stats(rec)         # must NOT raise
+    assert s.value_usd is None and s.drops == 2
+
+
 @pytest.mark.parametrize("text,event", [
     ("[SinFermera7] Warmup started.", "warmup"),
     ("[SinFermera8] Match ended with score 8:8", "match_ended"),
