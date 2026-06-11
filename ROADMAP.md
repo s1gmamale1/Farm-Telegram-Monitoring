@@ -297,7 +297,9 @@ Spec: `docs/superpowers/specs/2026-06-11-deterministic-core-design.md`.
 
 ---
 
-## Phase 4 — Deterministic novel-error handling (drop OpenRouter from the runtime path)
+## Phase 4 — Deterministic novel-error handling (drop OpenRouter from the runtime path)  ✅ SHIPPED (PR #15, 2026-06-12)
+
+**Shipped.** `watcherdog/novel_recovery.py`: truly-novel errors (no learned fix, confirmed by a read-only `find_fix`) auto-run the panel-trusted generic restart (`kill_all → select_unfarmed → start_selected`); the account-level family (`classifier.needs_human`: ban/captcha/Steam Guard) is never pressed — immediate "needs you". Incidents flagged `novel=1` on IncidentTracker (in-place DB migration; `novel_list()` = the Phase 5 overseer queue); attempt 1 burns the existing `incident_max_fix_retries` budget inline and the refix loop paces attempts 2..N, then nag→give-up escalation unchanged. **`_incident_via_agent` deleted — `agent.answer` is unreachable from the monitor loop in any mode.** One new key: `NOVEL_RECOVERY` (default on). Spec `docs/superpowers/specs/2026-06-12-phase4-novel-error-ladder-design.md`. Two-round review caught a design-fidelity bug (over-broad `severity_of` gate would have exempted crash/stuck/timeout — the ladder's whole target class) before merge.
 
 **Goal.** A router miss never calls a model; it produces a deterministic human alert plus a one-tap recovery action card, and can still be *taught* a runnable fix.
 

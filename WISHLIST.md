@@ -21,6 +21,8 @@ Ideas and known gaps, roughly prioritized. Done items are checked.
 _All current high-priority items are done — see the Done section above._
 
 ## Medium
+- [ ] `classifier.needs_human` vocabulary gaps (Phase 4 review, non-blocking): "account locked", "invalid password"/"login fail", "logged in from another location", "trade hold" aren't in the account-level family — a miss just burns the bounded ladder budget then escalates, but the phrases belong there.
+- [ ] Duplicate `learned_fixes.find_fix` read on the novel path when actions are ON (try_auto_fix already looked it up ms earlier) — harmless (once per new error hash), could thread the result through.
 - [ ] Cache Ollama verdicts for unchanged "unknown" messages to cut model calls.
 - [ ] Per-bot dashboard / summary command (`hermes`-style) of current status of all 24.
 - [ ] Configurable bot roster + per-bot expected cadence.
