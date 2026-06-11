@@ -337,9 +337,12 @@ async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
         if not text.strip():
             parsed["notes"] = "no reply"
         rows.append(make_row(week, panel, parsed, date=date))
-        log.info("%s: cases=%s items=%s value=%s",
-                 panel, parsed["drops"] or "?", parsed["items"] or "?",
-                 parsed["value"] or "?")
+        # Only a genuinely-unread "" renders "?"; a real 0 (e.g. cases=0 or the
+        # usual items=0 with no ≥$0.6 skins) must show as 0, not "?".
+        _shown = lambda v: "?" if v == "" else v  # noqa: E731
+        log.info("%s: cases=%s items=%s value=%s", panel,
+                 _shown(parsed["drops"]), _shown(parsed["items"]),
+                 _shown(parsed["value"]))
     return rows
 
 
