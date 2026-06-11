@@ -252,6 +252,25 @@ def parse(text):
     return s
 
 
+# Report commands answered DETERMINISTICALLY from the weekly buffer + roster scan
+# by watcherdog/fleet_report.py (Phase 2) — NO model. These names are also in
+# MENU (so /help lists them), but the dispatcher routes them to fleet_report
+# before the model branch.
+REPORT_NAMES = {"weekly", "today", "top", "worst", "value", "check", "compare", "bans"}
+
+
+def report_parse(text):
+    """Return ``(canonical_cmd, args)`` if ``text`` is a deterministic report
+    command (resolving ALIASES, e.g. /drops -> today), else None."""
+    s = _split(text)
+    if not s:
+        return None
+    cmd = ALIASES.get(s[0], s[0])
+    if cmd not in REPORT_NAMES:
+        return None
+    return cmd, s[1]
+
+
 def expand(text, cfg=None):
     """Expand a farm slash-command into an agent prompt. Returns None if ``text``
     is not a recognized command (caller falls back to normal handling)."""

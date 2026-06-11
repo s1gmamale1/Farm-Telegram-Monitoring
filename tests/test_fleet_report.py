@@ -202,3 +202,34 @@ def test_today_shows_live_status_and_week_drops():
     out = fleet_report.today(fl)
     assert "1/2 farming" in out          # one farming of two
     assert "38 cases" in out             # 28+10 this week so far
+
+
+def test_handle_routes_weekly(monkeypatch):
+    fl = _fleet([_entry(3, 28, 31.5)])
+
+    async def fake_snapshot(client, cfg, watch):
+        return fl
+
+    monkeypatch.setattr(fleet_report, "snapshot", fake_snapshot)
+    out = asyncio.run(fleet_report.handle("weekly", "", cfg=_cfg(), client=_FakeClient(), watch=[]))
+    assert "Weekly drops" in out
+
+
+def test_handle_check_parses_bot_number(monkeypatch):
+    fl = _fleet([_entry(5, 12, 6.0)])
+
+    async def fake_snapshot(client, cfg, watch):
+        return fl
+
+    monkeypatch.setattr(fleet_report, "snapshot", fake_snapshot)
+    out = asyncio.run(fleet_report.handle("check", "5", cfg=_cfg(), client=_FakeClient(), watch=[]))
+    assert "SF5" in out
+
+
+def test_handle_unknown_cmd_returns_none(monkeypatch):
+    async def fake_snapshot(client, cfg, watch):
+        return _fleet([])
+
+    monkeypatch.setattr(fleet_report, "snapshot", fake_snapshot)
+    out = asyncio.run(fleet_report.handle("whatsnew", "", cfg=_cfg(), client=_FakeClient(), watch=[]))
+    assert out is None
