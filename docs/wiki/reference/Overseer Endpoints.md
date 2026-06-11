@@ -43,6 +43,7 @@ authority. Teach destructive fixes with `auto: ""`.
 | `get_stats` | — | `fleet_report.snapshot` | the fleet (per-bot status, drops, value) |
 | `resolve_flagged` | `id`, `resolution` | `IncidentTracker.resolve_by_id` | `{"resolved": true|false}` (false = already closed/unknown) |
 | `teach_fix` | `signature`, `match`, `fix`, `action=""`, `auto=""`, `type="ai"` | `learned_fixes.append_fix` (added_by `overseer`, dated) | the written fix block |
+| `screenshot` | `bot` | `tg_actions.screenshot` (presses the panel's Screenshot button, downloads the image) | `{"downloaded": <host-local path>, "caption": ...}`; refused under dry-run |
 
 `bot` resolves against the **watch roster only** (exact name, case-insensitive,
 or bot number — `"SF7"`/`"7"`/`"SinFermera7"`); anything else is an error. A
@@ -52,6 +53,20 @@ raw Telegram username is never resolved.
 
 `list_flagged` → `read_bot` (investigate) → `press_button`/`run_ladder` (fix)
 → `teach_fix` (so next time is script-only) → `resolve_flagged`.
+
+## The vision loop (Phase 6)
+
+Panel cold-cases ("needs PC" / can't-launch episodes — the points where the
+core has exhausted text-based understanding) are flagged `novel=1`, so they
+appear in `list_flagged` alongside novel bot errors. The overseer then calls
+`screenshot(bot)` for a FRESH capture (stale images are useless — vision data
+is pulled at diagnosis time, not carried on the incident), reads the image
+with its own vision model (outside this repo — the core never gains an image
+dependency), and acts via `press_button` / `resolve_flagged` / `teach_fix`.
+The image-only `farmed/N` total stays a `?` in reports (`get_stats` exposes
+`needs_vision`); it is a standing condition, not an incident. With no overseer
+connected, cold-cases remain nagged human alerts — the deterministic baseline
+is unchanged.
 
 ## Reference client
 
