@@ -29,7 +29,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from watcherdog import drop_sheets, tg_tools
+from watcherdog import drop_sheets, farm_stats, tg_tools
 
 log = logging.getLogger("watcherdog.drop_stats")
 
@@ -67,29 +67,21 @@ def panel_label(name):
     return f"Panel#{m.group(1)}" if m else (name.strip() if name else "Panel#?")
 
 
-def parse_drop_stats(text):
-    """Best-effort pull of (drops, items, value, notes) from a panel's reply.
-
-    The control bots' exact wording isn't fixed, so each field is matched
-    leniently and missing ones come back as ``""``. Returns a dict keyed for
-    :data:`watcherdog.drop_sheets.COLUMNS`.
-    """
-    text = (text or "").strip()
-
-    def _first(*patterns):
-        for pat in patterns:
-            m = re.search(pat, text, re.I)
-            if m:
-                return m.group(1).replace(",", "")
-        return ""
-
-    # "1,204 drops" (number right before the word) is the most reliable form, so
-    # try it before "Drops this week: 312" (number after, allowing a small gap).
-    drops = _first(r"(\d[\d,]*)[ \t]*drops?", r"drops?\D{0,20}(\d[\d,]*)")
-    items = _first(r"(\d[\d,]*)[ \t]*items?", r"items?\D{0,20}(\d[\d,]*)")
-    value = _first(r"(?:value|worth|total)\D{0,20}\$?\s*(\d[\d,]*\.?\d*)",
-                   r"\$\s*(\d[\d,]*\.?\d*)")
-    return {"drops": drops, "items": items, "value": value, "notes": ""}
+def _report_to_row(text):
+    """Parse a panel's Drop Stats reply into the sheet-column fields, via the
+    Phase 1 farm_stats parser. Empty/echo text -> all-blank (so format_report and
+    the Sheets push show nothing rather than a fabricated 0). Never raises."""
+    rep = farm_stats.parse_drop_report(text)
+    has = (rep.total_cases is not None or rep.value_usd is not None
+           or rep.accounts is not None)
+    if not has and not rep.problems:
+        return {"drops": "", "items": "", "value": "", "notes": ""}
+    return {
+        "drops": rep.total_cases if rep.total_cases is not None else "",
+        "items": len(rep.skins),
+        "value": rep.value_usd if rep.value_usd is not None else "",
+        "notes": "; ".join(rep.problems),
+    }
 
 
 def make_row(week, panel, parsed, *, date=None):
@@ -324,7 +316,7 @@ async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
         text = ""
         if not deliver:
             log.info("[DRY-RUN] %s: would stop farm -> drop stats -> activity booster", panel)
-            parsed = parse_drop_stats("")
+            parsed = _report_to_row("")
             parsed["notes"] = "dry-run"
             rows.append(make_row(week, panel, parsed, date=date))
             continue
@@ -341,11 +333,11 @@ async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
             await run_activity_booster(client, ent)
         except Exception as exc:  # noqa: BLE001
             log.warning("%s: activity booster failed: %s", panel, exc)
-        parsed = parse_drop_stats(text)
+        parsed = _report_to_row(text)
         if not text.strip():
             parsed["notes"] = "no reply"
         rows.append(make_row(week, panel, parsed, date=date))
-        log.info("%s: drops=%s items=%s value=%s",
+        log.info("%s: cases=%s items=%s value=%s",
                  panel, parsed["drops"] or "?", parsed["items"] or "?",
                  parsed["value"] or "?")
     return rows
