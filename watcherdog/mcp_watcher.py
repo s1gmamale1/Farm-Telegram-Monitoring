@@ -895,8 +895,8 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
                 store.record(bot, severity, analysis, h, text, notified=True, ts=now)
                 log.info("CONFIRM-CARD %s (%s) — buttons posted, no AI", bot, severity)
                 return
-            # No bot to post the card -> fall through to the AI to ask.
-        # status in (None, "failed", unposted needs_confirm) -> fall through to the AI.
+            # No bot to post the card -> fall through to the novel-error path below.
+        # status in (None, "failed", unposted needs_confirm) -> falls through below.
 
     # Phase 4: a TRULY novel error (no learned mapping at all -> fix_status None)
     # gets the deterministic generic-restart ladder — the old _incident_via_agent
