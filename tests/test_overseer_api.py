@@ -161,9 +161,12 @@ def test_press_button_destructive_requires_confirmed(tmp_path, monkeypatch):
 
 
 def test_press_button_dry_run_refuses(tmp_path, monkeypatch):
-    async def fake_press(*a, **k):
-        raise AssertionError("dry-run must not press")
+    pressed = []
 
+    async def fake_press(*a, **k):
+        pressed.append(a)            # message must NOT contain 'dry-run', so the
+        raise AssertionError("BUG: real press happened")   # guard's own message is
+                                                           # the only way to pass
     monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
     cfg = _cfg(tmp_path)
     state = {"watch": [("SinFermera7", object())]}
@@ -174,6 +177,7 @@ def test_press_button_dry_run_refuses(tmp_path, monkeypatch):
 
     resp = _run_with_server(cfg, state, go, deliver=False)
     assert "dry-run" in resp["error"]
+    assert pressed == []             # the guard fired BEFORE any press
 
 
 def test_run_ladder_honors_attempt_gates(tmp_path, monkeypatch):
