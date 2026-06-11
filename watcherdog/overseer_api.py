@@ -59,16 +59,43 @@ async def _h_resolve_flagged(ctx, params):
     return {"resolved": bool(ok)}
 
 
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_AUTO_YES = {"1", "true", "yes", "y", "on"}
+
+
+def _split_steps(action):
+    text = (action or "")
+    for arrow in ("->", "→", "\n"):
+        text = text.replace(arrow, ";")
+    return [s.strip() for s in text.split(";") if s.strip()]
+
+
 async def _h_teach_fix(ctx, params):
     for req in ("signature", "match", "fix"):
         if not (params.get(req) or "").strip():
             raise ValueError(f"missing required param: {req}")
+    # Boundary validation: JSON carries \n freely, and a newline inside any
+    # field would inject extra "- key: value" lines (or whole "## blocks") into
+    # the brain file — corrupting the format and bypassing the policy below.
+    for key in ("signature", "match", "fix", "action", "auto", "type"):
+        if _CTRL_RE.search(str(params.get(key) or "")):
+            raise ValueError(f"control characters not allowed in {key!r}")
+    # Policy: the overseer may TEACH destructive fixes but not mint standing
+    # auto-destructive authority — auto:yes + a destructive step is refused.
+    # Teach it with auto:"" instead; the first recurrence then goes through
+    # auto_fix's existing needs_confirm card (the owner keeps confirm power).
+    action, auto = params.get("action", ""), params.get("auto", "")
+    if (auto or "").strip().lower() in _AUTO_YES and any(
+            tg_actions.is_destructive(s) for s in _split_steps(action)):
+        raise ValueError("auto:yes with a destructive action is not teachable "
+                         "over this surface — teach it without auto, the "
+                         "confirm card asks the owner on first recurrence")
     return learned_fixes.append_fix(
         getattr(ctx["cfg"], "learned_fixes_path", None),
         signature=params["signature"], match=params["match"], fix=params["fix"],
         type=params.get("type", "ai"), added_by="overseer",
         date=datetime.now().date().isoformat(),
-        action=params.get("action", ""), auto=params.get("auto", ""))
+        action=action, auto=auto)
 
 
 async def _h_read_bot(ctx, params):
@@ -96,10 +123,13 @@ async def _h_press_button(ctx, params):
     confirmed = bool(params.get("confirmed", False))
     res = await tg_actions.press_button(ctx["client"], ent, button,
                                         confirmed=confirmed)
-    if confirmed and tg_actions.is_destructive(button):
+    # Audit keyed on the RESULT, not the raw param: press_button matches labels
+    # by prefix/substring, so the param may understate what was pressed (or the
+    # press may have failed entirely — no false "ok" records).
+    if isinstance(res, dict) and res.get("pressed") and res.get("destructive"):
         daily_report.record(getattr(ctx["cfg"], "daily_errors_path", None),
                             panel=name, error="overseer action",
-                            fix=f"pressed {button}", result="ok")
+                            fix=f"pressed {res['pressed']}", result="ok")
     return res
 
 
@@ -135,7 +165,9 @@ def _authorized(ctx, req):
     if not token:
         return True
     got = str(req.get("token") or "")
-    return hmac.compare_digest(got, token)
+    # bytes compare: the str form raises TypeError on non-ASCII input (which
+    # would kill the connection task — or brick auth for a non-ASCII token).
+    return hmac.compare_digest(got.encode("utf-8"), token.encode("utf-8"))
 
 
 async def _dispatch(ctx, line):
@@ -146,11 +178,13 @@ async def _dispatch(ctx, line):
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as exc:
         return {"id": None, "error": f"bad request: {exc}"}
     rid = req.get("id")
-    if not _authorized(ctx, req):
-        return {"id": rid, "error": "unauthorized"}
     method = req.get("method")
+    if not _authorized(ctx, req):
+        logger.warning("OVERSEER unauthorized request (method=%s)", method)
+        return {"id": rid, "error": "unauthorized"}
     handler = _HANDLERS.get(method)
     if handler is None:
+        logger.warning("OVERSEER unknown method: %r", method)
         return {"id": rid, "error": f"unknown method: {method!r}"}
     try:
         result = await handler(ctx, req.get("params") or {})
@@ -188,14 +222,21 @@ async def _handle_conn(ctx, reader, writer):
 async def start(*, client, cfg, state, deliver=True):
     """Bind the socket and return the asyncio server (caller owns lifetime)."""
     sock = cfg.overseer_socket
-    os.makedirs(os.path.dirname(sock) or ".", mode=0o700, exist_ok=True)
+    sockdir = os.path.dirname(sock) or "."
+    os.makedirs(sockdir, mode=0o700, exist_ok=True)
     try:
         os.unlink(sock)              # stale socket from a crash
     except FileNotFoundError:
         pass
     ctx = {"client": client, "cfg": cfg, "state": state, "deliver": deliver}
-    server = await asyncio.start_unix_server(
-        lambda r, w: _handle_conn(ctx, r, w), path=sock, limit=_MAX_LINE)
+    # umask during bind kills the perms race (makedirs mode does NOT tighten a
+    # pre-existing dir — e.g. data/ — so the socket file perms must stand alone).
+    old_umask = os.umask(0o177)
+    try:
+        server = await asyncio.start_unix_server(
+            lambda r, w: _handle_conn(ctx, r, w), path=sock, limit=_MAX_LINE)
+    finally:
+        os.umask(old_umask)
     os.chmod(sock, 0o600)
     logger.info("overseer endpoint surface listening on %s (token %s)",
                 sock, "required" if getattr(cfg, "overseer_token", "") else "off")
