@@ -214,3 +214,73 @@ def worst(fleet, n=5):
         lines.append(_line(e) + flag)
     lines.append(_footer(fleet))
     return "\n".join(lines)
+
+
+def _find(fleet, num):
+    for e in fleet.entries:
+        if e.num == num:
+            return e
+    return None
+
+
+def _age_label(age_min):
+    if age_min is None or age_min >= 100000:
+        return "?"
+    if age_min < 90:
+        return f"{age_min:.0f}m"
+    h, m = divmod(int(age_min), 60)
+    return f"{h}h{m:02d}m"
+
+
+def _detail(e):
+    drops = e.stats.drops if e.stats.drops is not None else "?"
+    head = (f"{_sf(e)} ({e.pc}) — {e.status}, last seen {_age_label(e.age_min)}\n"
+            f"  drops: {drops} cases · ~{_money(e.stats.value_usd)}")
+    if e.stats.last_status:
+        head += f"\n  latest: {e.stats.last_status}"
+    return head
+
+
+def check(fleet, num):
+    e = _find(fleet, num)
+    if e is None:
+        return f"🔬 SF{num} is not in the roster right now."
+    return "🔬 " + _detail(e) + "\n" + _footer(fleet)
+
+
+def compare(fleet, a, b):
+    ea, eb = _find(fleet, a), _find(fleet, b)
+    missing = [f"SF{n}" for n, e in ((a, ea), (b, eb)) if e is None]
+    if missing:
+        return f"⚖️ Can't compare — not in the roster: {', '.join(missing)}."
+    return ("⚖️ Compare\n" + _detail(ea) + "\n\n" + _detail(eb) + "\n" + _footer(fleet))
+
+
+def bans(fleet):
+    """Bots whose latest message is a critical signal (ban / captcha / Steam-Guard
+    / crash family) per the classifier. Pure — reads each entry's stored text."""
+    hot = [e for e in fleet.entries if severity_of(e.last_text) == "critical"]
+    if not hot:
+        return "✅ No bans / captcha / Steam-Guard prompts right now."
+    lines = [f"🚫 Critical — {len(hot)} bot(s):"]
+    for e in sorted(hot, key=lambda e: e.num):
+        lines.append(f"• {_sf(e)} ({e.pc}) — {summarize(e.last_text)}")
+    return "\n".join(lines)
+
+
+def today(fleet):
+    n = len(fleet.entries)
+    farming = sum(1 for e in fleet.entries if e.status.startswith("✅"))
+    haves = [e for e in fleet.entries if _has_data(e)]
+    cases = sum((e.stats.drops or 0) for e in haves)
+    val = sum((e.stats.value_usd or 0.0) for e in haves)
+    lines = [f"📅 Today — {farming}/{n} farming"]
+    bad = [e for e in fleet.entries if not e.status.startswith("✅")]
+    for e in sorted(bad, key=lambda e: e.num):
+        lines.append(f"{roster.status_emoji(e.status)} {_sf(e)} "
+                     f"({e.pc}, {_age_label(e.age_min)})")
+    if haves:
+        lines.append(f"This week so far: {cases} cases · ~{_money(val)} {_footer(fleet)}")
+    else:
+        lines.append("No drop collection yet this week.")
+    return "\n".join(lines)
