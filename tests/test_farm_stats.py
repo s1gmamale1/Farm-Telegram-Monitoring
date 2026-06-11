@@ -1,3 +1,5 @@
+import pytest
+
 from watcherdog import farm_stats
 
 REAL = """📟 FSM Panel - Main menu 📟
@@ -108,3 +110,24 @@ def test_parse_drop_report_echo_or_empty_is_all_none():
         r = farm_stats.parse_drop_report(junk)
         assert r.value_usd is None and r.total_cases is None
         assert r.cases == [] and r.skins == [] and r.problems == []
+
+
+@pytest.mark.parametrize("text,event", [
+    ("[SinFermera7] Warmup started.", "warmup"),
+    ("[SinFermera8] Match ended with score 8:8", "match_ended"),
+    ("[SinFermera13] Match cancelled! Restarting lobby in 50 sec.", "match_cancelled"),
+    ("[SinFermera16] Starting lobby creation in 60 sec.", "lobby_creating"),
+    ("[SinFermera1] All 0 accounts launched!", "launched"),
+    ("[SinFermera18] lilbucket_bruh crashed and restarted successfully!", "crash_recovered"),
+    ("[SinFermera15] Got an error while launching accounts.", "launch_error"),
+    ("[SinFarmera5] Match ended with score 8:8", "match_ended"),   # tag typo tolerated
+    ("[SInFermera15] Warmup started.", "warmup"),                  # odd casing tolerated
+])
+def test_parse_status_event_vocabulary(text, event):
+    assert farm_stats.parse_status_event(text) == event
+
+
+def test_parse_status_event_unknown_is_none():
+    assert farm_stats.parse_status_event("[SinFermera2] something totally novel") is None
+    assert farm_stats.parse_status_event("") is None
+    assert farm_stats.parse_status_event(None) is None
