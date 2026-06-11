@@ -430,3 +430,13 @@ def test_open_novel_flag_and_novel_list(tmp_path):
     assert novel[0]["novel"] == 1
     assert t.open_for_bot("bot_error", "SF8")["novel"] == 0
     t.close()
+
+
+def test_resolve_by_id_only_open_rows(tmp_path):
+    t = IncidentTracker(str(tmp_path / "i.db"))
+    row = t.open("bot_error", "SF7", "bot_error:SF7", "high", "weird",
+                 fixable=True, novel=True, now=100.0)
+    assert t.resolve_by_id(row["id"], "overseer_fixed", now=200.0) is True
+    assert t.open_for_bot("bot_error", "SF7") is None          # closed
+    assert t.resolve_by_id(row["id"], "again", now=300.0) is False  # already resolved
+    t.close()
