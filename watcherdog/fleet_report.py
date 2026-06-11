@@ -174,9 +174,10 @@ def weekly(fleet):
              f"~{_money(val)} ({len(haves)} bots reporting)"]
     lines.append("🏆 Top:")
     lines += [_line(e) for e in ranked[:3]]
-    if len(ranked) > 3:
+    bottom = ranked[3:][-3:]
+    if bottom:
         lines.append("🐌 Bottom:")
-        lines += [_line(e) for e in ranked[-3:]]
+        lines += [_line(e) for e in bottom]
     lines.append(_footer(fleet))
     return "\n".join(lines)
 
