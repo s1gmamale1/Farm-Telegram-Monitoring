@@ -396,6 +396,12 @@ class Config:
         self.agent_actions_enabled = get(
             "AGENT_ACTIONS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 
+        # Phase 4: deterministic generic-restart ladder for NOVEL errors (errors
+        # with no learned fix). On by default; the critical (ban/captcha) family
+        # is always exempt regardless of this flag.
+        self.novel_recovery = get(
+            "NOVEL_RECOVERY", "true").strip().lower() in ("1", "true", "yes")
+
         # --- Deterministic panel monitoring & recovery (panel_rules.py) -------
         self.panel_rules_enabled = get(
             "PANEL_RULES_ENABLED", "true").strip().lower() in ("1", "true", "yes")

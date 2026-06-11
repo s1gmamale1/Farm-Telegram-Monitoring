@@ -309,3 +309,10 @@ def test_allowlist_key_and_aliases(monkeypatch):
     assert Config({"ALLOWED_USERS": "@y,@z"}).ibo_chat_ids == ["@y", "@z"]
     # legacy fallback still works
     assert Config({"IBO_CHAT_ID": "@only"}).ibo_chat_ids == ["@only"]
+
+
+def test_novel_recovery_defaults_on(monkeypatch):
+    monkeypatch.delenv("NOVEL_RECOVERY", raising=False)
+    # Phase 4: the generic-restart ladder for novel errors is on by default.
+    assert Config({}).novel_recovery is True
+    assert Config({"NOVEL_RECOVERY": "false"}).novel_recovery is False
