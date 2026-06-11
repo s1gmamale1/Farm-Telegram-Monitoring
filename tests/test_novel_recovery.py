@@ -90,3 +90,27 @@ def test_attempt_never_raises(monkeypatch):
                                       "[SinFermera7] flux capacitor desync",
                                       chat=object(), deliver=True))
     assert out["status"] == "failed"
+
+
+# --- alerter.format_novel_alert ----------------------------------------------
+
+from watcherdog.alerter import format_novel_alert
+
+
+def test_format_novel_alert_attempted_line():
+    out = format_novel_alert("SF7", "high", {"summary": "weird"}, "raw",
+                             {"status": "attempted"})
+    assert "generic restart" in out and "verify next sweep" in out
+
+
+def test_format_novel_alert_failed_names_step():
+    out = format_novel_alert("SF7", "high", {"summary": "weird"}, "raw",
+                             {"status": "failed", "failed_step": "kill_all"})
+    assert "FAILED at 'kill_all'" in out
+
+
+def test_format_novel_alert_human_needed_and_skipped():
+    human = format_novel_alert("SF7", "critical", {}, "banned", {"status": "human_needed"})
+    assert "not auto-restarting" in human
+    plain = format_novel_alert("SF7", "high", {}, "raw", {"status": "skipped"})
+    assert "🛠" not in plain and "🚫" not in plain      # plain alert, no recovery line
