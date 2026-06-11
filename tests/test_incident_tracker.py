@@ -388,3 +388,45 @@ def test_planner_giveup_wins_over_followup(tracker):
                                      followup_interval_s=900,
                                      giveup_s=3600, max_fix_retries=2)
     assert _kinds(actions) == [("giveup", "Bot1")]
+
+
+# --- Phase 4: novel flag + migration -----------------------------------------
+
+def test_migration_adds_novel_column_to_old_db(tmp_path):
+    """A pre-Phase-4 DB (no `novel` column) upgrades in place; old rows read novel=0."""
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE open_incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL,
+            source TEXT NOT NULL, bot TEXT NOT NULL, severity TEXT, summary TEXT,
+            raw_excerpt TEXT, fixable INTEGER NOT NULL DEFAULT 0,
+            fix_attempted TEXT, fix_retries INTEGER NOT NULL DEFAULT 0,
+            opened_ts REAL NOT NULL, last_update_ts REAL NOT NULL,
+            update_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open', resolved_ts REAL, resolution TEXT)
+    """)
+    conn.execute(
+        "INSERT INTO open_incidents (key, source, bot, severity, summary, fixable,"
+        " opened_ts, last_update_ts, update_count, status)"
+        " VALUES ('bot_error:SF1','bot_error','SF1','high','old row',0,1.0,1.0,0,'open')")
+    conn.commit(); conn.close()
+    t = IncidentTracker(db)
+    row = t.open_for_bot("bot_error", "SF1")
+    assert row["novel"] == 0                 # old row readable, defaulted
+    assert t.novel_list() == []
+    t.close()
+
+
+def test_open_novel_flag_and_novel_list(tmp_path):
+    t = IncidentTracker(str(tmp_path / "i.db"))
+    t.open("bot_error", "SF7", "bot_error:SF7", "high", "weird new error",
+           fixable=True, novel=True, now=100.0)
+    t.open("bot_error", "SF8", "bot_error:SF8", "high", "known error",
+           fixable=True, now=101.0)          # default novel=False
+    novel = t.novel_list()
+    assert [r["bot"] for r in novel] == ["SF7"]
+    assert novel[0]["novel"] == 1
+    assert t.open_for_bot("bot_error", "SF8")["novel"] == 0
+    t.close()
