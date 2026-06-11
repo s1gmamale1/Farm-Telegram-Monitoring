@@ -269,3 +269,18 @@ def test_evaluate_bot_known_fix_not_flagged_novel(tmp_path, monkeypatch):
     assert row["novel"] == 0                  # known error: plain alert path
     assert row["fix_retries"] == 0
     store.close(); tracker.close()
+
+
+def test_panel_cold_case_enters_overseer_queue(tmp_path):
+    """Phase 6: a cold-cased panel (text exhausted — only vision can diagnose)
+    must appear in novel_list(), the overseer's list_flagged queue."""
+    from watcherdog.incident_tracker import IncidentTracker
+    from watcherdog import mcp_watcher
+    t = IncidentTracker(str(tmp_path / "i.db"))
+    mcp_watcher._open_panel_incident({"tracker": t}, "SinFermera13",
+                                     "panel/PC down — needs PC", now=100.0)
+    queue = t.novel_list()
+    assert [r["bot"] for r in queue] == ["SinFermera13"]
+    assert queue[0]["source"] == "panel"
+    assert queue[0]["fixable"] == 0          # followup nag baseline unchanged
+    t.close()
