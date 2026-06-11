@@ -43,6 +43,7 @@ class IncidentTracker:
                 summary        TEXT,
                 raw_excerpt    TEXT,
                 fixable        INTEGER NOT NULL DEFAULT 0,
+                novel          INTEGER NOT NULL DEFAULT 0,
                 fix_attempted  TEXT,
                 fix_retries    INTEGER NOT NULL DEFAULT 0,
                 opened_ts      REAL    NOT NULL,
@@ -58,6 +59,12 @@ class IncidentTracker:
             "CREATE INDEX IF NOT EXISTS idx_open_incidents_status "
             "ON open_incidents(status, key)"
         )
+        # Phase 4 migration: pre-existing DBs gain the `novel` flag in place.
+        try:
+            self.conn.execute(
+                "ALTER TABLE open_incidents ADD COLUMN novel INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists (new DB or already migrated)
         self.conn.commit()
 
     # --- internal lookups ---------------------------------------------------
@@ -79,26 +86,42 @@ class IncidentTracker:
 
     # --- mutations ----------------------------------------------------------
     def open(self, source, bot, key, severity, summary, *, fixable,
-             fix_attempted=None, raw_excerpt=None, now=None):
+             novel=False, fix_attempted=None, raw_excerpt=None, now=None):
         """Open an incident. Idempotent: if one is already open for ``key`` the
-        existing row is returned unchanged. Returns the open row."""
+        existing row is returned unchanged. Returns the open row. ``novel=True``
+        flags an error with no learned fix (Phase 4) — the overseer queue."""
         if self._dry_run:
             return None
         now = now if now is not None else time.time()
         existing = self._open_by_key(key)
         if existing is not None:
             return existing
-        self.conn.execute(
-            """
-            INSERT INTO open_incidents
-                (key, source, bot, severity, summary, raw_excerpt, fixable,
-                 fix_attempted, fix_retries, opened_ts, last_update_ts,
-                 update_count, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 'open')
-            """,
-            (key, source, bot, severity, summary, raw_excerpt,
-             1 if fixable else 0, fix_attempted, now, now),
-        )
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO open_incidents
+                    (key, source, bot, severity, summary, raw_excerpt, fixable,
+                     novel, fix_attempted, fix_retries, opened_ts, last_update_ts,
+                     update_count, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 'open')
+                """,
+                (key, source, bot, severity, summary, raw_excerpt,
+                 1 if fixable else 0, 1 if novel else 0, fix_attempted, now, now),
+            )
+        except sqlite3.OperationalError:
+            # `novel` column absent (migration failed on an exotic DB): degrade to
+            # the legacy insert rather than crash the watcher.
+            self.conn.execute(
+                """
+                INSERT INTO open_incidents
+                    (key, source, bot, severity, summary, raw_excerpt, fixable,
+                     fix_attempted, fix_retries, opened_ts, last_update_ts,
+                     update_count, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 'open')
+                """,
+                (key, source, bot, severity, summary, raw_excerpt,
+                 1 if fixable else 0, fix_attempted, now, now),
+            )
         self.conn.commit()
         return self._open_by_key(key)
 
@@ -273,6 +296,15 @@ class IncidentTracker:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM open_incidents WHERE status = 'open' ORDER BY opened_ts"
         ).fetchall()]
+
+    def novel_list(self):
+        """Open incidents flagged novel (the Phase 5 overseer queue), oldest first."""
+        try:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM open_incidents WHERE status = 'open' AND novel = 1 "
+                "ORDER BY opened_ts").fetchall()]
+        except sqlite3.OperationalError:
+            return []
 
     def due_for_followup(self, interval_s, now):
         return [dict(r) for r in self.conn.execute(
