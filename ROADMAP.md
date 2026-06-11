@@ -200,7 +200,19 @@ truncated, not dropped (test); two concurrent `dispatch_bots` on one panel seria
 
 ---
 
-## Phase 1 — Deterministic farm-stats parser  ⭐ first feature phase (after the fix campaign)
+## Phase 1 — Deterministic farm-stats parser  ✅ SHIPPED (PR #13, 2026-06-12)
+
+**Status: DONE.** `watcherdog/farm_stats.py` gained `parse_drop_report` (the real FSM `DROP REPORT`
+format → value/cases/skins, handling the literal pipe inside skin names), `parse_status_event`
+(the 7-event vocabulary, typo/casing tolerant), and `parse_bot_stats` (→ the `BotStats` contract).
+Built from the 24-panel live capture (capture tool PRs #11/#12) — **verified against all 24 real
+captures, zero mismatches.** `value_usd`/`drops`/`accounts_total` are now deterministic text; farmed/N
+stays `needs_vision` (image-only). Model-free (`re` + dataclasses only). Spec:
+`docs/superpowers/specs/2026-06-11-deterministic-core-design.md`. **Next: Phase 2** wires the 9
+existing `commands.py` handlers to aggregate `BotStats` across the fleet — dropping OpenRouter from
+the report path.
+
+## Phase 1 (original scope, superseded by the shipped version above)  ⭐ first feature phase (after the fix campaign)
 
 **Goal.** A bot's recent Telegram **text** is parsed into a structured per-bot record with zero model calls; anything not in text is explicitly marked unknown (never guessed).
 
