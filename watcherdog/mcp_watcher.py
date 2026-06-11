@@ -1139,9 +1139,9 @@ def register_ibo_listener(client, cfg, targets, system_prompt, state, deliver=Tr
             except Exception:  # noqa: BLE001
                 log.exception("ibo report command /%s failed", report[0])
                 reply = "⚠️ couldn't build that report."
-            if reply is not None:
-                await _send(client, target, reply, deliver, cfg=cfg)
-                return
+            await _send(client, target, reply or "⚠️ couldn't build that report.",
+                        deliver, cfg=cfg)
+            return
         # Slash-command? Expand it into a rich, structured prompt for the agent
         # (e.g. /weekly, /problems, /check 5). Unknown commands fall through to
         # normal conversation so a stray "/" never gets swallowed.
