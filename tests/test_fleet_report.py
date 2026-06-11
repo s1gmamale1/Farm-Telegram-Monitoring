@@ -152,3 +152,12 @@ def test_worst_flags_silent_and_orders_by_value_asc():
     out = fleet_report.worst(fl, n=2)
     assert out.index("SF7") < out.index("SF3")   # lowest value first
     assert "💀" in out
+
+
+def test_weekly_top_bottom_no_overlap_with_five_bots():
+    fl = _fleet([_entry(1, 50, 50.0), _entry(2, 40, 40.0), _entry(3, 30, 30.0),
+                 _entry(4, 20, 20.0), _entry(5, 10, 10.0)])
+    out = fleet_report.weekly(fl)
+    # SF3 is the middle bot — must NOT appear in both Top and Bottom (i.e. once total)
+    assert out.count("SF3") == 1
+    assert "SF1" in out and "SF5" in out      # top and bottom extremes present
