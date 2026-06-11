@@ -1,7 +1,7 @@
 """Overseer endpoint surface (Phase 5) — a local UNIX-socket JSON interface.
 
 An external Hermes overseer (the ONLY place AI lives) observes and drives the
-deterministic core through these 8 endpoints; the core imports no model. One
+deterministic core through these 9 endpoints; the core imports no model. One
 JSON object per line: {"id", "method", "params", "token"?} ->
 {"id", "result"} | {"id", "error"}. Opt-in: the watcher only binds the socket
 when OVERSEER_SOCKET is configured. Handlers call the SAME functions the
@@ -142,6 +142,17 @@ async def _h_run_ladder(ctx, params):
                                         chat=ent, deliver=ctx["deliver"])
 
 
+async def _h_screenshot(ctx, params):
+    """Fresh panel screenshot for the overseer's vision read (Phase 6). The
+    returned path is host-local — the UNIX socket guarantees same host."""
+    name, ent = _entity(ctx, params.get("bot"))
+    if ent is None:
+        raise ValueError(f"unknown bot: {params.get('bot')!r} (not in watch roster)")
+    if not ctx["deliver"]:
+        raise ValueError("dry-run: refusing to press the Screenshot button")
+    return await tg_actions.screenshot(ctx["client"], ent, cfg=ctx["cfg"])
+
+
 async def _h_get_stats(ctx, params):
     fleet = await fleet_report.snapshot(ctx["client"], ctx["cfg"],
                                         ctx["state"].get("watch") or [])
@@ -156,6 +167,7 @@ _HANDLERS = {
     "list_buttons": _h_list_buttons,
     "press_button": _h_press_button,
     "run_ladder": _h_run_ladder,
+    "screenshot": _h_screenshot,
     "get_stats": _h_get_stats,
 }
 
