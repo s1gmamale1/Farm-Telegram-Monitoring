@@ -128,3 +128,88 @@ async def snapshot(client, cfg, watch):
                                   age_min=age_min, last_text=text or "", stats=st))
     entries.sort(key=lambda e: e.num)
     return Fleet(entries=entries, week=week, collected=collected)
+
+
+def _money(v):
+    return f"${(v or 0.0):.2f}"
+
+
+def _sf(e):
+    return f"SF{e.num}"
+
+
+def _footer(fleet):
+    wk = fleet.week or "?"
+    when = f" · collected {fleet.collected}" if fleet.collected else ""
+    return f"— {wk}{when}"
+
+
+def _has_data(e):
+    return e.stats.drops is not None or e.stats.value_usd is not None
+
+
+def _no_data(fleet):
+    return ("🐕 No drop collection yet — send `drop stats` to pull this week's "
+            "numbers now (it stops the farms briefly).")
+
+
+def _by_value_desc(entries):
+    return sorted(entries, key=lambda e: (e.stats.value_usd or 0.0), reverse=True)
+
+
+def _line(e):
+    drops = e.stats.drops if e.stats.drops is not None else "?"
+    return f"• {_sf(e)} — {drops} cases · ~{_money(e.stats.value_usd)}"
+
+
+def weekly(fleet):
+    """Headline totals + top 3 / bottom 3 by value. Skimmable for a phone."""
+    haves = [e for e in fleet.entries if _has_data(e)]
+    if not haves:
+        return _no_data(fleet)
+    cases = sum((e.stats.drops or 0) for e in haves)
+    val = sum((e.stats.value_usd or 0.0) for e in haves)
+    ranked = _by_value_desc(haves)
+    lines = [f"🐕 Weekly drops — {fleet.week or '?'} — {cases} cases · "
+             f"~{_money(val)} ({len(haves)} bots reporting)"]
+    lines.append("🏆 Top:")
+    lines += [_line(e) for e in ranked[:3]]
+    if len(ranked) > 3:
+        lines.append("🐌 Bottom:")
+        lines += [_line(e) for e in ranked[-3:]]
+    lines.append(_footer(fleet))
+    return "\n".join(lines)
+
+
+def value(fleet):
+    haves = [e for e in fleet.entries if _has_data(e)]
+    if not haves:
+        return _no_data(fleet)
+    total = sum((e.stats.value_usd or 0.0) for e in haves)
+    lines = [f"💰 Total value — {_money(total)} ({fleet.week or '?'})", "Top contributors:"]
+    lines += [_line(e) for e in _by_value_desc(haves)[:5]]
+    lines.append(_footer(fleet))
+    return "\n".join(lines)
+
+
+def top(fleet, n=5):
+    haves = [e for e in fleet.entries if _has_data(e)]
+    if not haves:
+        return _no_data(fleet)
+    lines = [f"🏆 Top {min(n, len(haves))} bots — {fleet.week or '?'}"]
+    lines += [_line(e) for e in _by_value_desc(haves)[:n]]
+    lines.append(_footer(fleet))
+    return "\n".join(lines)
+
+
+def worst(fleet, n=5):
+    haves = [e for e in fleet.entries if _has_data(e)]
+    if not haves:
+        return _no_data(fleet)
+    ascending = sorted(haves, key=lambda e: (e.stats.value_usd or 0.0))
+    lines = [f"🐌 Laggards {min(n, len(haves))} — {fleet.week or '?'}"]
+    for e in ascending[:n]:
+        flag = "" if e.status.startswith("✅") else f"  {roster.status_emoji(e.status)}"
+        lines.append(_line(e) + flag)
+    lines.append(_footer(fleet))
+    return "\n".join(lines)

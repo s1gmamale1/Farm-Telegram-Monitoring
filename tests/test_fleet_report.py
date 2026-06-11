@@ -103,3 +103,52 @@ def test_snapshot_skips_unnumbered_and_survives_read_error(monkeypatch):
     fleet = asyncio.run(fleet_report.snapshot(
         _FakeClient(), cfg, [("control bot", object()), ("SinFermera5", object())]))
     assert [e.num for e in fleet.entries] == [5]   # unnumbered skipped, error survived
+
+
+def _entry(num, drops=None, value=None, status="✅ farming", age=5.0, text=""):
+    st = BotStats(bot=f"SinFermera{num}", drops=drops, value_usd=value,
+                  data_source=("text" if (drops is not None or value is not None) else "missing"))
+    return fleet_report.FleetEntry(num=num, name=f"SinFermera{num}", pc="PC1",
+                                   status=status, age_min=age, last_text=text, stats=st)
+
+
+def _fleet(entries):
+    return fleet_report.Fleet(entries=entries, week="2026-W24", collected="2026-06-10")
+
+
+def test_weekly_totals_and_staleness_footer():
+    fl = _fleet([_entry(3, 28, 31.5), _entry(7, 10, 4.0), _entry(9, 2, 0.6)])
+    out = fleet_report.weekly(fl)
+    assert "2026-W24" in out
+    assert "40 cases" in out            # 28+10+2
+    assert "$36.10" in out              # 31.5+4.0+0.6
+    assert "2026-06-10" in out          # collection date footer
+
+
+def test_weekly_no_collection_message():
+    fl = _fleet([_entry(3), _entry(7)])   # no drop data anywhere
+    out = fleet_report.weekly(fl)
+    assert "no drop collection yet" in out.lower()
+    assert "drop stats" in out.lower()
+
+
+def test_value_grand_total_and_top_contributors():
+    fl = _fleet([_entry(3, 28, 31.5), _entry(7, 10, 4.0)])
+    out = fleet_report.value(fl)
+    assert "$35.50" in out
+    assert out.index("SF3") < out.index("SF7")   # highest value first
+
+
+def test_top_orders_by_value_desc():
+    fl = _fleet([_entry(7, 10, 4.0), _entry(3, 28, 31.5), _entry(9, 2, 0.6)])
+    out = fleet_report.top(fl, n=2)
+    assert "SF3" in out and "SF7" in out and "SF9" not in out   # top 2 only
+    assert out.index("SF3") < out.index("SF7")
+
+
+def test_worst_flags_silent_and_orders_by_value_asc():
+    fl = _fleet([_entry(3, 28, 31.5),
+                 _entry(7, 0, 0.0, status="💀 dead", age=400.0)])
+    out = fleet_report.worst(fl, n=2)
+    assert out.index("SF7") < out.index("SF3")   # lowest value first
+    assert "💀" in out
