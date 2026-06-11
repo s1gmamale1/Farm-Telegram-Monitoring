@@ -344,12 +344,16 @@ def _open_panel_incident(state, name, summary, now=None):
     type), so a second cold-case type within the same episode won't refresh the
     summary. That's fine — once a cold case is reported the panel path latches
     ``coldcase_reported`` and returns early, so a second type can't fire this
-    episode anyway; the next episode starts only after a recovery resolves this row."""
+    episode anyway; the next episode starts only after a recovery resolves this row.
+
+    Cold-cases are flagged ``novel=True`` (Phase 6) so they enter the overseer's
+    ``list_flagged`` queue — the one place the core has exhausted text-based
+    understanding (the overseer takes a fresh ``screenshot`` to diagnose)."""
     tracker = state.get("tracker")
     if tracker is None:
         return
     tracker.open("panel", name, f"panel:{name}", "high", summary,
-                 fixable=False, now=now)
+                 fixable=False, novel=True, now=now)
 
 
 async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target, seed=False):
