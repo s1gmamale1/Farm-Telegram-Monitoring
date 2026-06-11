@@ -253,6 +253,32 @@ def test_collect_week_dry_run_presses_nothing(monkeypatch):
     assert all(r["notes"] == "dry-run" for r in rows)
 
 
+def test_collect_week_no_reply_marks_notes(monkeypatch):
+    """Real branch: an empty/whitespace drop-stats reply -> notes='no reply'."""
+    import asyncio
+
+    async def fake_stop_farm(client, ent):
+        return True
+
+    async def fake_request_drop_stats(client, ent, **kw):
+        return "   "                          # whitespace == no reply
+
+    async def fake_run_activity_booster(client, ent):
+        return True
+
+    monkeypatch.setattr(drop_stats, "stop_farm", fake_stop_farm)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", fake_request_drop_stats)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", fake_run_activity_booster)
+
+    panels = [("Panel 1", "ent1")]
+    rows = asyncio.run(
+        drop_stats.collect_week(None, Config({}), panels, week="2026-W23",
+                                date="2026-06-03")
+    )
+    assert len(rows) == 1
+    assert rows[0]["notes"] == "no reply"
+
+
 # --- env bridge + push (drop_sheets stays as-is) ----------------------------
 
 def test_push_to_sheets_not_configured_keeps_buffer(monkeypatch):
