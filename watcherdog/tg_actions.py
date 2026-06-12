@@ -12,7 +12,6 @@ caller passes ``confirmed=True``; the agent only does that after ibo says "yes".
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
@@ -76,6 +75,21 @@ async def panel_menu(client, chat, *, timeout=20.0):
             "text": (getattr(menu, "message", "") or "")}
 
 
+def _find_button(message, button):
+    """Locate the inline button whose label matches ``button`` — exact, then
+    prefix, then substring, case-insensitive. Returns (label, btn) or None."""
+    want = (button or "").strip().lower()
+    rows = getattr(message, "buttons", None) or []
+    for predicate in (lambda l: l == want, lambda l: l.startswith(want),
+                      lambda l: want in l):
+        for row in rows:
+            for btn in row:
+                label = (getattr(btn, "text", "") or "").strip()
+                if label and predicate(label.lower()):
+                    return label, btn
+    return None
+
+
 async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
     """Open the panel menu and press the button whose label matches ``button``.
 
@@ -89,22 +103,7 @@ async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
     if menu is None:
         return {"error": "no /start menu reply"}
 
-    want = (button or "").strip().lower()
-    rows = getattr(menu, "buttons", None) or []
-    match = None
-    for predicate in (lambda l: l == want, lambda l: l.startswith(want),
-                      lambda l: want in l):
-        for row in rows:
-            for btn in row:
-                label = (getattr(btn, "text", "") or "").strip()
-                if label and predicate(label.lower()):
-                    match = (label, btn)
-                    break
-            if match:
-                break
-        if match:
-            break
-
+    match = _find_button(menu, button)
     if not match:
         return {"error": f"no button matching {button!r}", "buttons": _labels(menu)}
 
@@ -123,46 +122,45 @@ async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
 _CONFIRM_LABELS = ("confirm", "yes", "✅")
 
 
-async def _latest_with_buttons(client, ent, *, timeout=20.0, poll=1.0):
-    """The panel's newest message carrying inline buttons, within ``timeout``
-    (the confirm prompt a destructive press pops). None if none appears."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        msgs = await client.get_messages(ent, limit=3)
-        for m in (msgs or []):
-            if getattr(m, "buttons", None):
-                return m
-        await asyncio.sleep(poll)
-    return None
-
-
 async def press_button_then_confirm(client, chat, button, *, timeout=20.0):
     """Press ``button``, then press the confirm button on the panel's follow-up
     prompt (the 'Reboot PC -> Confirm' flow). The CALLER is the authorization
     gate — this presses destructive buttons without asking.
 
+    The prompt is located with the id-filtered, incoming-only
+    ``_await_reply(..., need_buttons=True)`` — never "the latest message with
+    buttons" (that would frequently be the /start menu itself).
+
     Returns ``{"pressed", "confirmed": bool, "result"}``; ``confirmed`` False
     (with ``error``) when no confirm prompt / confirm button appeared."""
     ent = await _resolve(client, chat)
-    first = await press_button(client, ent, button, confirmed=True, timeout=timeout)
-    if first.get("error"):
-        return first
-    reply = await _latest_with_buttons(client, ent, timeout=timeout)
-    if reply is None:
-        return {"pressed": first.get("pressed"), "confirmed": False,
-                "result": first.get("result", ""),
+    menu = await _open_menu(client, ent, timeout=timeout)
+    if menu is None:
+        return {"error": "no /start menu reply"}
+    match = _find_button(menu, button)
+    if not match:
+        return {"error": f"no button matching {button!r}", "buttons": _labels(menu)}
+    label, btn = match
+    await menu.click(text=btn.text)
+    prompt = await _await_reply(client, ent, menu.id, need_buttons=True,
+                                timeout=timeout)
+    if prompt is None:
+        return {"pressed": label, "confirmed": False, "result": "",
                 "error": "no confirm prompt appeared"}
-    for row in (getattr(reply, "buttons", None) or []):
-        for btn in row:
-            label = (getattr(btn, "text", "") or "").strip().lower()
-            if any(c in label for c in _CONFIRM_LABELS):
-                await reply.click(text=btn.text)
-                final = await _await_reply(client, ent, reply.id, timeout=timeout)
-                return {"pressed": first.get("pressed"), "confirmed": True,
-                        "result": ((final.message or "") if final else "")[:1500]}
-    return {"pressed": first.get("pressed"), "confirmed": False,
-            "result": first.get("result", ""),
-            "error": "no confirm button on the prompt", "buttons": _labels(reply)}
+    cmatch = None
+    for c in _CONFIRM_LABELS:
+        cmatch = _find_button(prompt, c)
+        if cmatch:
+            break
+    if not cmatch:
+        return {"pressed": label, "confirmed": False,
+                "result": (getattr(prompt, "message", "") or "")[:500],
+                "error": "no confirm button on the prompt",
+                "buttons": _labels(prompt)}
+    await prompt.click(text=cmatch[1].text)
+    final = await _await_reply(client, ent, prompt.id, timeout=timeout)
+    return {"pressed": label, "confirmed": True,
+            "result": ((final.message or "") if final else "")[:1500]}
 
 
 async def send_command(client, chat, text, *, timeout=20.0):
