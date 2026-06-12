@@ -18,7 +18,8 @@ Ideas and known gaps, roughly prioritized. Done items are checked.
 - [x] **Faster full sweep** — `scan_once` does a fast sidebar pass then deep-reads only unread / preview-changed chats (hybrid sidebar+deep).
 
 ## High priority
-_All current high-priority items are done — see the Done section above._
+- [ ] Restore the talker bot: `TELEGRAM_BOT_TOKEN` read as missing/invalid at the 2026-06-12 relaunch (`Bot interface disabled` in the log). Monitoring/alerts/ibo commands unaffected; commands sent TO the bot account don't answer until the token is fixed in `.env`. (Owner: "can wait".)
+- [ ] Recreate `data/farmer_pc_map.json` — missing at the 2026-06-12 relaunch, so `/status` shows `PC ?` for every bot instead of the bot→PC mapping.
 
 ## Medium
 - [ ] `classifier.needs_human` vocabulary gaps (Phase 4 review, non-blocking): "account locked", "invalid password"/"login fail", "logged in from another location", "trade hold" aren't in the account-level family — a miss just burns the bounded ladder budget then escalates, but the phrases belong there.

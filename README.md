@@ -68,10 +68,16 @@ each owner in the allow-list (`ALLOWLIST`) must press **Start** on the bot
 
 ## 2. The big idea: script-first, AI-last
 
-Every message a farm bot posts hits a **deterministic router** *before* any LLM
-runs (`watcherdog/auto_fix.py`, wired into `mcp_watcher._evaluate_bot`). Known
-situations are handled by scripts at **zero token cost**; the model is invoked
-**only** when (a) you ask something, or (b) an error is genuinely *novel*.
+Every message a farm bot posts hits a **deterministic router**
+(`watcherdog/auto_fix.py`, wired into `mcp_watcher._evaluate_bot`). Known
+situations are handled by scripts at **zero token cost**; a genuinely *novel*
+error gets the deterministic generic-restart ladder (`novel_recovery.py`) and
+is flagged for the optional overseer. **The monitor loop never calls a model
+in any mode** (AI-removal track, PRs #11–#17): triage, reports, recovery and
+the weekly digest are all script-only. The model is invoked **only** when you
+ask something free-form — and all other AI lives behind the opt-in overseer
+endpoint surface (`OVERSEER_SOCKET`, see
+`docs/wiki/reference/Overseer Endpoints.md`).
 
 ```
 farm message ─▶ classify()                          (scripts, no LLM)
@@ -186,8 +192,9 @@ cd ~/Documents/WatcherDogBot
 #     the original Telethon-managed login flow and move the stale file aside:
 .venv/bin/python tools/tg_login.py --reset-session --legacy-start
 
-# 1. Make sure Ollama is up (used to triage farm messages) and a model is pulled
-ollama list
+# 1. (Optional) Ollama is only needed if you flip DISABLE_AI=false for the
+#    legacy model triage — the default runtime is fully model-free.
+# ollama list
 
 # 2. Run it (foreground, verbose)
 .venv/bin/python run_watcher.py --verbose
@@ -222,9 +229,11 @@ its default). The keys you'll touch most:
 | `PANEL_AUTO_DESTRUCTIVE` | `true` | Run the destructive recovery ladder (Kill all → select 4 → Start) **autonomously**. Set `false` to make destructive steps post a one-tap confirm card instead. |
 | `PANEL_STALE_MINUTES` | `70` | Total silence (any message resets the clock) before a panel counts as **dead** → cold case `needs PC`. |
 | `PANEL_MAX_ATTEMPTS` | `3` | After this many failed recovery cycles in one episode, stop the futile loop and escalate as a cold case (`needs PC`). |
-| `DISABLE_AI` | `false` | Fully model-free mode: no Ollama, no OpenRouter agent, no Hermes (no Hermes CLI either). Panel recovery is deterministic and never routes through AI; deterministic commands/actions/screenshots/cards/reports/alerts still run. |
-| `OLLAMA_URL` / `OLLAMA_MODEL` | local | Local model used to triage messages. |
-| `AGENT_MODEL` | `deepseek/deepseek-v4-pro` | The conversation/novel-error model (OpenRouter). |
+| `DISABLE_AI` | `true` | Fully model-free mode (the default since the AI-removal track): no Ollama, no OpenRouter agent for free-form chat. The monitor loop is model-free regardless of this flag; set `false` only to re-enable the conversational agent. |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | local | Legacy local triage model — unused unless `DISABLE_AI=false`. |
+| `AGENT_MODEL` | `deepseek/deepseek-v4-pro` | The free-form conversation model (OpenRouter), opt-in via `DISABLE_AI=false`. |
+| `NOVEL_RECOVERY` | `true` | Deterministic generic-restart ladder for novel errors (ban/captcha family always exempt). |
+| `OVERSEER_SOCKET` / `OVERSEER_TOKEN` | unset | Opt-in overseer endpoint surface (local UNIX socket) — see `docs/wiki/reference/Overseer Endpoints.md`. |
 | `AGENT_API_KEY` / `OPENROUTER_API_KEY` | — | Model key (also read from `~/.hermes/.env`). |
 | `AGENT_ACTIONS_ENABLED` | `true` | Let the agent DRIVE panels, not just read. |
 | `BOT_ACTIONS_ENABLED` | `false` | Let the BOT trigger actions (for `BOT_ACTION_USERS`). |
