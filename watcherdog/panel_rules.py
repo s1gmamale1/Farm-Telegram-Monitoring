@@ -26,6 +26,11 @@ class PanelState:
     last_probe_ts: float | None = None   # last R6 /start liveness probe (debounce)
     last_msg_ts: float | None = None     # ts of the panel's latest INCOMING message
                                          # seen by _evaluate_panel (gap detection)
+    # Launch-grace + RDP-bug auto-reboot (owner-authorized, 2026-06-12):
+    launching_since: float | None = None  # status says "launching" since this ts
+    rdp_bug_since: float | None = None    # "screen grab failed" first seen (episode)
+    reboot_ts: float | None = None        # auto Reboot PC pressed at this ts
+    reboot_attempted: bool = False        # once-per-episode latch
 
 
 @dataclass
@@ -66,6 +71,12 @@ def _is_searching(status):
     return "search" in (status.status or "").lower()
 
 
+def _is_launching(status):
+    """Panel reports a launch in progress (e.g. 'Accounts launching...') — a
+    WAIT state, not a down state (the SF21 lesson: launches take minutes)."""
+    return "launching" in ((status.status or "").lower())
+
+
 def observe(status, state, now, cfg):
     """Advance timers from a fresh status. Returns the (mutated) state."""
     if status is None or status.launched is None:
@@ -76,6 +87,13 @@ def observe(status, state, now, cfg):
             state.over_launch_since = now
     else:
         state.over_launch_since = None
+    # Launch-grace timer: arm while the status reads "launching"; any other
+    # READABLE status (operational or not) clears it — the launch phase ended.
+    if _is_launching(status):
+        if state.launching_since is None:
+            state.launching_since = now
+    elif status.status:
+        state.launching_since = None
     if status.score != state.last_score:
         state.last_score = status.score
         state.last_score_ts = now
@@ -106,6 +124,15 @@ def decide(status, status_age, state, now, cfg):
                             reason=f"{status.launched}>{target} for >{overlaunch_s/60:.0f}m",
                             destructive=True)
         return Decision("noop", reason=f"over-launch observed ({status.launched}); waiting")
+
+    # Launch grace (the SF21 lesson): a launch in progress is a WAIT, not a
+    # failure — launches take minutes per batch. R1 stays above (an
+    # over-launched panel mid-launch is still over-launched); R2/R3 must not
+    # fire while the panel is bringing accounts up within the grace window.
+    grace_s = float(getattr(cfg, "panel_launch_grace_minutes", 15)) * 60.0
+    if (state.launching_since is not None
+            and (now - state.launching_since) < grace_s):
+        return Decision("noop", reason="launch in progress")
 
     # R2 — under target, or a status we can READ that is NOT operational (e.g.
     # OFFLINE). "LIVE" / "Searching game…" / in-match all count as operational and
