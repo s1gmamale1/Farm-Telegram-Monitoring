@@ -122,3 +122,40 @@ def test_idle_requires_confirmed_live():
     # status unknown + not in a match -> cannot confirm LIVE -> noop, not make_lobbies.
     s = _status(launched=4, status=None, in_match=False)
     assert pr.decide(s, 5.0, pr.PanelState(), 1000.0, CFG).kind == "noop"
+
+
+# --- launch grace (the SF21 lesson: launches take minutes, don't relaunch) ----
+
+GRACE_CFG = SimpleNamespace(panel_target_accounts=4, panel_overlaunch_minutes=15,
+                            panel_idle_minutes=10, panel_stale_minutes=30,
+                            panel_action_debounce_seconds=180,
+                            panel_launch_grace_minutes=15)
+
+
+def test_launching_within_grace_is_noop():
+    s = _status(launched=1, status="Accounts launching...")
+    st = pr.observe(s, pr.PanelState(), 1000.0, GRACE_CFG)
+    assert st.launching_since == 1000.0
+    d = pr.decide(s, 5.0, st, 1000.0 + 8 * 60, GRACE_CFG)   # 8 min in: wait
+    assert d.kind == "noop" and "launch" in (d.reason or "")
+
+
+def test_launching_past_grace_relaunches():
+    s = _status(launched=1, status="Accounts launching...")
+    st = pr.observe(s, pr.PanelState(), 1000.0, GRACE_CFG)
+    d = pr.decide(s, 5.0, st, 1000.0 + 20 * 60, GRACE_CFG)  # 20 min: stuck
+    assert d.kind == "sequence" and d.actions == ["select_unfarmed", "start_selected"]
+
+
+def test_operational_clears_launching_since():
+    st = pr.PanelState(launching_since=1000.0)
+    s = _status(launched=4, status="LIVE", in_match=True)
+    st = pr.observe(s, st, 2000.0, GRACE_CFG)
+    assert st.launching_since is None
+
+
+def test_r1_overlaunch_still_wins_while_launching():
+    st = pr.PanelState(launching_since=1000.0, over_launch_since=0.0)
+    s = _status(launched=6, status="Accounts launching...")
+    d = pr.decide(s, 5.0, st, 0.0 + 16 * 60, GRACE_CFG)      # over-launch >15m
+    assert d.kind == "sequence" and "kill_all" in d.actions
