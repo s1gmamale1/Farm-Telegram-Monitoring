@@ -330,17 +330,27 @@ def test_panel_menu_includes_text(monkeypatch):
     assert "Accounts launching" in out["text"]
 
 
+def _patch_confirm_flow(monkeypatch, menu, prompt):
+    """_open_menu -> menu; _await_reply with need_buttons=True -> prompt (or
+    None); the plain final reply -> a text message."""
+    async def fake_open_menu(client, ent, *, timeout=20.0):
+        return menu
+
+    async def fake_await_reply(client, ent, after_id, *, need_buttons=False,
+                               timeout=20.0, poll=1.5):
+        if need_buttons:
+            return prompt
+        return SimpleNamespace(message="Rebooting now...")
+
+    monkeypatch.setattr(tg_actions, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(tg_actions, "_await_reply", fake_await_reply)
+
+
 def test_press_then_confirm_two_presses(monkeypatch):
     menu = FakeMenu(PANEL_LABELS)
-    _patch_menu(monkeypatch, menu, reply_text="Are you sure?")
     prompt = FakeMenu(["✅ Confirm", "❌ Cancel"])
     prompt.id = 101
-    prompt.message = "Are you sure you want to reboot?"
-
-    async def fake_latest(client, ent, *, timeout=20.0, poll=1.0):
-        return prompt
-
-    monkeypatch.setattr(tg_actions, "_latest_with_buttons", fake_latest)
+    _patch_confirm_flow(monkeypatch, menu, prompt)
     out = asyncio.run(tg_actions.press_button_then_confirm(
         FakeClient(), "@p1", "reboot pc"))
     assert out["pressed"] == "Reboot PC"
@@ -351,25 +361,32 @@ def test_press_then_confirm_two_presses(monkeypatch):
 
 def test_press_then_confirm_no_prompt(monkeypatch):
     menu = FakeMenu(PANEL_LABELS)
-    _patch_menu(monkeypatch, menu, reply_text="rebooting maybe")
-
-    async def fake_latest(client, ent, *, timeout=20.0, poll=1.0):
-        return None
-
-    monkeypatch.setattr(tg_actions, "_latest_with_buttons", fake_latest)
+    _patch_confirm_flow(monkeypatch, menu, None)
     out = asyncio.run(tg_actions.press_button_then_confirm(
         FakeClient(), "@p1", "reboot pc"))
     assert out["confirmed"] is False
     assert "no confirm prompt" in out["error"]
+    assert menu.clicked == ["Reboot PC"]      # the press DID happen — caller must
+                                              # treat it as potentially-rebooting
+
+
+def test_press_then_confirm_prompt_without_confirm_button(monkeypatch):
+    menu = FakeMenu(PANEL_LABELS)
+    prompt = FakeMenu(["❌ Cancel"])           # no confirm-ish label
+    prompt.id = 101
+    prompt.message = "Are you sure?"
+    _patch_confirm_flow(monkeypatch, menu, prompt)
+    out = asyncio.run(tg_actions.press_button_then_confirm(
+        FakeClient(), "@p1", "reboot pc"))
+    assert out["confirmed"] is False
+    assert "no confirm button" in out["error"]
+    assert prompt.clicked == []                # never clicks a non-confirm button
 
 
 def test_press_then_confirm_first_press_error(monkeypatch):
-    _patch_menu(monkeypatch, FakeMenu(["Screenshot"]))   # no reboot button
-
-    async def fake_latest(client, ent, *, timeout=20.0, poll=1.0):
-        raise AssertionError("must not look for a prompt after a failed press")
-
-    monkeypatch.setattr(tg_actions, "_latest_with_buttons", fake_latest)
+    menu = FakeMenu(["Screenshot"])            # no reboot button
+    _patch_confirm_flow(monkeypatch, menu, FakeMenu(["✅ Confirm"]))
     out = asyncio.run(tg_actions.press_button_then_confirm(
         FakeClient(), "@p1", "reboot pc"))
     assert "no button matching" in out["error"]
+    assert menu.clicked == []

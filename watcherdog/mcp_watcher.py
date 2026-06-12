@@ -390,19 +390,48 @@ async def _maybe_reboot_for_rdp_bug(client, cfg, name, target_ref, ps, state,
         return None        # one reboot per episode; fall through to the cold case
     if not (getattr(cfg, "panel_auto_destructive", False) and deliver):
         return None        # not authorized to press: today's behavior (cold case)
-    res = await panel_actions.reboot_pc(client, target_ref, cfg)
+    # Freshness re-check RIGHT before the destructive press: the armed marker
+    # may be stale (seed replay of an old message, quoted text) or the panel may
+    # have recovered since. One /start; the reply's Status line is the live
+    # truth. (The marker itself renders intermittently on live-bugged panels —
+    # SF21's transcript — so its absence from one fresh card is NOT proof of
+    # recovery; an OPERATIONAL status is.)
+    alive, fresh_text = await _panel_probe(client, target_ref, cfg)
+    if alive is None:
+        return "rdp-bug probe inconclusive — retrying next sweep"
+    if alive is False:
+        return None        # dead PC: the R6/self-report PC-off paths own it
+    if panel_rules._is_operational(farm_stats.parse_panel_status(fresh_text)):
+        ps.rdp_bug_since = None    # recovered on its own — stand down
+        log.info("[panel] %s rdp-bug cleared on fresh probe (operational)", name)
+        return "rdp-bug cleared (panel operational on probe)"
+    # FAIL-CLOSED latch: set BEFORE the press. The confirm click can land
+    # server-side while the read still raises (FloodWait/disconnect) — a
+    # destructive action must never become repeatable because its
+    # acknowledgment was lost.
     ps.reboot_attempted = True
     ps.reboot_ts = now
+    try:
+        res = await panel_actions.reboot_pc(client, target_ref, cfg)
+    except Exception:  # noqa: BLE001
+        log.exception("[panel] %s Reboot PC press raised — treating as attempted", name)
+        res = {"error": "press raised — may have gone through"}
+    pressed = bool(res.get("pressed"))
     ok = bool(res.get("confirmed"))
     daily_report.record(getattr(cfg, "daily_errors_path", None), panel=name,
                         error="RDP bugged (screen grab failed >=30m)",
                         fix="Reboot PC -> Confirm", result="ok" if ok else "failed")
-    await _alert(state, client, target,
-                 f"🔄 {name} — RDP bugged ≥{int(thresh_s // 60)}m (screen grab "
-                 f"failing); pressed Reboot PC{' + Confirm' if ok else ' (no confirm prompt!)'}"
-                 f" — re-checking in {int(float(getattr(cfg, 'reboot_wait_minutes', 15)))}m.",
-                 deliver, cfg=cfg)
-    log.info("[panel] %s RDP-bug reboot pressed (confirmed=%s)", name, ok)
+    wait_m = int(float(getattr(cfg, "reboot_wait_minutes", 15)))
+    if pressed:
+        line = (f"🔄 {name} — RDP bugged ≥{int(thresh_s // 60)}m (screen grab "
+                f"failing); pressed Reboot PC{' + Confirm' if ok else ' (no confirm prompt!)'}"
+                f" — re-checking in {wait_m}m.")
+    else:
+        line = (f"🔄 {name} — RDP bugged ≥{int(thresh_s // 60)}m; Reboot PC press "
+                f"FAILED ({res.get('error', '?')}) — re-checking in {wait_m}m, then "
+                f"this becomes a needs-PC cold case.")
+    await _alert(state, client, target, line, deliver, cfg=cfg)
+    log.info("[panel] %s RDP-bug reboot pressed=%s confirmed=%s", name, pressed, ok)
     return "rdp-bug reboot pressed"
 
 
@@ -513,10 +542,13 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             ps.coldcase_reported = False
             ps.r2_attempted_ts = None
             ps.last_action_ts = None
-            # RDP-bug episode closure (a reboot that worked resolves here):
+            # RDP-bug / launch-grace episode closure (a reboot that worked
+            # resolves here; a stale grace timer must not leak into the next
+            # episode's launch — the SF21 regression would resurface):
             ps.rdp_bug_since = None
             ps.reboot_ts = None
             ps.reboot_attempted = False
+            ps.launching_since = None
         return None
 
     # RDP-bug rung (owner-authorized): an episode whose panel keeps saying
@@ -538,6 +570,13 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         ps.coldcase_reported = False
         ps.recover_attempts = 0
         ps.episode_issue = None
+        # New episode: stale grace/RDP/reboot state must not leak into it (a
+        # leaked launching_since would expire grace instantly and resurface the
+        # SF21 mid-launch relaunch bug on the recovery launch).
+        ps.launching_since = None
+        ps.rdp_bug_since = None
+        ps.reboot_ts = None
+        ps.reboot_attempted = False
 
     # Already escalated this episode to a cold case (needs the PC) — stay quiet
     # and stop the futile Telegram-side loop until the panel recovers.
@@ -728,6 +767,12 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
     if not deliver:
         return "dry-run: would probe self-report silence"
     ps = _PANEL_STATE.setdefault(name, panel_rules.PanelState())
+    # Post-reboot quiet window: the PC is restarting on OUR press — pressing
+    # relaunch buttons now would race its autostart. Hold everything.
+    if ps.reboot_ts is not None:
+        wait_s = float(getattr(cfg, "reboot_wait_minutes", 15)) * 60.0
+        if (now - ps.reboot_ts) < wait_s:
+            return "self-report: post-reboot quiet wait"
     # Already escalated this episode to a cold case — stay quiet until recovery.
     if ps.coldcase_reported:
         return "self-report: cold-case awaiting PC"
