@@ -438,6 +438,15 @@ class Config:
             "PANEL_PROBE_ENABLED", "true").strip().lower() in ("1", "true", "yes")
         self.panel_probe_timeout = float(get("PANEL_PROBE_TIMEOUT", "15"))
 
+        # Launch-grace + RDP-bug auto-reboot (owner-authorized, 2026-06-12):
+        # 'Accounts launching...' is a WAIT state for up to the grace window;
+        # 'screen grab failed' persisting past the reboot threshold (with the
+        # panel still not operational) presses Reboot PC -> Confirm once per
+        # episode, then verifies after the quiet wait.
+        self.panel_launch_grace_minutes = float(get("PANEL_LAUNCH_GRACE_MINUTES", "15"))
+        self.rdp_bug_reboot_minutes = float(get("RDP_BUG_REBOOT_MINUTES", "30"))
+        self.reboot_wait_minutes = float(get("REBOOT_WAIT_MINUTES", "15"))
+
         # --- Bot interface (the TALKING front-end; bot_interface.py) ----------
         # WatcherDog answers people through a Telegram BOT (logged in over MTProto
         # on the same event loop as the user account). The bot is what humans talk
