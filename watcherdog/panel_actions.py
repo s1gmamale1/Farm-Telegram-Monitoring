@@ -53,6 +53,12 @@ async def restart_panel(client, panel, *, confirmed=True):
     return await _press(client, panel, BTN_RESTART_PANEL, confirmed=confirmed)
 
 
+async def reboot_pc(client, panel, cfg):
+    """Owner-authorized RDP-bug recovery: Reboot PC -> Confirm (two presses).
+    The caller (mcp_watcher's RDP-bug rung) is the authorization gate."""
+    return await tg_actions.press_button_then_confirm(client, panel, "reboot pc")
+
+
 _ACTIONS = {
     "kill_all": lambda c, p, cf: kill_all(c, p, confirmed=cf),
     "select_unfarmed": lambda c, p, cf: select_unfarmed(c, p),

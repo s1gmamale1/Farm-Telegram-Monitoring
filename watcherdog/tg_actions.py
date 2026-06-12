@@ -12,6 +12,7 @@ caller passes ``confirmed=True``; the agent only does that after ibo says "yes".
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -71,7 +72,8 @@ async def panel_menu(client, chat, *, timeout=20.0):
     if menu is None:
         return {"error": "no /start menu reply", "buttons": []}
     return {"chat": tg_tools.entity_name(ent), "menu_message_id": menu.id,
-            "buttons": _labels(menu), "accounts": _account_names(menu)}
+            "buttons": _labels(menu), "accounts": _account_names(menu),
+            "text": (getattr(menu, "message", "") or "")}
 
 
 async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
@@ -116,6 +118,51 @@ async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
     reply = await _await_reply(client, ent, menu.id, timeout=timeout)
     return {"pressed": label, "destructive": is_destructive(label),
             "result": ((reply.message or "") if reply else "")[:1500]}
+
+
+_CONFIRM_LABELS = ("confirm", "yes", "✅")
+
+
+async def _latest_with_buttons(client, ent, *, timeout=20.0, poll=1.0):
+    """The panel's newest message carrying inline buttons, within ``timeout``
+    (the confirm prompt a destructive press pops). None if none appears."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        msgs = await client.get_messages(ent, limit=3)
+        for m in (msgs or []):
+            if getattr(m, "buttons", None):
+                return m
+        await asyncio.sleep(poll)
+    return None
+
+
+async def press_button_then_confirm(client, chat, button, *, timeout=20.0):
+    """Press ``button``, then press the confirm button on the panel's follow-up
+    prompt (the 'Reboot PC -> Confirm' flow). The CALLER is the authorization
+    gate — this presses destructive buttons without asking.
+
+    Returns ``{"pressed", "confirmed": bool, "result"}``; ``confirmed`` False
+    (with ``error``) when no confirm prompt / confirm button appeared."""
+    ent = await _resolve(client, chat)
+    first = await press_button(client, ent, button, confirmed=True, timeout=timeout)
+    if first.get("error"):
+        return first
+    reply = await _latest_with_buttons(client, ent, timeout=timeout)
+    if reply is None:
+        return {"pressed": first.get("pressed"), "confirmed": False,
+                "result": first.get("result", ""),
+                "error": "no confirm prompt appeared"}
+    for row in (getattr(reply, "buttons", None) or []):
+        for btn in row:
+            label = (getattr(btn, "text", "") or "").strip().lower()
+            if any(c in label for c in _CONFIRM_LABELS):
+                await reply.click(text=btn.text)
+                final = await _await_reply(client, ent, reply.id, timeout=timeout)
+                return {"pressed": first.get("pressed"), "confirmed": True,
+                        "result": ((final.message or "") if final else "")[:1500]}
+    return {"pressed": first.get("pressed"), "confirmed": False,
+            "result": first.get("result", ""),
+            "error": "no confirm button on the prompt", "buttons": _labels(reply)}
 
 
 async def send_command(client, chat, text, *, timeout=20.0):
