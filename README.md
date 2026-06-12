@@ -99,13 +99,24 @@ farm message ─▶ classify()                          (scripts, no LLM)
 
 - **Known error** → the router executes the saved button steps (e.g. *Kill All →
   Start 4 accounts*) and reports what it did, past tense. No question asked.
-- **Novel error** → escalated to the agent (deepseek via OpenRouter) **once**. It
-  fixes it, then **saves the fix with an executable `action`** so every repeat is
-  handled by the router with **no model**.
+- **Novel error** → the deterministic generic-restart ladder
+  (`novel_recovery.py`) runs **once** (ban/captcha family exempt — those ping
+  you immediately), the incident is flagged for the optional overseer, and
+  retries are paced by the incident follow-up loop. **No model.** The overseer
+  (when connected) can `teach_fix` an executable `action` so every repeat is
+  handled by the router script-only.
 - **Destructive panel recovery** (the deterministic Kill-all → select-4 → Start
   ladder) runs **autonomously by default** (`PANEL_AUTO_DESTRUCTIVE=true`). The
   inline confirm button is the **opt-in**: set `PANEL_AUTO_DESTRUCTIVE=false` and
   destructive steps post a one-tap card instead of running themselves.
+- **Launch grace** — `Accounts launching…` is a WAIT state: no relaunch presses
+  and no cold-casing for up to `PANEL_LAUNCH_GRACE_MINUTES` while accounts come
+  up (launches take minutes per batch).
+- **RDP-bug auto-reboot** — the panel's own `Error creating screenshot: screen
+  grab failed` line persisting `RDP_BUG_REBOOT_MINUTES` with the panel still not
+  operational presses **Reboot PC → Confirm** once per episode (a fresh `/start`
+  probe right before the press stands down if the panel is actually live), then
+  verifies after `REBOOT_WAIT_MINUTES`. Gated by `PANEL_AUTO_DESTRUCTIVE`.
 - **`type: human` fix** → the router does *not* act; it pings you (a person is
   needed).
 
@@ -226,7 +237,10 @@ its default). The keys you'll touch most:
 | `WATCH_POLL_INTERVAL` | `120` | Seconds between proactive sweeps. |
 | `MIN_SEVERITY` | `high` | Alert at/above `low`/`medium`/`high`/`critical`. |
 | `SILENCE_THRESHOLD_MINUTES` | `120` | Alert if a bot is quiet this long. |
-| `PANEL_AUTO_DESTRUCTIVE` | `true` | Run the destructive recovery ladder (Kill all → select 4 → Start) **autonomously**. Set `false` to make destructive steps post a one-tap confirm card instead. |
+| `PANEL_AUTO_DESTRUCTIVE` | `true` | Run the destructive recovery ladder (Kill all → select 4 → Start) **autonomously** — and the RDP-bug `Reboot PC → Confirm` rung. Set `false` to make destructive steps post a one-tap confirm card instead. |
+| `PANEL_LAUNCH_GRACE_MINUTES` | `15` | How long `Accounts launching…` counts as a WAIT state (no relaunch presses, no cold case) before a stuck launch resumes the normal ladder. |
+| `RDP_BUG_REBOOT_MINUTES` | `30` | `screen grab failed` persisting this long (panel not operational) triggers the once-per-episode `Reboot PC → Confirm`. |
+| `REBOOT_WAIT_MINUTES` | `15` | Quiet verification window after the auto-reboot before resolve-or-cold-case. |
 | `PANEL_STALE_MINUTES` | `70` | Total silence (any message resets the clock) before a panel counts as **dead** → cold case `needs PC`. |
 | `PANEL_MAX_ATTEMPTS` | `3` | After this many failed recovery cycles in one episode, stop the futile loop and escalate as a cold case (`needs PC`). |
 | `DISABLE_AI` | `true` | Fully model-free mode (the default since the AI-removal track): no Ollama, no OpenRouter agent for free-form chat. The monitor loop is model-free regardless of this flag; set `false` only to re-enable the conversational agent. |
