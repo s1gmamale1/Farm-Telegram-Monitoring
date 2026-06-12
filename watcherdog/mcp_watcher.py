@@ -317,22 +317,93 @@ async def _panel_report_pc_off(state, client, target, name, age, *, deliver, cfg
     await _alert(state, client, target, text, deliver, cfg=cfg)
 
 
-async def _panel_responds(client, target_ref, cfg):
+async def _panel_probe(client, target_ref, cfg):
     """Active liveness check for a silent panel: /start it and watch for a reply.
-
-    Three-state so a watcher-side hiccup never masquerades as a dead PC:
-      * True  — the panel replied (menu/status card): the bot AND its PC are alive.
-      * False — NO reply within the timeout: the app is unreachable → PC off.
-      * None  — the probe ITSELF failed (watcher-side network / FloodWait /
-                resolve error): INCONCLUSIVE, not proof the PC is off. The caller
-                must NOT escalate on None — it retries on a later sweep.
+    Returns ``(alive, text)`` — three-state so a watcher-side hiccup never
+    masquerades as a dead PC:
+      * (True, menu text) — the panel replied: the bot AND its PC are alive.
+        The text lets callers read the Status line (launch grace) and spot the
+        screenshot-error marker (RDP bug).
+      * (False, "") — NO reply within the timeout: app unreachable → PC off.
+      * (None, "") — the probe ITSELF failed (watcher-side network / FloodWait /
+        resolve error): INCONCLUSIVE, not proof the PC is off. The caller must
+        NOT escalate on None — it retries on a later sweep.
     Non-destructive: /start only opens the menu, it presses nothing."""
     timeout = float(getattr(cfg, "panel_probe_timeout", 15.0))
     try:
         menu = await tg_actions.panel_menu(client, target_ref, timeout=timeout)
     except Exception:  # noqa: BLE001
+        return None, ""
+    if menu.get("error"):
+        return False, ""
+    return True, (menu.get("text") or "")
+
+
+async def _panel_responds(client, target_ref, cfg):
+    """Bool-only view of :func:`_panel_probe` (the R6 path's original contract)."""
+    alive, _text = await _panel_probe(client, target_ref, cfg)
+    return alive
+
+
+# The panel's own screenshot-failure line — the owner's known marker for a
+# bugged-out RDP window ("➔ ❌ Error creating screenshot: screen grab failed").
+_RDP_BUG_RE = re.compile(r"error creating screenshot|screen grab failed", re.I)
+
+
+def _note_rdp_bug(ps, text, now):
+    """Arm the RDP-bug episode timer from any panel text we read. First sight
+    arms it; re-sights do NOT refresh (it measures 'bugged since'). Returns
+    whether the marker is present in ``text``."""
+    if text and _RDP_BUG_RE.search(text):
+        if ps.rdp_bug_since is None:
+            ps.rdp_bug_since = now
+        return True
+    return False
+
+
+async def _maybe_reboot_for_rdp_bug(client, cfg, name, target_ref, ps, state,
+                                    target, deliver, now, *, about_to_coldcase):
+    """The owner-authorized RDP-bug ladder rung (2026-06-12): a panel whose own
+    replies say 'screen grab failed' for >= RDP_BUG_REBOOT_MINUTES and that is
+    still not operational gets ONE 'Reboot PC -> Confirm', then a quiet
+    verification window. Returns a handled-note (caller returns it: act/hold/
+    wait) or None to fall through (e.g. to the cold case).
+
+      * post-reboot quiet window  -> hold everything non-healthy
+      * rdp bug >= threshold + gates -> press Reboot PC -> Confirm, alert, latch
+      * rdp bug set but < threshold  -> hold ONLY a cold-case declaration (the
+        reboot path supersedes it while the signal is live); relaunch sequences
+        below threshold proceed normally
+      * no rdp signal / already rebooted / gates closed -> None
+    """
+    if ps.reboot_ts is not None:
+        wait_s = float(getattr(cfg, "reboot_wait_minutes", 15)) * 60.0
+        if (now - ps.reboot_ts) < wait_s:
+            return "post-reboot quiet wait"
+        return None        # window over: healthy branch resolves, or caller cold-cases
+    if ps.rdp_bug_since is None:
         return None
-    return not menu.get("error")
+    thresh_s = float(getattr(cfg, "rdp_bug_reboot_minutes", 30)) * 60.0
+    if (now - ps.rdp_bug_since) < thresh_s:
+        return "rdp-bug hold (reboot pending threshold)" if about_to_coldcase else None
+    if ps.reboot_attempted:
+        return None        # one reboot per episode; fall through to the cold case
+    if not (getattr(cfg, "panel_auto_destructive", False) and deliver):
+        return None        # not authorized to press: today's behavior (cold case)
+    res = await panel_actions.reboot_pc(client, target_ref, cfg)
+    ps.reboot_attempted = True
+    ps.reboot_ts = now
+    ok = bool(res.get("confirmed"))
+    daily_report.record(getattr(cfg, "daily_errors_path", None), panel=name,
+                        error="RDP bugged (screen grab failed >=30m)",
+                        fix="Reboot PC -> Confirm", result="ok" if ok else "failed")
+    await _alert(state, client, target,
+                 f"🔄 {name} — RDP bugged ≥{int(thresh_s // 60)}m (screen grab "
+                 f"failing); pressed Reboot PC{' + Confirm' if ok else ' (no confirm prompt!)'}"
+                 f" — re-checking in {int(float(getattr(cfg, 'reboot_wait_minutes', 15)))}m.",
+                 deliver, cfg=cfg)
+    log.info("[panel] %s RDP-bug reboot pressed (confirmed=%s)", name, ok)
+    return "rdp-bug reboot pressed"
 
 
 def _open_panel_incident(state, name, summary, now=None):
@@ -391,6 +462,9 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
 
     now = time.time()
     age = (now - date.timestamp()) if date else None
+    # RDP-bug marker can ride on any panel message (e.g. a /start card with the
+    # "➔ ❌ Error creating screenshot" line) — arm the episode timer on sight.
+    _note_rdp_bug(ps, text, now)
     status = farm_stats.parse_panel_status(text) if text else None
     # An explicit "All N accounts launched!" alert is a status signal too — feed
     # its count in when the message isn't the structured status card.
@@ -439,7 +513,20 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             ps.coldcase_reported = False
             ps.r2_attempted_ts = None
             ps.last_action_ts = None
+            # RDP-bug episode closure (a reboot that worked resolves here):
+            ps.rdp_bug_since = None
+            ps.reboot_ts = None
+            ps.reboot_attempted = False
         return None
+
+    # RDP-bug rung (owner-authorized): an episode whose panel keeps saying
+    # 'screen grab failed' gets ONE Reboot PC once the threshold passes — and a
+    # pending/post-reboot state supersedes flags and cold-cases this sweep.
+    handled = await _maybe_reboot_for_rdp_bug(
+        client, cfg, name, target_ref, ps, state, target, deliver, now,
+        about_to_coldcase=(decision.kind == "flag" and decision.cold_case))
+    if handled:
+        return handled
 
     # A cold-cased panel that went silent past the stale window and is now posting
     # parseable cards again demonstrably had its PC come back (power-cycle) — start
@@ -657,7 +744,7 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
     if (ps.last_action_ts is not None
             and (now - ps.last_action_ts) < cfg.panel_action_debounce_seconds):
         return "self-report: debounced"
-    alive = await _panel_responds(client, target_ref, cfg)
+    alive, probe_text = await _panel_probe(client, target_ref, cfg)
     if alive is None:
         log.warning("[panel] %s self-report silence: probe inconclusive", name)
         return "self-report: probe inconclusive"
@@ -668,9 +755,25 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
         _open_panel_incident(state, name, "self-reported silent + no /start reply", now=now)
         log.info("[panel] %s self-report silence + no /start reply — PC off (HIGH)", name)
         return "self-report: PC off"
+    # The probe reply carries the panel's live card: spot the RDP-bug marker and
+    # the launch state BEFORE deciding anything (the SF21 lesson).
+    _note_rdp_bug(ps, probe_text, now)
+    probe_status = farm_stats.parse_panel_status(probe_text)
+    if "launching" in ((probe_status.status or "").lower()):
+        if ps.launching_since is None:
+            ps.launching_since = now
+        grace_s = float(getattr(cfg, "panel_launch_grace_minutes", 15)) * 60.0
+        if (now - ps.launching_since) < grace_s:
+            log.info("[panel] %s self-report: launch in progress — waiting", name)
+            return "self-report: launch in progress"
     # alive: the app is up but the farm stalled. Retry-cap first (mirror FSM): after
     # N failed relaunches in this episode, escalate as a cold case and stay quiet.
     if ps.recover_attempts >= getattr(cfg, "panel_max_attempts", 3):
+        handled = await _maybe_reboot_for_rdp_bug(
+            client, cfg, name, target_ref, ps, state, target, deliver, now,
+            about_to_coldcase=True)
+        if handled:
+            return f"self-report: {handled}"
         await _panel_report(state, client, target, name,
                             ps.episode_issue or "self-reported silence",
                             fixed=False, deliver=deliver, cfg=cfg,
