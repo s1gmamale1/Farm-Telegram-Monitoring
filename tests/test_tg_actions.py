@@ -318,3 +318,58 @@ def test_screenshot_reply_without_media_returns_note(monkeypatch, tmp_path):
     assert out.get("downloaded") is None
     assert "no media" in (out.get("note") or "").lower()
     assert out.get("caption") == "screenshot taken"
+
+
+# --- press_button_then_confirm (the Reboot PC -> Confirm sequence) ------------
+
+def test_panel_menu_includes_text(monkeypatch):
+    menu = FakeMenu(PANEL_LABELS)
+    menu.message = "📋 Panel status:\n└ 🚀 Status: Accounts launching..."
+    _patch_menu(monkeypatch, menu)
+    out = asyncio.run(tg_actions.panel_menu(FakeClient(), "@p1"))
+    assert "Accounts launching" in out["text"]
+
+
+def test_press_then_confirm_two_presses(monkeypatch):
+    menu = FakeMenu(PANEL_LABELS)
+    _patch_menu(monkeypatch, menu, reply_text="Are you sure?")
+    prompt = FakeMenu(["✅ Confirm", "❌ Cancel"])
+    prompt.id = 101
+    prompt.message = "Are you sure you want to reboot?"
+
+    async def fake_latest(client, ent, *, timeout=20.0, poll=1.0):
+        return prompt
+
+    monkeypatch.setattr(tg_actions, "_latest_with_buttons", fake_latest)
+    out = asyncio.run(tg_actions.press_button_then_confirm(
+        FakeClient(), "@p1", "reboot pc"))
+    assert out["pressed"] == "Reboot PC"
+    assert out["confirmed"] is True
+    assert menu.clicked == ["Reboot PC"]
+    assert prompt.clicked == ["✅ Confirm"]
+
+
+def test_press_then_confirm_no_prompt(monkeypatch):
+    menu = FakeMenu(PANEL_LABELS)
+    _patch_menu(monkeypatch, menu, reply_text="rebooting maybe")
+
+    async def fake_latest(client, ent, *, timeout=20.0, poll=1.0):
+        return None
+
+    monkeypatch.setattr(tg_actions, "_latest_with_buttons", fake_latest)
+    out = asyncio.run(tg_actions.press_button_then_confirm(
+        FakeClient(), "@p1", "reboot pc"))
+    assert out["confirmed"] is False
+    assert "no confirm prompt" in out["error"]
+
+
+def test_press_then_confirm_first_press_error(monkeypatch):
+    _patch_menu(monkeypatch, FakeMenu(["Screenshot"]))   # no reboot button
+
+    async def fake_latest(client, ent, *, timeout=20.0, poll=1.0):
+        raise AssertionError("must not look for a prompt after a failed press")
+
+    monkeypatch.setattr(tg_actions, "_latest_with_buttons", fake_latest)
+    out = asyncio.run(tg_actions.press_button_then_confirm(
+        FakeClient(), "@p1", "reboot pc"))
+    assert "no button matching" in out["error"]
