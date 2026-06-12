@@ -326,3 +326,13 @@ def test_overseer_defaults_off(monkeypatch):
     assert cfg.overseer_token == ""
     assert Config({"OVERSEER_SOCKET": "data/overseer.sock"}).overseer_socket.endswith(
         "data/overseer.sock")
+
+
+def test_launch_grace_and_rdp_reboot_defaults(monkeypatch):
+    for k in ("PANEL_LAUNCH_GRACE_MINUTES", "RDP_BUG_REBOOT_MINUTES", "REBOOT_WAIT_MINUTES"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = Config({})
+    assert cfg.panel_launch_grace_minutes == 15.0
+    assert cfg.rdp_bug_reboot_minutes == 30.0
+    assert cfg.reboot_wait_minutes == 15.0
+    assert Config({"RDP_BUG_REBOOT_MINUTES": "45"}).rdp_bug_reboot_minutes == 45.0
