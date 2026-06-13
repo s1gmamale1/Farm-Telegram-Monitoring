@@ -390,3 +390,32 @@ def test_press_then_confirm_first_press_error(monkeypatch):
         FakeClient(), "@p1", "reboot pc"))
     assert "no button matching" in out["error"]
     assert menu.clicked == []
+
+
+# --- press_button: allow_destructive gate (matched-label, default true) ------
+
+def test_press_button_refuses_destructive_when_not_allowed(monkeypatch):
+    # "all cs" is a non-destructive-looking param that matches the destructive
+    # real label "Kill All CS & Steam" — the gate keys on the MATCHED label.
+    menu = FakeMenu(["Kill All CS & Steam", "Drop stats"])
+    _patch_menu(monkeypatch, menu)
+
+    out = asyncio.run(tg_actions.press_button(
+        FakeClient(), "SinFermera7", "all cs",
+        confirmed=True, allow_destructive=False))
+
+    assert out.get("refused") == "destructive"
+    assert "Kill All CS & Steam" in out.get("button", "")
+    assert menu.clicked == []          # the fake records 'no click' as an empty list
+
+
+def test_press_button_allows_destructive_when_permitted(monkeypatch):
+    menu = FakeMenu(["Kill All CS & Steam"])
+    _patch_menu(monkeypatch, menu, reply_text="killed")
+
+    out = asyncio.run(tg_actions.press_button(
+        FakeClient(), "SinFermera7", "all cs",
+        confirmed=True, allow_destructive=True))
+
+    assert out.get("pressed") == "Kill All CS & Steam"
+    assert menu.clicked == ["Kill All CS & Steam"]   # a click DID happen

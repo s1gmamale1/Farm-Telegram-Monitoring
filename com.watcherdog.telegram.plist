@@ -22,13 +22,13 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/macmini4/Documents/WatcherDogBot/.venv/bin/python</string>
-        <string>/Users/macmini4/Documents/WatcherDogBot/run_watcher.py</string>
+        <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/.venv/bin/python</string>
+        <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/run_watcher.py</string>
         <string>--verbose</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/macmini4/Documents/WatcherDogBot</string>
+    <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring</string>
 
     <key>KeepAlive</key>
     <true/>
@@ -36,8 +36,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/macmini4/Documents/WatcherDogBot/data/telegram.out.log</string>
+    <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/data/telegram.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/macmini4/Documents/WatcherDogBot/data/telegram.err.log</string>
+    <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/data/telegram.err.log</string>
 </dict>
 </plist>

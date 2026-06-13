@@ -139,7 +139,8 @@ def test_malformed_json_and_unknown_method_keep_serving(tmp_path):
 def test_press_button_destructive_requires_confirmed(tmp_path, monkeypatch):
     calls = []
 
-    async def fake_press(client, ent, button, *, confirmed=False, timeout=20.0):
+    async def fake_press(client, ent, button, *, confirmed=False,
+                         allow_destructive=True, timeout=20.0):
         calls.append((button, confirmed))
         if overseer_api.tg_actions.is_destructive(button) and not confirmed:
             return {"need_confirm": True, "button": button}
@@ -190,7 +191,7 @@ def test_run_ladder_honors_attempt_gates(tmp_path, monkeypatch):
         return {"status": "skipped", "reason": "dry-run"}
 
     monkeypatch.setattr(overseer_api.novel_recovery, "attempt", fake_attempt)
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
     state = {"watch": [("SinFermera7", object())]}
 
     async def go(sock):
@@ -249,7 +250,8 @@ def test_teach_fix_refuses_auto_destructive(tmp_path):
 def test_press_button_audit_keyed_on_result(tmp_path, monkeypatch):
     records = []
 
-    async def fake_press(client, ent, button, *, confirmed=False, timeout=20.0):
+    async def fake_press(client, ent, button, *, confirmed=False,
+                         allow_destructive=True, timeout=20.0):
         if button == "all cs":      # prefix/substring match presses the REAL label
             return {"pressed": "Kill All CS & Steam", "destructive": True}
         return {"error": "no button matching"}
@@ -322,3 +324,48 @@ def test_screenshot_unknown_bot(tmp_path):
 
     resp = _run_with_server(cfg, state, go)
     assert "unknown bot" in resp["error"]
+
+
+# --- overseer destructive guardrail: OVERSEER_ALLOW_DESTRUCTIVE ----------------
+
+def test_press_button_forwards_allow_destructive(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_press(client, ent, button, *, confirmed=False,
+                         allow_destructive=True, timeout=20.0):
+        seen["allow"] = allow_destructive
+        return {"pressed": button, "destructive": False}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    state = {"watch": [("SinFermera7", object())]}
+
+    cfg_off = _cfg(tmp_path)
+    async def go_off(sock):
+        return await _call(sock, "press_button", {"bot": "SF7", "button": "x"})
+    _run_with_server(cfg_off, state, go_off)
+    assert seen["allow"] is False
+
+    cfg_on = _cfg(tmp_path, overseer_allow_destructive=True)
+    async def go_on(sock):
+        return await _call(sock, "press_button", {"bot": "SF7", "button": "x"})
+    _run_with_server(cfg_on, state, go_on)
+    assert seen["allow"] is True
+
+
+def test_run_ladder_refused_when_destructive_disabled(tmp_path, monkeypatch):
+    reached = {"called": False}
+
+    async def fake_attempt(client, cfg, bot, text, *, chat=None, deliver=True):
+        reached["called"] = True
+        return {"status": "ran"}
+
+    monkeypatch.setattr(overseer_api.novel_recovery, "attempt", fake_attempt)
+    cfg = _cfg(tmp_path)                     # flag OFF
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "run_ladder", {"bot": "SinFermera7"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert "error" in resp and "OVERSEER_ALLOW_DESTRUCTIVE" in resp["error"]
+    assert reached["called"] is False
