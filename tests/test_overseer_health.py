@@ -141,3 +141,9 @@ def test_build_report_json_serializable_and_mirrors_exit(tmp_path):
     import json as _json
     _json.dumps(report)
     assert report["healthy"] == (code == 0)
+
+
+def test_conftest_puts_repo_root_first():
+    # Regression: an external PYTHONPATH entry must not shadow repo packages.
+    root = os.path.dirname(os.path.dirname(os.path.abspath(oh.__file__)))
+    assert sys.path[0] == root
