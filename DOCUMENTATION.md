@@ -199,7 +199,8 @@ A small READ/ACT tool-calling loop over an OpenAI-compatible chat API (OpenRoute
 2. **Post-flight**: if valid, a **detached** supervisor (`restart_helper`, pure
    stdlib, imports nothing from `watcherdog`) SIGTERM/KILLs the old pid, relaunches,
    and waits for the health beacon (`data/watcher_healthy`, touched via
-   `mark_healthy()` after "Listening for ibo"). If the new process never becomes
+   `mark_healthy()` after "Listening for ibo", then refreshed **every sweep** so it
+   reflects ongoing liveness, not just startup). If the new process never becomes
    healthy, it restores the backups and relaunches again.
 
 > Relaunch uses `sys.argv` + `sys.executable` (a nohup-style same-launch). A
@@ -284,7 +285,9 @@ and the fast commands.
 | `data/bot_tasks.json` | In-progress action tasks (resume after restart). |
 | `data/bot_access.json` | Runtime-granted action access. |
 | `data/self_edits.json` | Journal of pending self-edits (path + backup) for rollback. |
-| `data/watcher_healthy` | Health beacon the restart supervisor waits on. |
+| `data/watcher_healthy` | Health beacon — touched at startup AND **every sweep** (per-sweep heartbeat). The restart supervisor waits on it; `scripts/overseer_health.py` reads its mtime to tell a live watcher from a wedged one. |
+| `data/telegram.out.log` / `data/telegram.err.log` | launchd stdout/stderr (when run under `com.watcherdog.telegram.plist`); the overseer health probe tails the err log. |
+| `data/overseer.sock` | The opt-in overseer UNIX socket (bound only when `OVERSEER_SOCKET` is set). The external Hermes overseer drives the core through it — see [the Overseer Endpoints + Runbook](docs/wiki/reference/). |
 | `data/farmer_pc_map.json` | `{PC: [bot, ...]}` map of which panel runs on which PC (read by `roster.load_pc_map`). No longer used by the hourly report (now status-grouped); optional. |
 | `data/watcher.session` / `data/bot.session` | Telethon sessions (user account / bot). If `tg_probe.py` says `NOT_AUTHORIZED` or login codes do not arrive, run `tools/tg_login.py --reset-session --legacy-start` to move stale watcher session files aside and use the original Telethon login flow. |
 | `data/gui_run.log` | Activity log (sweeps, detections, alerts). |
