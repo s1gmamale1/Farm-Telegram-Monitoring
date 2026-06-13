@@ -136,3 +136,61 @@ def test_load_pc_map_missing_file_returns_empty(tmp_path, monkeypatch):
     mapping = roster.load_pc_map(_cfg())
     roster._pc_map_cache = None
     assert mapping == {}
+
+
+def test_classify_status_detailed_error_returns_reason():
+    from watcherdog import roster
+
+    class _Cfg:
+        quiet_threshold_minutes = 60
+
+    status, code, detail = roster.classify_status_detailed(
+        "❌ proxy timeout — connection refused", 5.0, _Cfg())
+    assert status == roster.ATTENTION
+    assert code == "error"
+    assert detail  # a non-empty human summary
+    assert len(detail) <= 160
+
+
+def test_classify_status_detailed_accounts_mismatch():
+    from watcherdog import roster
+
+    class _Cfg:
+        quiet_threshold_minutes = 60
+
+    # "accounts: 2 warmup started" — classify() returns "normal" (matches warmup
+    # started in _NORMAL_RE, no error tokens), but account count is 2 != 4.
+    status, code, detail = roster.classify_status_detailed(
+        "accounts: 2 warmup started", 3.0, _Cfg())
+    assert status == roster.ATTENTION
+    assert code == "accounts"
+    assert detail == "accounts 2/4"
+
+
+def test_classify_status_detailed_farming_and_quiet():
+    from watcherdog import roster
+
+    class _Cfg:
+        quiet_threshold_minutes = 60
+
+    # "warmup started" is classified "normal" by classify() and triggers farming_indicator.
+    s_farm, c_farm, _ = roster.classify_status_detailed(
+        "warmup started", 2.0, _Cfg())
+    assert s_farm == roster.FARMING and c_farm == ""
+
+    # "idle" is classified "unknown" by classify() but has no error tokens; here
+    # we use "collected drop" which classify() maps to "normal" with no farming signal.
+    s_quiet, c_quiet, _ = roster.classify_status_detailed(
+        "collected drop", 5.0, _Cfg())
+    assert s_quiet == roster.QUIET and c_quiet == "quiet"
+
+
+def test_classify_status_backcompat_returns_status_only():
+    from watcherdog import roster
+
+    class _Cfg:
+        quiet_threshold_minutes = 60
+
+    assert roster.classify_status("❌ error", 5.0, _Cfg()) == roster.ATTENTION
+    # "warmup started" is classified "normal" by classify() and triggers farming_indicator.
+    assert roster.classify_status("warmup started", 2.0, _Cfg()) == roster.FARMING
