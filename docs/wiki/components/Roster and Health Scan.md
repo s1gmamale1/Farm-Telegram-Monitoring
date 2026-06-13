@@ -27,9 +27,9 @@ flowchart TD
   B --> C["classify_status(text, age_min, cfg)"]
   C --> D{age > 180?}
   D -->|yes| DEAD[💀 dead]
-  D -->|no| E{not normal, or acc != 4, or age > 90?}
+  D -->|no| E{error bucket, or acc != 4, or age > 90?}
   E -->|yes| ATT[🔴 needs attention]
-  E -->|no| F{recent + warmup/match/lobby?}
+  E -->|no| F{recent + warmup/match/lobby/launch?}
   F -->|yes| FARM[✅ farming]
   F -->|no| QUIET[⚠️ quiet]
 ```
@@ -41,9 +41,19 @@ flowchart TD
 | Condition | Status |
 |-----------|--------|
 | `age_min > 180` | `💀 dead` (`DEAD`) |
-| non-`normal` bucket OR `acc != 4` OR `age_min > 90` | `🔴 needs attention` (`ATTENTION`) |
-| recent + farming keyword (`warm up`/`match`/`lobby` via `_FARMING_KEYWORDS`) | `✅ farming` (`FARMING`) |
+| `error` bucket OR `acc != 4` OR `age_min > 90` | `🔴 needs attention` (`ATTENTION`) |
+| recent + farming keyword (`warm up`/`match`/`lobby`/`launch(ing/ed)` via `_FARMING_KEYWORDS`) | `✅ farming` (`FARMING`) |
 | else | `⚠️ quiet` (`QUIET`) |
+
+> [!note] Flag on FRESHNESS, not unrecognized content (PR #20, 2026-06-14)
+> Only a genuine **`error`** bucket flags 🔴 on content. An **`unknown`** message —
+> a panel status line we have no pattern for, e.g. *"Starting lobby creation in 60
+> sec."* — is NOT a red flag: it falls through to the freshness ladder (stale `>90`
+> → 🔴, dead `>180` → 💀; otherwise farming/quiet by age). This mirrors the live
+> recovery path, which already drops `unknown` messages (`mcp_watcher` when
+> `analyze_unknown` is off), so the report never paints 🔴 on a panel the recovery
+> loop ignores. Earlier code flagged any non-`normal` bucket, which red-alarmed
+> fresh, healthy lobby/launch chatter.
 
 `extract_account_count(text)` (`roster.py:41`) parses the account count out of the message.
 
