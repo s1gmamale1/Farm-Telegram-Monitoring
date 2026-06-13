@@ -99,6 +99,28 @@ def _load_system_prompt(cfg, *, actions=None):
     return "\n\n".join(parts)
 
 
+def _make_log_file_handler(cfg):
+    """A size-rotating file handler for gui_run_log (caps unbounded growth)."""
+    from logging.handlers import RotatingFileHandler
+    os.makedirs(os.path.dirname(cfg.gui_run_log) or ".", exist_ok=True)
+    return RotatingFileHandler(
+        cfg.gui_run_log,
+        maxBytes=int(cfg.gui_run_log_max_mb) * 1024 * 1024,
+        backupCount=int(cfg.gui_run_log_backups),
+        encoding="utf-8",
+    )
+
+
+def _quiet_noisy_loggers(verbose):
+    """Telethon's per-packet DEBUG is ~all the log volume and almost never useful.
+    Cap it at INFO even under --verbose (WARNING otherwise) so watcherdog's own DEBUG
+    stays readable and the file doesn't explode."""
+    import logging as _logging
+    level = _logging.INFO if verbose else _logging.WARNING
+    for name in ("telethon", "asyncio"):
+        _logging.getLogger(name).setLevel(level)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="WatcherDogBot MCP/MTProto watcher")
     parser.add_argument("--once", action="store_true", help="one monitor sweep then exit")
@@ -111,8 +133,7 @@ def main(argv=None):
 
     handlers = [logging.StreamHandler()]
     try:
-        os.makedirs(os.path.dirname(cfg.gui_run_log) or ".", exist_ok=True)
-        handlers.append(logging.FileHandler(cfg.gui_run_log))
+        handlers.append(_make_log_file_handler(cfg))
     except OSError as exc:
         print(f"Could not open log file {cfg.gui_run_log}: {exc}", file=sys.stderr)
     logging.basicConfig(
@@ -120,6 +141,7 @@ def main(argv=None):
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         handlers=handlers,
     )
+    _quiet_noisy_loggers(args.verbose)
 
     problems = cfg.validate_watcher()
     if problems:

@@ -214,3 +214,49 @@ def test_recent_returns_plain_dicts(store):
     rows = store.recent(limit=1)
     assert isinstance(rows[0], dict)
     assert "bot" in rows[0]
+
+
+# --- benign flag: auto-suppressed no-ops are recorded but excluded from the
+#     recurring-error COUNT (history is kept; only the alert count ignores them).
+
+def test_recurring_excludes_benign(tmp_path):
+    from watcherdog.storage import IncidentStore
+    s = IncidentStore(str(tmp_path / "i.db"))
+    a = {"summary": "boom"}
+    # 3 benign (suppressed no-op) records of the same hash → must NOT recur
+    for t in (100.0, 200.0, 300.0):
+        s.record("SinFermera4", "critical", a, "hbenign", "client crashed and restarted",
+                 notified=False, benign=True, ts=t)
+    assert s.recurring(window_seconds=10_000, min_count=3, now=400.0) == []
+    # 3 real (non-benign) records of another hash → DOES recur
+    for t in (100.0, 200.0, 300.0):
+        s.record("SinFermera5", "high", a, "hreal", "proxy dead", notified=False, ts=t)
+    groups = s.recurring(window_seconds=10_000, min_count=3, now=400.0)
+    assert [g["raw_hash"] for g in groups] == ["hreal"]
+
+
+def test_record_benign_defaults_false_and_persists(tmp_path):
+    from watcherdog.storage import IncidentStore
+    s = IncidentStore(str(tmp_path / "i.db"))
+    s.record("B", "high", {"summary": "x"}, "h1", "x", notified=False)            # default
+    s.record("B", "high", {"summary": "x"}, "h2", "x", notified=False, benign=True)
+    rows = {r["raw_hash"]: r["benign"] for r in
+            s.conn.execute("SELECT raw_hash, benign FROM incidents").fetchall()}
+    assert rows == {"h1": 0, "h2": 1}
+
+
+def test_benign_column_migration_on_legacy_db(tmp_path):
+    # A pre-existing DB created WITHOUT the benign column must gain it on re-open.
+    import sqlite3
+    db = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, "
+        "bot TEXT NOT NULL, severity TEXT NOT NULL, summary TEXT, root_cause TEXT, fix TEXT, "
+        "raw_hash TEXT NOT NULL, raw_excerpt TEXT, notified INTEGER NOT NULL DEFAULT 0)")
+    conn.commit(); conn.close()
+    from watcherdog.storage import IncidentStore
+    s = IncidentStore(db)                                  # __init__ must ALTER-add benign
+    s.record("B", "high", {"summary": "x"}, "h", "x", notified=False, benign=True)
+    row = s.conn.execute("SELECT benign FROM incidents WHERE raw_hash='h'").fetchone()
+    assert row["benign"] == 1

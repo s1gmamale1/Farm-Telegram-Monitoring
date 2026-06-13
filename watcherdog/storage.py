@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -29,13 +30,23 @@ class IncidentStore:
                 fix         TEXT,
                 raw_hash    TEXT    NOT NULL,
                 raw_excerpt TEXT,
-                notified    INTEGER NOT NULL DEFAULT 0
+                notified    INTEGER NOT NULL DEFAULT 0,
+                benign      INTEGER NOT NULL DEFAULT 0
             )
             """
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_incidents_hash_ts ON incidents(raw_hash, ts)"
         )
+        # Migration: pre-existing DBs gain the `benign` flag in place (mirrors the
+        # incident_tracker novel-column migration).
+        try:
+            self.conn.execute(
+                "ALTER TABLE incidents ADD COLUMN benign INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                logging.getLogger("watcherdog.storage").warning(
+                    "benign-column migration failed: %s", exc)
         self.conn.commit()
 
     def last_seen(self, raw_hash, notified_only=False):
@@ -51,13 +62,15 @@ class IncidentStore:
         row = cur.fetchone()
         return row["ts"] if row else None
 
-    def record(self, bot, severity, analysis, raw_hash, raw_excerpt, notified, ts=None):
+    def record(self, bot, severity, analysis, raw_hash, raw_excerpt, notified,
+               ts=None, benign=False):
         ts = ts if ts is not None else time.time()
         cur = self.conn.execute(
             """
             INSERT INTO incidents
-                (ts, bot, severity, summary, root_cause, fix, raw_hash, raw_excerpt, notified)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (ts, bot, severity, summary, root_cause, fix, raw_hash, raw_excerpt,
+                 notified, benign)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -69,6 +82,7 @@ class IncidentStore:
                 raw_hash,
                 raw_excerpt[:4000],
                 1 if notified else 0,
+                1 if benign else 0,
             ),
         )
         self.conn.commit()
@@ -95,7 +109,7 @@ class IncidentStore:
                    MAX(ts)                    AS last_ts,
                    GROUP_CONCAT(DISTINCT bot) AS bots
             FROM incidents
-            WHERE ts >= ?
+            WHERE ts >= ? AND benign = 0
             GROUP BY raw_hash
             HAVING COUNT(*) >= ?
             ORDER BY count DESC, last_ts DESC
@@ -106,7 +120,7 @@ class IncidentStore:
         for row in cur.fetchall():
             latest = self.conn.execute(
                 "SELECT severity, summary, raw_excerpt FROM incidents "
-                "WHERE raw_hash = ? ORDER BY ts DESC LIMIT 1",
+                "WHERE raw_hash = ? AND benign = 0 ORDER BY ts DESC LIMIT 1",
                 (row["raw_hash"],),
             ).fetchone()
             groups.append({

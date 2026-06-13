@@ -535,6 +535,36 @@ def test_drop_collection_error_with_strong_signal_still_alerts(tmp_path, monkeyp
     store.close()
 
 
+def test_auto_suppressed_record_is_tagged_benign(tmp_path, monkeypatch):
+    # A KNOWN benign no-op (auto_fix → "suppressed") must be recorded with
+    # benign=1 so the recurring-error watchdog never counts it (BUG #4): a
+    # self-healing event that recurs must NOT fire a 🔁 RECURRING alert.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true",
+        "AGENT_ACTIONS_ENABLED": "true",
+        "MIN_SEVERITY": "low",
+        "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+
+    async def suppressed_fix(*_a, **_k):
+        return {"status": "suppressed"}
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", suppressed_fix)
+
+    text = "client crashed and restarted successfully"
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, {}, "ibo", "SinFermera9", text,
+        time.time(), asyncio.new_event_loop(), deliver=True, ent=None))
+
+    assert client.sent == []                       # suppressed → no owner alert
+    row = store.conn.execute(
+        "SELECT benign FROM incidents WHERE raw_hash = ?",
+        (mcp_watcher.error_hash(text),)).fetchone()
+    assert row is not None and row["benign"] == 1  # recorded, tagged benign
+    store.close()
+
+
 # ---------------------------------------------------------------------------
 # incident lifecycle: open on alert, resolve on healthy (end-to-end)
 # ---------------------------------------------------------------------------
