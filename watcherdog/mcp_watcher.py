@@ -1191,6 +1191,10 @@ async def monitor_once(client, cfg, store, state, watch, target, deliver=True):
         log.info("Seeding silence state; already quiet (not alerting): %s",
                  ", ".join(already_silent))
     log.info("Sweep: %d chats, %d healthy", len(watch), healthy)
+    # Per-sweep heartbeat: refresh the health beacon so the overseer health probe
+    # (scripts/overseer_health.py) can distinguish a live, sweeping watcher from a
+    # hung one. (The startup-only touch in run() left beacon mtime == uptime.)
+    self_restart.mark_healthy(cfg)
 
 
 # --- ibo conversation -------------------------------------------------------

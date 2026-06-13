@@ -1707,3 +1707,28 @@ def test_raising_chat_is_retried_next_sweep_not_memo_skipped(tmp_path, monkeypat
     asyncio.run(mcp_watcher.monitor_once(client, cfg, store, state, watch, "ibo", deliver=True))
     assert calls == ["Bad", "Bad"]                         # retried, not skipped
     assert "Bad::last_eval_hash" not in state              # memo cleared by the except
+
+
+def test_monitor_once_refreshes_health_beacon(tmp_path, monkeypatch):
+    # The health beacon must be a per-SWEEP heartbeat (not just a startup touch),
+    # so the overseer health probe can tell a hung sweep loop from a healthy one.
+    import os
+    cfg = _cfg(tmp_path, {"DB_PATH": str(tmp_path / "incidents.db"),
+                          "PANEL_RULES_ENABLED": "false", "SILENCE_ENABLED": "false"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+
+    async def fake_latest(client, ent, mark_read=False):
+        return "some text", None
+
+    async def fake_eval(client, cfg, store, state, target, bot, text, now, loop,
+                        deliver=True, ent=None, date=None):
+        return None
+
+    monkeypatch.setattr(mcp_watcher.tg_tools, "latest_message", fake_latest)
+    monkeypatch.setattr(mcp_watcher, "_evaluate_bot", fake_eval)
+
+    assert not os.path.exists(cfg.watcher_health_path)        # nothing yet
+    asyncio.run(mcp_watcher.monitor_once(
+        client, cfg, store, {}, [("Good", object())], "ibo", deliver=True))
+    assert os.path.exists(cfg.watcher_health_path)            # the sweep wrote it

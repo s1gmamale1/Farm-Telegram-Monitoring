@@ -14,6 +14,11 @@ the health-beacon mtime, the incidents SQLite, and the tail of the logs.
 Wake-triggers (nonzero exit): process dead, OR wedged (health beacon older than
 5x the sweep interval), OR open flagged incidents in the DB. The recent-errors
 tail and socket presence are report-only and never flip the exit code.
+
+The health beacon is refreshed every sweep (a per-sweep heartbeat in
+monitor_once), so its mtime is a true liveness signal: a hung sweep loop stops
+touching it and correctly trips the wedged check, while a healthy watcher
+refreshes it each cycle and never does.
 """
 from __future__ import annotations
 
