@@ -130,3 +130,96 @@ def _panel_reason(info):
         return _truncate(detail, 60)
     code = info.get("reason_code") or ""
     return _REASON_LABELS.get(code, code or "flagged")
+
+
+_SEV_RANK = {"critical": 0, "high": 1, "low": 3}
+
+
+def _red_rank(num, info, inc):
+    """Sort key for 🔴 panels: severity asc (critical first), then oldest first."""
+    sev = (inc or {}).get("severity")
+    return (_SEV_RANK.get(sev, 2), -info["age_min"])
+
+
+def _red_line(num, info, is_new, action):
+    new = " 🆕" if is_new else ""
+    parts = [_panel_reason(info), _fmt_age(info["age_min"])]
+    if action:
+        parts.append(action)
+    return f"🔴 SF{num}{new} — " + " · ".join(parts)
+
+
+def _amber_token(num, info, is_new):
+    tok = f"SF{num} {_fmt_age(info['age_min'])}"
+    return f"{tok} 🆕" if is_new else tok
+
+
+def build(fleet, incidents, fix_line, prev_state, now):
+    """Render the hourly report. Returns ``(text, new_state)``. Pure and total —
+    never raises on empty/odd inputs."""
+    items = sorted(fleet.items())
+    cur_snapshot = _snapshot(fleet)
+    prev_snapshot = (prev_state or {}).get("last_snapshot") or {}
+    new_flagged, recovered = _diff(prev_snapshot, cur_snapshot)
+    if not prev_snapshot:
+        new_flagged = set()  # first run / no baseline → nothing is "new" yet
+    inc_idx = _index_incidents(incidents)
+
+    new_state = {
+        "last_hour": now.strftime("%Y-%m-%d %H"),
+        "last_sent_iso": now.isoformat(timespec="seconds"),
+        "last_snapshot": cur_snapshot,
+    }
+    hhmm = now.strftime("%H:%M")
+    total = len(items)
+
+    if total == 0:
+        return f"🐕 {hhmm} — no panels in watch", new_state
+
+    farming = [(n, i) for n, i in items if i["status"] == roster.FARMING]
+    quiet = [(n, i) for n, i in items if i["status"] == roster.QUIET]
+    attn = [(n, i) for n, i in items if i["status"] == roster.ATTENTION]
+    dead = [(n, i) for n, i in items if i["status"] == roster.DEAD]
+
+    # All-green fast path — keep the channel quiet when nothing is wrong.
+    if len(farming) == total:
+        tail = fix_line or "🔧 no fixes needed"
+        return f"🐕 {hhmm} — ✅ all {total} farming · {tail}", new_state
+
+    lines = []
+    header = f"🐕 Hourly Report — {hhmm}"
+    gap = _gap_line(prev_state, now)
+    if gap:
+        header += f"          {gap}"
+    lines.append(header)
+    lines.append(
+        f"✅ {len(farming)} farming · ⚠️ {len(quiet)} quiet · "
+        f"🔴 {len(attn)} attention · 💀 {len(dead)} dead   ({total} panels)")
+    lines.append("")
+
+    if dead or attn or quiet:
+        lines.append("NEEDS ATTENTION")
+        for n, info in sorted(dead):
+            lines.append(f"💀 SF{n} — silent {_fmt_age(info['age_min'])}")
+        for n, info in sorted(
+                attn, key=lambda ni: _red_rank(ni[0], ni[1], inc_idx.get(ni[1]["name"]))):
+            action = _panel_action(inc_idx.get(info["name"]))
+            lines.append(_red_line(n, info, str(n) in new_flagged, action))
+        if quiet:
+            toks = [_amber_token(n, info, str(n) in new_flagged)
+                    for n, info in sorted(quiet, key=lambda ni: -ni[1]["age_min"])]
+            lines.append("⚠️ " + " · ".join(toks))
+        lines.append("")
+
+    if farming:
+        names = " ".join(f"SF{n}" for n, _ in farming)
+        lines.append(f"✅ FARMING ({len(farming)}): {names}")
+    if recovered:
+        since = _prev_hhmm(prev_state)
+        rec = " ".join(f"SF{n}" for n in recovered)
+        lines.append(
+            f"✅ recovered since {since}: {rec}" if since else f"✅ recovered: {rec}")
+
+    lines.append("")
+    lines.append(fix_line or "🔧 No fixes needed last hour.")
+    return "\n".join(lines).rstrip(), new_state

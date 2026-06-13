@@ -81,3 +81,94 @@ def test_panel_reason_uses_detail_then_falls_back():
         {"reason_code": "stale", "reason_detail": ""}) == "stale"
     assert hr._panel_reason(
         {"reason_code": "quiet", "reason_detail": ""}) == "quiet"
+
+
+def _fleet_entry(status, age, name, code="", detail=""):
+    return {"status": status, "age_min": age, "name": name,
+            "reason_code": code, "reason_detail": detail, "pc": "?"}
+
+
+def test_build_all_green_oneliner():
+    fleet = {n: _fleet_entry("✅ farming", 2, f"SinFermera{n}") for n in range(1, 25)}
+    text, state = hr.build(fleet, [], None, {}, datetime(2026, 6, 13, 3, 0))
+    assert text == "🐕 03:00 — ✅ all 24 farming · 🔧 no fixes needed"
+    assert state["last_snapshot"]["1"] == "✅"
+    assert state["last_sent_iso"] == "2026-06-13T03:00:00"
+
+
+def test_build_all_green_with_fixes_shows_fix_clause():
+    fleet = {n: _fleet_entry("✅ farming", 2, f"SinFermera{n}") for n in range(1, 4)}
+    text, _ = hr.build(fleet, [], "🔧 Fixed last hour: SF1 proxy", {},
+                       datetime(2026, 6, 13, 3, 0))
+    assert text == "🐕 03:00 — ✅ all 3 farming · 🔧 Fixed last hour: SF1 proxy"
+
+
+def test_build_empty_roster():
+    text, _ = hr.build({}, [], None, {}, datetime(2026, 6, 13, 3, 0))
+    assert text == "🐕 03:00 — no panels in watch"
+
+
+def test_build_layered_sections_and_ordering():
+    fleet = {
+        1: _fleet_entry("🔴 needs attention", 1, "SinFermera1", "error", "error"),
+        10: _fleet_entry("🔴 needs attention", 24, "SinFermera10", "accounts", "accounts 2/4"),
+        2: _fleet_entry("⚠️ quiet", 75, "SinFermera2", "quiet", ""),
+        7: _fleet_entry("⚠️ quiet", 2, "SinFermera7", "quiet", ""),
+        3: _fleet_entry("✅ farming", 2, "SinFermera3"),
+        5: _fleet_entry("✅ farming", 2, "SinFermera5"),
+    }
+    text, _ = hr.build(fleet, [], None, {}, datetime(2026, 6, 13, 3, 0))
+    assert "NEEDS ATTENTION" in text
+    assert "🔴 SF10 — accounts 2/4 · 24m" in text
+    assert "🔴 SF1 — error · 1m" in text
+    assert text.index("🔴 SF10 —") < text.index("🔴 SF1 —")
+    assert "⚠️ SF2 75m · SF7 2m" in text
+    assert "✅ FARMING (2): SF3 SF5" in text
+    assert "🔧 No fixes needed last hour." in text
+
+
+def test_build_joins_incident_action():
+    fleet = {
+        10: _fleet_entry("🔴 needs attention", 24, "SinFermera10", "accounts", "accounts 2/4"),
+    }
+    incidents = [{"bot": "SinFermera10", "novel": 0, "fix_attempted": "relaunch",
+                  "fix_retries": 1, "severity": "high"}]
+    text, _ = hr.build(fleet, incidents, None, {}, datetime(2026, 6, 13, 3, 0))
+    assert "🔴 SF10 — accounts 2/4 · 24m · relaunch ×2" in text
+
+
+def test_build_new_and_recovered_markers():
+    fleet = {
+        9: _fleet_entry("🔴 needs attention", 5, "SinFermera9", "error", "err"),
+        7: _fleet_entry("✅ farming", 2, "SinFermera7"),
+    }
+    prev = {"last_snapshot": {"9": "✅", "7": "🔴"},
+            "last_sent_iso": "2026-06-13T02:00:00"}
+    text, _ = hr.build(fleet, [], None, prev, datetime(2026, 6, 13, 3, 0))
+    assert "🔴 SF9 🆕" in text
+    assert "recovered since 02:00: SF7" in text
+
+
+def test_build_join_with_real_incident_tracker(tmp_path):
+    from watcherdog.incident_tracker import IncidentTracker
+
+    db = tmp_path / "inc.db"
+    tr = IncidentTracker(str(db))
+    tr.open("panel", "SinFermera15", "panel:SinFermera15", "high",
+            "screen grab failed", fixable=False, novel=True)
+    incidents = tr.open_list()
+
+    fleet = {15: _fleet_entry("🔴 needs attention", 11, "SinFermera15",
+                              "error", "error creating screenshot")}
+    text, _ = hr.build(fleet, incidents, None, {}, datetime(2026, 6, 13, 3, 0))
+    assert "cold-cased, needs PC" in text
+
+
+def test_build_first_run_suppresses_new_markers():
+    # No prior snapshot → no baseline → nothing is "🆕" even though panels are flagged.
+    fleet = {
+        1: _fleet_entry("🔴 needs attention", 5, "SinFermera1", "error", "err"),
+        2: _fleet_entry("⚠️ quiet", 80, "SinFermera2", "quiet", ""),
+    }
+    text, _ = hr.build(fleet, [], None, {}, datetime(2026, 6, 13, 3, 0))
+    assert "🆕" not in text

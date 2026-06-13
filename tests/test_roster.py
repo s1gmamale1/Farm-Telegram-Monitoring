@@ -194,3 +194,13 @@ def test_classify_status_backcompat_returns_status_only():
     assert roster.classify_status("❌ error", 5.0, _Cfg()) == roster.ATTENTION
     # "warmup started" is classified "normal" by classify() and triggers farming_indicator.
     assert roster.classify_status("warmup started", 2.0, _Cfg()) == roster.FARMING
+
+
+def test_full_24_bot_map_covers_every_bot():
+    raw = {"1": [1, 2], "2": [3, 4], "3": [5, 6], "4": [9, 10], "5": [23, 24],
+           "6": [7, 8], "7": [11, 12], "8": [15, 16], "9": [13, 14],
+           "10": [17, 18], "11": [19, 20], "12": [21, 22]}
+    got = roster._invert_pc_map(raw)
+    assert len(got) == 24
+    assert all(b in got for b in range(1, 25))
+    assert len(set(got.values())) == 12
