@@ -19,7 +19,7 @@ Ideas and known gaps, roughly prioritized. Done items are checked.
 
 ## High priority
 - [ ] Restore the talker bot: `TELEGRAM_BOT_TOKEN` read as missing/invalid at the 2026-06-12 relaunch (`Bot interface disabled` in the log). Monitoring/alerts/ibo commands unaffected; commands sent TO the bot account don't answer until the token is fixed in `.env`. (Owner: "can wait".)
-- [ ] Recreate `data/farmer_pc_map.json` — missing at the 2026-06-12 relaunch, so `/status` shows `PC ?` for every bot instead of the bot→PC mapping.
+- [ ] Recreate `data/farmer_pc_map.json` — missing at the 2026-06-12 relaunch, so `/status` shows `PC ?` for every bot instead of the bot→PC mapping. (No longer affects the **hourly report** — that was redesigned 2026-06-13 to group by status, not PC; only `/status` still renders the PC label.)
 
 ## Medium
 - [ ] RDP-reboot review residuals (PR #18, reviewer's wording, non-blocking): (a) the "attempts exhausted + rdp <30m → HOLD the cold case" rule is implemented for flag decisions and the self-report path, but `_evaluate_panel`'s retry-cap still cold-cases with a live sub-threshold marker (premature needs-PC alert; the reboot still fires on schedule afterwards — fail-safe); (b) `fix_attempted="reboot_pc"` is never recorded on the open incident row — only daily_report; (c) the pre-threshold hold can delay a genuinely-dead PC's HIGH alert by up to ~30m (skips the flag branch's /start probe); (d) `panel_actions.reboot_pc` ignores its `cfg` param (confirm flow on the 20s default); (e) the self-report retry-cap path can issue three /starts in one sweep (handler probe + rung pre-press probe + press menu open) — the rung could accept the handler's already-fetched probe text.
