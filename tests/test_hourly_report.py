@@ -47,3 +47,37 @@ def test_truncate():
     long = "x" * 80
     out = hr._truncate(long, 60)
     assert len(out) == 60 and out.endswith("…")
+
+
+def test_index_incidents_keeps_latest_per_bot():
+    incs = [
+        {"bot": "SinFermera10", "fix_attempted": "relaunch", "fix_retries": 0,
+         "novel": 0, "severity": "high"},
+        {"bot": "SinFermera10", "fix_attempted": "relaunch", "fix_retries": 1,
+         "novel": 0, "severity": "high"},  # newer (open_list is opened_ts ASC)
+    ]
+    idx = hr._index_incidents(incs)
+    assert idx["SinFermera10"]["fix_retries"] == 1
+
+
+def test_panel_action_variants():
+    assert hr._panel_action(None) == ""
+    assert hr._panel_action({"novel": 1}) == "cold-cased, needs PC"
+    assert hr._panel_action(
+        {"novel": 0, "fix_attempted": "", "fix_retries": 0}) == "incident open"
+    assert hr._panel_action(
+        {"novel": 0, "fix_attempted": "relaunch", "fix_retries": 0}) == "relaunch"
+    assert hr._panel_action(
+        {"novel": 0, "fix_attempted": "novel-ladder", "fix_retries": 1}
+    ) == "novel ladder ×2"
+
+
+def test_panel_reason_uses_detail_then_falls_back():
+    assert hr._panel_reason(
+        {"reason_code": "error", "reason_detail": "proxy timeout"}) == "proxy timeout"
+    assert hr._panel_reason(
+        {"reason_code": "accounts", "reason_detail": "accounts 2/4"}) == "accounts 2/4"
+    assert hr._panel_reason(
+        {"reason_code": "stale", "reason_detail": ""}) == "stale"
+    assert hr._panel_reason(
+        {"reason_code": "quiet", "reason_detail": ""}) == "quiet"

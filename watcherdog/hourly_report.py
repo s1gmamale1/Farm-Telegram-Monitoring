@@ -86,3 +86,47 @@ def _truncate(s, n):
 def _fmt_age(age_min):
     """``24m`` for a real age; ``?`` for the sentinel (no message ever seen)."""
     return "?" if age_min >= 10000 else f"{age_min:.0f}m"
+
+
+def _index_incidents(incidents):
+    """``{bot_name: incident_dict}`` keeping the most-recent row per bot.
+
+    ``open_list()`` is ordered by ``opened_ts`` ascending, so a later row in the
+    list is newer — assigning unconditionally lets it win.
+    """
+    idx = {}
+    for inc in incidents or []:
+        bot = inc.get("bot")
+        if bot:
+            idx[bot] = inc
+    return idx
+
+
+def _panel_action(inc):
+    """What the watcher has done about a flagged panel, from its open incident.
+
+    Empty string when there's no incident to report. Truthful: only renders what
+    the DB actually records — never the monitor loop's in-memory 'armed' state.
+    """
+    if inc is None:
+        return ""
+    if inc.get("novel"):
+        return "cold-cased, needs PC"
+    fix = (inc.get("fix_attempted") or "").strip()
+    if not fix:
+        return "incident open"
+    label = fix.replace("_", " ").replace("-", " ").strip()
+    retries = inc.get("fix_retries") or 0
+    return f"{label} ×{retries + 1}" if retries else label
+
+
+_REASON_LABELS = {"stale": "stale", "quiet": "quiet", "dead": "silent"}
+
+
+def _panel_reason(info):
+    """Short 'why flagged' string — the detail when present, else a code label."""
+    detail = (info.get("reason_detail") or "").strip()
+    if detail:
+        return _truncate(detail, 60)
+    code = info.get("reason_code") or ""
+    return _REASON_LABELS.get(code, code or "flagged")
