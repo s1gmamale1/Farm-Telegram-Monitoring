@@ -26,7 +26,12 @@ QUIET = "⚠️ quiet"
 ATTENTION = "🔴 needs attention"
 DEAD = "💀 dead"
 
-_FARMING_KEYWORDS = re.compile(r"\b(warm\s*up|match|lobby)\b", re.I)
+# Live farm-loop vocabulary — a panel emitting any of these is actively working
+# (warming up, matchmaking, building a lobby, launching accounts), so a FRESH
+# message containing one reads as ✅ farming. Kept broad on the farming side
+# because it only ever promotes a fresh panel QUIET→FARMING; it never overrides
+# the error/accounts/stale/dead flags, which are decided first.
+_FARMING_KEYWORDS = re.compile(r"\b(warm\s*up|match|lobby|launch(?:ing|ed)?)\b", re.I)
 _ACCOUNTS_RE = re.compile(r"accounts?\s*[=:]\s*(\d+)", re.I)
 _BOT_NUM_RE = re.compile(r"(\d+)")
 
@@ -94,7 +99,14 @@ def classify_status_detailed(text, age_min, cfg):
         return DEAD, "dead", ""
     bucket = classify(text) if text else "unknown"
     acc = extract_account_count(text) if text else None
-    if bucket not in ("normal", ""):
+    # Only a GENUINE error (classify == "error") flags on content. "unknown"
+    # chatter — a panel status line we don't have a pattern for — is NOT a red
+    # flag on its own: it falls through to the freshness ladder below, exactly
+    # like the live recovery path, which drops "unknown" messages
+    # (mcp_watcher: analyze_unknown off). This keeps the report flagging on
+    # message FRESHNESS, not unrecognized content (e.g. fresh "lobby creation"
+    # is the panel working, not a problem).
+    if bucket == "error":
         return ATTENTION, "error", summarize(text)
     if acc is not None and acc != 4:
         return ATTENTION, "accounts", f"accounts {acc}/4"
