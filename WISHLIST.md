@@ -18,7 +18,7 @@ Ideas and known gaps, roughly prioritized. Done items are checked.
 - [x] **Faster full sweep** — `scan_once` does a fast sidebar pass then deep-reads only unread / preview-changed chats (hybrid sidebar+deep).
 
 ## High priority
-- [ ] Restore the talker bot: `TELEGRAM_BOT_TOKEN` read as missing/invalid at the 2026-06-12 relaunch (`Bot interface disabled` in the log). Monitoring/alerts/ibo commands unaffected; commands sent TO the bot account don't answer until the token is fixed in `.env`. (Owner: "can wait".)
+- ~~Restore the talker bot (`TELEGRAM_BOT_TOKEN`)~~ — **DROPPED 2026-06-14 (owner).** The Bot-API talker is intentionally NOT used: the Hermes overseer reads the incidents DB + logs directly (`scripts/overseer_health.py` + the overseer socket), and proactive alerts fall back to the user account. The recurring `Bot interface disabled: TELEGRAM_BOT_TOKEN missing/invalid` log line is **expected, not a defect** — no token needed.
 - [ ] Recreate `data/farmer_pc_map.json` — missing at the 2026-06-12 relaunch, so `/status` shows `PC ?` for every bot instead of the bot→PC mapping. (No longer affects the **hourly report** — that was redesigned 2026-06-13 to group by status, not PC; only `/status` still renders the PC label.)
 
 ## Medium
