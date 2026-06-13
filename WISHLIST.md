@@ -33,6 +33,7 @@ Ideas and known gaps, roughly prioritized. Done items are checked.
 - [ ] Multi-monitor / window-moved resilience (re-find window mid-cycle).
 
 ## Nice to have
+- [ ] **[roster] extend farm-loop vocabulary if panels emit other matchmaking phrases** — `watcherdog/roster.py:34` `_FARMING_KEYWORDS` now covers `warmup|match|lobby|launch(ing/ed)`. A fresh panel line using a *different* active-farming phrase (e.g. `queue`/`queuing`, `searching for match`, `in game`, `playing`) currently reads ⚠️ QUIET instead of ✅ FARMING — harmless (still not 🔴) but cosmetically off. Build when we observe such phrases in real panel traffic; add the exact tokens (held off speculatively to keep the regex evidence-based). Effort: S.
 - [ ] launchd service for GUI mode (needs Accessibility granted to the python binary, not just Terminal).
 - [ ] `caffeinate` wrapper so the Mac never sleeps while watching.
 - [ ] Quiet hours / rate limiting on alerts.
