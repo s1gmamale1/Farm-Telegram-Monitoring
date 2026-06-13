@@ -16,7 +16,7 @@ import re
 import time
 
 from watcherdog import tg_tools
-from watcherdog.classifier import classify
+from watcherdog.classifier import classify, summarize
 
 logger = logging.getLogger("watcherdog.roster")
 
@@ -81,28 +81,43 @@ def load_pc_map(cfg):
     return _pc_map_cache
 
 
-def classify_status(text, age_min, cfg):
-    """Bucket one bot from its latest message text + age (minutes)."""
+def classify_status_detailed(text, age_min, cfg):
+    """Bucket one bot AND say why it's flagged.
+
+    Returns ``(status, reason_code, reason_detail)``. ``reason_code`` is one of
+    ``"error" | "accounts" | "stale" | "quiet" | "dead" | ""`` (empty = farming);
+    ``reason_detail`` is a short human string, possibly empty when the age alone
+    carries the meaning. Pure; mirrors the original ``classify_status`` branch
+    order so the status result is identical.
+    """
     if age_min > 180:
-        return DEAD
+        return DEAD, "dead", ""
     bucket = classify(text) if text else "unknown"
     acc = extract_account_count(text) if text else None
-    needs_attn = (bucket not in ("normal", "")
-                  or (acc is not None and acc != 4)
-                  or age_min > 90)
-    if needs_attn:
-        return ATTENTION
+    if bucket not in ("normal", ""):
+        return ATTENTION, "error", summarize(text)
+    if acc is not None and acc != 4:
+        return ATTENTION, "accounts", f"accounts {acc}/4"
+    if age_min > 90:
+        return ATTENTION, "stale", ""
     quiet_thr = float(getattr(cfg, "quiet_threshold_minutes", 60))
     if age_min <= quiet_thr and text and farming_indicator(text):
-        return FARMING
-    return QUIET
+        return FARMING, "", ""
+    return QUIET, "quiet", ""
+
+
+def classify_status(text, age_min, cfg):
+    """Bucket one bot from its latest message text + age (minutes). Back-compat
+    wrapper over ``classify_status_detailed`` — returns just the status string."""
+    return classify_status_detailed(text, age_min, cfg)[0]
 
 
 async def scan(client, cfg, watch):
     """Read + classify the whole watch roster.
 
-    Returns ``{bot_num: {"pc", "status", "age_min", "name"}}`` (bots without a
-    number in their name are skipped). Never raises on a single bot's read.
+    Returns ``{bot_num: {"pc", "status", "age_min", "name", "reason_code",
+    "reason_detail"}}`` (bots without a number in their name are skipped).
+    Never raises on a single bot's read.
     """
     pc_map = load_pc_map(cfg)
     now_ts = time.time()
@@ -117,10 +132,14 @@ async def scan(client, cfg, watch):
         if not m:
             continue
         bot_num = int(m.group(1))
+        status, reason_code, reason_detail = classify_status_detailed(
+            text, age_min, cfg)
         out[bot_num] = {
             "pc": pc_map.get(bot_num, "?"),
-            "status": classify_status(text, age_min, cfg),
+            "status": status,
             "age_min": age_min,
             "name": name,
+            "reason_code": reason_code,
+            "reason_detail": reason_detail,
         }
     return out

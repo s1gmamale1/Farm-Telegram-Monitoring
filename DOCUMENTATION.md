@@ -285,7 +285,7 @@ and the fast commands.
 | `data/bot_access.json` | Runtime-granted action access. |
 | `data/self_edits.json` | Journal of pending self-edits (path + backup) for rollback. |
 | `data/watcher_healthy` | Health beacon the restart supervisor waits on. |
-| `data/farmer_pc_map.json` | `{PC: [bot, ...]}` map used to group the hourly report by PC. |
+| `data/farmer_pc_map.json` | `{PC: [bot, ...]}` map of which panel runs on which PC (read by `roster.load_pc_map`). No longer used by the hourly report (now status-grouped); optional. |
 | `data/watcher.session` / `data/bot.session` | Telethon sessions (user account / bot). If `tg_probe.py` says `NOT_AUTHORIZED` or login codes do not arrive, run `tools/tg_login.py --reset-session --legacy-start` to move stale watcher session files aside and use the original Telethon login flow. |
 | `data/gui_run.log` | Activity log (sweeps, detections, alerts). |
 | `data/agent_chat.log` | The live ibo conversation, tail-able. |
@@ -318,8 +318,11 @@ and the fast commands.
    `action:` (or the `match:` doesn't fit). Add/repair the `action`.
 7. **Ollama wrong/slow** — `OLLAMA_MODEL`; first call loads the model (~20–30 s).
    `DISABLE_AI=true` bypasses triage.
-8. **Hourly report lands under "PC?"** — `data/farmer_pc_map.json` must be
-   `{PC: [bot, ...]}` (it's inverted internally); a bot-keyed map also works.
+8. **Hourly report formatting** — the report groups panels by **status**
+   (needs-attention first, then farming), not by PC, so it needs no
+   `data/farmer_pc_map.json`. Each 🔴 panel shows its reason + the watcher's last
+   action; `🆕`/`recovered` mark changes since the previous report, and an `⏰ gap`
+   line appears if reports were skipped (watcher down / Mac asleep).
 9. **Bot won't import after a self-edit** — a botched self-edit corrupted a module
    (it has happened to `commands.py` / `agent.py`). Restore the newest `*.bak.*`
    that imports: `python -c "import ast; ast.parse(open(F).read())"`, then `cp` it

@@ -40,7 +40,7 @@ from telethon.utils import get_peer_id
 
 from watcherdog import (agent, auto_fix, bot_interface, buttons, commands,
                         daily_report, drop_stats, farm_stats, fast_commands,
-                        fleet_report, learned_fixes, novel_recovery,
+                        fleet_report, hourly_report, learned_fixes, novel_recovery,
                         overseer_api, panel_actions, panel_rules, roster,
                         self_restart, tg_actions, tg_tools)
 from watcherdog.alerter import (
@@ -1570,27 +1570,36 @@ def _hourly_state_path(cfg):
     return os.path.join(os.path.dirname(cfg.db_path) or ".", "hourly_report_state.json")
 
 
-def _hourly_already_sent(cfg, hour_key):
-    """True if a report was already sent for this clock hour — so frequent
-    restarts (which each trigger the startup report) don't spam the topic."""
+def _load_hourly_state(cfg):
+    """The full hourly-report state dict (last_hour, last_sent_iso, last_snapshot),
+    or ``{}`` when absent/unreadable."""
     try:
         with open(_hourly_state_path(cfg), "r", encoding="utf-8") as fh:
-            return json.load(fh).get("last_hour") == hour_key
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
-        return False
+        return {}
 
 
-def _hourly_mark_sent(cfg, hour_key):
+def _save_hourly_state(cfg, state):
+    """Persist the full hourly-report state dict (best-effort)."""
     try:
         with open(_hourly_state_path(cfg), "w", encoding="utf-8") as fh:
-            json.dump({"last_hour": hour_key}, fh)
+            json.dump(state, fh)
     except OSError as exc:  # noqa: BLE001
         log.debug("could not write hourly state: %s", exc)
 
 
-async def run_hourly_report(client, cfg, watch, deliver=True):
-    """Read every bot in `watch`, classify, group by PC, send a compact report to
-    cfg.hourly_report_chat (optionally as a forum topic)."""
+def _hourly_already_sent(cfg, hour_key):
+    """True if a report was already sent for this clock hour — so frequent
+    restarts (which each trigger the startup report) don't spam the topic."""
+    return _load_hourly_state(cfg).get("last_hour") == hour_key
+
+
+async def run_hourly_report(client, cfg, watch, deliver=True, state=None):
+    """Read every bot in `watch`, classify by status, and send a layered report
+    (triage → fleet → changes) to cfg.hourly_report_chat (optionally a forum
+    topic). Pure rendering + the snapshot diff live in `hourly_report.build`."""
     now = datetime.now()
     # Send at most once per clock hour: a restart fires the startup report, so
     # without this many restarts in one hour would each post.
@@ -1607,61 +1616,25 @@ async def run_hourly_report(client, cfg, watch, deliver=True):
                     "(set HOURLY_REPORT_CHAT or ALLOWLIST/IBO_CHAT_ID) — skipping")
         return False
 
-    report_time_str = now.strftime("%H:%M")
     # Deterministic roster scan (shared with /status, /problems, /silent) — no LLM.
-    bot_statuses = await roster.scan(client, cfg, watch)
+    fleet = await roster.scan(client, cfg, watch)
 
-    # group by PC
-    by_pc = {}
-    for bn, info in sorted(bot_statuses.items()):
-        pc = info['pc']
-        by_pc.setdefault(pc, []).append((bn, info))
-
-    total_bots = len(bot_statuses)
-    farming = sum(1 for v in bot_statuses.values() if v['status'] == "✅ farming")
-    quiet = sum(1 for v in bot_statuses.values() if v['status'] == "⚠️ quiet")
-    attn = sum(1 for v in bot_statuses.values() if v['status'] == "🔴 needs attention")
-    dead = sum(1 for v in bot_statuses.values() if v['status'] == "💀 dead")
-
-    if farming == total_bots:
-        header = f"🐕 Hourly Report — {report_time_str}\n✅ All {total_bots} farming  |  ⚠️0  🔴0  💀0"
-    else:
-        header = f"🐕 Hourly Report — {report_time_str}\n✅ {farming} farming  |  ⚠️{quiet}  🔴{attn}  💀{dead}"
-
-    lines = [header]
-    # sort PCs numerically if possible
-    def _pc_sort_key(pc):
+    # Open incidents (the watcher-action half) via the shared tracker connection.
+    incidents = []
+    tracker = (state or {}).get("tracker")
+    if tracker is not None:
         try:
-            return (0, int(pc))
-        except ValueError:
-            return (1, pc)
+            incidents = tracker.open_list()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("hourly report: could not read open incidents: %s", exc)
 
-    for pc in sorted(by_pc.keys(), key=_pc_sort_key):
-        bots = sorted(by_pc[pc], key=lambda x: x[0])
-        nums = " ".join(f"SF{n}" for n, _ in bots)
-        emojis = "".join(_status_emoji(b['status']) for _, b in bots)
-        line = f"PC{pc}  [{nums}]  {emojis}"
-        notes = []
-        for bn, b in bots:
-            if b['status'] != "✅ farming":
-                # add note for this bot
-                age_str = f"{b['age_min']:.0f}m" if b['age_min'] < 10000 else "?"
-                if b['status'] == "💀 dead":
-                    notes.append(f"💀 SF{bn}")
-                elif b['status'] == "🔴 needs attention":
-                    notes.append(f"🔴 SF{bn } {age_str}")
-                else:  # quiet
-                    notes.append(f"⚠️ SF{bn} quiet {age_str}")
-        if notes:
-            line += " — " + ", ".join(notes)
-        lines.append(line)
-
-    # Phase 4 — what the watcher auto-fixed (router, cards, AI) in the last hour.
+    # What the watcher auto-fixed in the last hour (router/cards/ladder).
     since = (now - timedelta(hours=1)).isoformat(timespec="seconds")
     fix_line = daily_report.summary_since(cfg.daily_errors_path, since)
-    lines.append(fix_line if fix_line else "🔧 No fixes needed last hour.")
 
-    report_text = "\n".join(lines)
+    prev_state = _load_hourly_state(cfg)
+    report_text, new_state = hourly_report.build(
+        fleet, incidents, fix_line, prev_state, now)
 
     if not deliver:
         log.info("[DRY-RUN] hourly report:\n%s", report_text)
@@ -1674,7 +1647,8 @@ async def run_hourly_report(client, cfg, watch, deliver=True):
     try:
         target = await client.get_entity(chat_ref)
     except Exception as exc:  # noqa: BLE001
-        log.error("hourly report: target chat %s not found: %s", cfg.hourly_report_chat, exc)
+        log.error("hourly report: target chat %s not found: %s",
+                  cfg.hourly_report_chat, exc)
         return False
 
     kwargs = {}
@@ -1682,30 +1656,23 @@ async def run_hourly_report(client, cfg, watch, deliver=True):
         kwargs['reply_to'] = int(cfg.hourly_report_topic)
     try:
         await client.send_message(target, report_text[:4000], **kwargs)
-        _hourly_mark_sent(cfg, hour_key)
-        log.info("hourly report sent to %s (topic=%s)", cfg.hourly_report_chat, cfg.hourly_report_topic or "none")
+        _save_hourly_state(cfg, new_state)  # persist ONLY after a successful send
+        log.info("hourly report sent to %s (topic=%s)",
+                 cfg.hourly_report_chat, cfg.hourly_report_topic or "none")
         return True
     except Exception as exc:  # noqa: BLE001
         log.error("hourly report send failed: %s", exc)
         return False
 
 
-def _status_emoji(status):
-    if status == "✅ farming": return "✅"
-    if status == "⚠️ quiet": return "⚠️"
-    if status == "🔴 needs attention": return "🔴"
-    if status == "💀 dead": return "💀"
-    return "❓"
-
-
-async def _hourly_report_loop(client, cfg, watch, deliver=True):
+async def _hourly_report_loop(client, cfg, watch, deliver=True, state=None):
     """Post an initial report shortly after startup, then one at the TOP of every
     hour. The startup post means you see it immediately (and a restart never
     leaves up to an hour of silence)."""
     await asyncio.sleep(30)  # let the watcher settle, then post once
     while True:
         try:
-            await run_hourly_report(client, cfg, watch, deliver)
+            await run_hourly_report(client, cfg, watch, deliver, state=state)
         except Exception:  # noqa: BLE001
             log.exception("hourly report failed; continuing")
         now = datetime.now()
@@ -1922,7 +1889,7 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
             client.loop.create_task(
                 _weekly_digest_loop(client, cfg, ibos, system_prompt, state, deliver))
         if cfg.hourly_report_enabled:
-            client.loop.create_task(_hourly_report_loop(client, cfg, watch, deliver))
+            client.loop.create_task(_hourly_report_loop(client, cfg, watch, deliver, state=state))
             log.info("Hourly farm report: topic=%s in chat=%s",
                      cfg.hourly_report_topic or "none", cfg.hourly_report_chat)
         log.info("Listening for ibo messages; sweeping folder every %.0fs. "

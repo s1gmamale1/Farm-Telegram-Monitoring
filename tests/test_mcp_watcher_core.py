@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from watcherdog import mcp_watcher
+from watcherdog import mcp_watcher, roster
 from watcherdog.config import Config
 from watcherdog.storage import IncidentStore
 
@@ -352,7 +352,7 @@ def test_load_cached_chats_handles_corrupt_json(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _hourly_already_sent / _hourly_mark_sent (pure I/O helpers)
+# _hourly_already_sent / _save_hourly_state (pure I/O helpers)
 # ---------------------------------------------------------------------------
 
 def test_hourly_already_sent_returns_false_when_no_file(tmp_path):
@@ -363,13 +363,13 @@ def test_hourly_already_sent_returns_false_when_no_file(tmp_path):
 def test_hourly_mark_sent_and_already_sent(tmp_path):
     cfg = Config({"DB_PATH": str(tmp_path / "monitor.db")})
     hour_key = "2026-06-07 10"
-    mcp_watcher._hourly_mark_sent(cfg, hour_key)
+    mcp_watcher._save_hourly_state(cfg, {"last_hour": hour_key})
     assert mcp_watcher._hourly_already_sent(cfg, hour_key) is True
 
 
 def test_hourly_already_sent_different_hour_returns_false(tmp_path):
     cfg = Config({"DB_PATH": str(tmp_path / "monitor.db")})
-    mcp_watcher._hourly_mark_sent(cfg, "2026-06-07 10")
+    mcp_watcher._save_hourly_state(cfg, {"last_hour": "2026-06-07 10"})
     assert mcp_watcher._hourly_already_sent(cfg, "2026-06-07 11") is False
 
 
@@ -390,7 +390,7 @@ def test_hourly_report_skips_when_no_target(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _status_emoji
+# _status_emoji (now lives in roster.status_emoji)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("status,emoji", [
@@ -401,7 +401,7 @@ def test_hourly_report_skips_when_no_target(tmp_path, monkeypatch):
     ("unknown status", "❓"),
 ])
 def test_status_emoji(status, emoji):
-    assert mcp_watcher._status_emoji(status) == emoji
+    assert roster.status_emoji(status) == emoji
 
 
 # ---------------------------------------------------------------------------
