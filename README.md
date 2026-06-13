@@ -254,6 +254,7 @@ its default). The keys you'll touch most:
 | `AGENT_MODEL` | `deepseek/deepseek-v4-pro` | The free-form conversation model (OpenRouter), opt-in via `DISABLE_AI=false`. |
 | `NOVEL_RECOVERY` | `true` | Deterministic generic-restart ladder for novel errors (ban/captcha family always exempt). |
 | `OVERSEER_SOCKET` / `OVERSEER_TOKEN` | unset | Opt-in overseer endpoint surface (local UNIX socket) — see `docs/wiki/reference/Overseer Endpoints.md`. |
+| `OVERSEER_ALLOW_DESTRUCTIVE` | `false` | Lets the external overseer press destructive buttons / run the ladder over the socket. Default off — it can still observe + teach. See the [Hermes Overseer Runbook](docs/wiki/reference/Hermes%20Overseer%20Runbook.md). |
 | `AGENT_API_KEY` / `OPENROUTER_API_KEY` | — | Model key (also read from `~/.hermes/.env`). |
 | `AGENT_ACTIONS_ENABLED` | `true` | Let the agent DRIVE panels, not just read. |
 | `BOT_ACTIONS_ENABLED` | `false` | Let the BOT trigger actions (for `BOT_ACTION_USERS`). |
@@ -314,6 +315,7 @@ handshake/network failure apart from a "just need to log in" state),
 `list_dialogs.py` (find chat ids), `agent_probe.py` (ask the agent a question
 from the CLI), `simulate_error.py` (log-mode testing), `gui_probe.py` /
 `ax_probe.py` (legacy GUI debugging).
+`overseer_health.py` (prints a one-line JSON health summary and exits nonzero when the watcher is dead, wedged, or has flagged incidents — the Option-B wake trigger for the Hermes overseer).
 
 ---
 
