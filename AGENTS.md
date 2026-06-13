@@ -56,6 +56,28 @@ resolves against the watch roster only (`"SF7"`/`"7"`/`"SinFermera7"`).
 - `teach_fix` cannot mint standing auto-destructive authority (`auto:yes` + a
   destructive step is refused) — the owner keeps confirm authority.
 
+## Known-expected — do NOT flag these as issues or try to "fix" them
+
+These log lines are **intentional state, not defects.** Do not raise them, and do
+not offer to fix them (the owner has decided):
+
+- **`Bot interface disabled: TELEGRAM_BOT_TOKEN missing/invalid`** — the Telegram
+  Bot-API talker is **intentionally dropped**. You (Hermes) read the DB + logs + the
+  overseer socket directly; proactive alerts fall back to the user account. No token
+  is needed. **Do not set or recreate the token.**
+- **`could not load farmer_pc_map.json ... using empty map`** — the PC map is
+  **optional**. The hourly report is status-grouped (no PC needed); only `/status`'s
+  PC label is affected. Recreate it only if the owner explicitly asks.
+- **`AI disabled` / deterministic fallback replies** — by design (`DISABLE_AI=true`,
+  the deterministic core). The model path is opt-in; this is not a regression.
+- **`escalated_recent` in the health probe** — an incident that **escalated** has
+  already alerted the human and is THEIRS to resolve (e.g. a panel needing its PC
+  powered on). It's shown for visibility, NOT as something for you to re-act on; it
+  does not make the system "unhealthy."
+
+When in doubt, act only on `flagged` (open novel incidents) and genuine
+down/wedged/error signals — not on the expected states above.
+
 ## Read next
 
 - **[Hermes Overseer Runbook](docs/wiki/reference/Hermes%20Overseer%20Runbook.md)** —
