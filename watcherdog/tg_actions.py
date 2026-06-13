@@ -90,13 +90,18 @@ def _find_button(message, button):
     return None
 
 
-async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
+async def press_button(client, chat, button, *, confirmed=False,
+                       allow_destructive=True, timeout=20.0):
     """Open the panel menu and press the button whose label matches ``button``.
 
     Matching is case-insensitive: exact, then prefix, then substring (so the
     truncated labels in skill 0 work). Destructive buttons return
     ``{"need_confirm": True, ...}`` unless ``confirmed=True``. On success returns
     ``{"pressed", "destructive", "result"}`` with the bot's reply text.
+
+    When ``allow_destructive`` is false a destructive MATCHED label is refused
+    outright (the overseer guardrail keys on the resolved label, not the param,
+    so a benign-looking param like "all cs" can't slip past it).
     """
     ent = await _resolve(client, chat)
     menu = await _open_menu(client, ent, timeout=timeout)
@@ -108,6 +113,10 @@ async def press_button(client, chat, button, *, confirmed=False, timeout=20.0):
         return {"error": f"no button matching {button!r}", "buttons": _labels(menu)}
 
     label, btn = match
+    if is_destructive(label) and not allow_destructive:
+        return {"refused": "destructive", "button": label,
+                "message": (f"'{label}' is destructive and OVERSEER_ALLOW_DESTRUCTIVE "
+                            "is off — set it true to authorize.")}
     if is_destructive(label) and not confirmed:
         return {"need_confirm": True, "button": label,
                 "message": (f"'{label}' is destructive — ask ibo first, then "
