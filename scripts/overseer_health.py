@@ -99,7 +99,13 @@ def _escalated(db_path, since):
             rows = tr.escalated_list(since=since)
         finally:
             tr.close()
-        bots = [r["bot"] for r in rows]
+        # Unique panel names (a panel may have escalated more than once in the
+        # window); count == len(bots), consistent with _flagged.
+        bots = []
+        for r in rows:
+            b = r["bot"]
+            if b and b not in bots:
+                bots.append(b)
         return {"count": len(bots), "bots": bots}
     except Exception as exc:  # noqa: BLE001
         return {"count": 0, "bots": [], "error": str(exc)}
