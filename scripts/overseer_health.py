@@ -42,6 +42,7 @@ from watcherdog.incident_tracker import IncidentTracker
 _SWEEP_RE = re.compile(r"Sweep:\s*(\d+)\s*chats,\s*(\d+)\s*healthy")
 _TS_RE = re.compile(r"(\d{2}:\d{2})")
 _ERR_RE = re.compile(r"Traceback|ERROR|CRITICAL")
+_ESCALATED_WINDOW_S = 24 * 60 * 60   # surface escalations from the last 24h as context
 
 # A live watcher's command line is "<python> [/path/]run_watcher.py …". Requiring
 # the python interpreter excludes CARRIERS that merely mention the script — an
@@ -79,6 +80,23 @@ def _flagged(db_path):
         tr = IncidentTracker(db_path)
         try:
             rows = tr.novel_list()
+        finally:
+            tr.close()
+        bots = [r["bot"] for r in rows]
+        return {"count": len(bots), "bots": bots}
+    except Exception as exc:  # noqa: BLE001
+        return {"count": 0, "bots": [], "error": str(exc)}
+
+
+def _escalated(db_path, since):
+    """Recently-escalated incidents (auto-recovery gave up → human alerted, so they
+    no longer appear in `flagged`/`list_flagged`). REPORT-ONLY context so an
+    escalated-but-still-down panel isn't invisible behind `healthy: true` — the
+    human was already alerted, so this never flips the exit code."""
+    try:
+        tr = IncidentTracker(db_path)
+        try:
+            rows = tr.escalated_list(since=since)
         finally:
             tr.close()
         bots = [r["bot"] for r in rows]
@@ -141,18 +159,23 @@ def build_report(cfg, now, *, alive_fn=_process_alive):
     beacon_stale = beacon_age is not None and beacon_age > stale_thr
     wedged = bool(alive and beacon_stale)
     flagged = _flagged(cfg.db_path)
+    escalated = _escalated(cfg.db_path, now - _ESCALATED_WINDOW_S)
     sock = getattr(cfg, "overseer_socket", "") or ""
     report = {
         "process_alive": alive,
         "beacon_age_s": None if beacon_age is None else round(beacon_age, 1),
         "wedged": wedged,
         "flagged": flagged,
+        "escalated_recent": escalated,
         "last_sweep": _last_sweep(getattr(cfg, "gui_run_log", "") or ""),
         "recent_errors": _recent_errors(
             [os.path.join(data_dir, "telegram.err.log"),
              getattr(cfg, "gui_run_log", "") or ""]),
         "socket_present": (os.path.exists(sock) if sock else None),
     }
+    # NOTE: escalated_recent is REPORT-ONLY — auto-recovery already alerted the human,
+    # so it must not flip the exit code (else Hermes would be woken in a loop on a
+    # human-owned incident). It only restores VISIBILITY of an escalated-down panel.
     unhealthy = (not alive) or beacon_stale or flagged.get("count", 0) > 0
     report["healthy"] = not unhealthy
     return report, (1 if unhealthy else 0)

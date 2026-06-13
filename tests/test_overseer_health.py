@@ -178,3 +178,22 @@ def test_build_report_dead_with_stale_beacon_exit_1_not_wedged(tmp_path):
     assert report["process_alive"] is False
     assert report["wedged"] is False                   # dead, not "wedged"
     assert report["healthy"] is False
+
+
+def test_build_report_escalated_recent_is_report_only(tmp_path):
+    # An escalated-but-still-down panel drops out of `flagged` (status!='open'), so
+    # `healthy` can be True; `escalated_recent` restores VISIBILITY without flipping
+    # the exit code (the human was already alerted).
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path)
+    tr = IncidentTracker(cfg.db_path)
+    tr.open("panel", "SinFermera11", "panel:SinFermera11", "high", "needs PC",
+            fixable=False, novel=True, now=1000.0)
+    tr.escalate("panel:SinFermera11", now=1500.0)
+    tr.close()
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n"); os.utime(beacon, (1500.0, 1500.0))
+    report, code = oh.build_report(cfg, 1560.0, alive_fn=lambda: True)
+    assert report["flagged"]["count"] == 0                 # escalated out of the open queue
+    assert report["escalated_recent"]["bots"] == ["SinFermera11"]
+    assert report["healthy"] is True and code == 0         # context only, not a wake trigger
