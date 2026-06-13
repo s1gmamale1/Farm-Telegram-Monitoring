@@ -326,6 +326,24 @@ class IncidentTracker:
         except sqlite3.OperationalError:
             return []
 
+    def escalated_list(self, since=None):
+        """Incidents that ESCALATED (auto-recovery gave up → human alerted, so they
+        drop out of the open queue). With ``since``, only those whose ``resolved_ts``
+        (the escalation time) is >= ``since``. Newest first. Lets the overseer still
+        SEE a needs-human panel that is no longer 'open'."""
+        try:
+            if since is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM open_incidents WHERE status = 'escalated' "
+                    "ORDER BY resolved_ts DESC").fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM open_incidents WHERE status = 'escalated' "
+                    "AND resolved_ts >= ? ORDER BY resolved_ts DESC", (since,)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
     def due_for_followup(self, interval_s, now):
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM open_incidents WHERE status = 'open' "

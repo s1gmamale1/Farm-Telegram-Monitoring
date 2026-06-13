@@ -440,3 +440,17 @@ def test_resolve_by_id_only_open_rows(tmp_path):
     assert t.open_for_bot("bot_error", "SF7") is None          # closed
     assert t.resolve_by_id(row["id"], "again", now=300.0) is False  # already resolved
     t.close()
+
+
+def test_escalated_list_returns_escalated_with_since_filter(tmp_path):
+    from watcherdog.incident_tracker import IncidentTracker
+    tr = IncidentTracker(str(tmp_path / "i.db"))
+    tr.open("panel", "SinFermera11", "panel:SinFermera11", "high", "needs PC",
+            fixable=False, novel=True, now=100.0)
+    # not escalated yet → empty
+    assert tr.escalated_list() == []
+    tr.escalate("panel:SinFermera11", now=200.0)
+    assert [r["bot"] for r in tr.escalated_list()] == ["SinFermera11"]
+    assert [r["bot"] for r in tr.escalated_list(since=150.0)] == ["SinFermera11"]
+    assert tr.escalated_list(since=300.0) == []   # escalated (ts=200) is before the window
+    tr.close()
