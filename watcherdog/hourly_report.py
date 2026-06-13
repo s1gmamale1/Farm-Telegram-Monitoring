@@ -117,7 +117,9 @@ def _panel_action(inc):
         return "incident open"
     label = fix.replace("_", " ").replace("-", " ").strip()
     retries = inc.get("fix_retries") or 0
-    return f"{label} ×{retries + 1}" if retries else label
+    # fix_retries is the TOTAL attempt count (note_fix_attempt increments it from
+    # 0 on the FIRST attempt), so show ×N only for a genuine repeat.
+    return f"{label} ×{retries}" if retries > 1 else label
 
 
 _REASON_LABELS = {"stale": "stale", "quiet": "quiet", "dead": "silent"}
@@ -155,8 +157,9 @@ def _amber_token(num, info, is_new):
 
 
 def build(fleet, incidents, fix_line, prev_state, now):
-    """Render the hourly report. Returns ``(text, new_state)``. Pure and total —
-    never raises on empty/odd inputs."""
+    """Render the hourly report. Returns ``(text, new_state)``. Pure; never raises
+    given a well-formed roster (every entry has status+age_min, as roster.scan
+    guarantees)."""
     items = sorted(fleet.items())
     cur_snapshot = _snapshot(fleet)
     prev_snapshot = (prev_state or {}).get("last_snapshot") or {}
@@ -176,15 +179,26 @@ def build(fleet, incidents, fix_line, prev_state, now):
     if total == 0:
         return f"🐕 {hhmm} — no panels in watch", new_state
 
-    farming = [(n, i) for n, i in items if i["status"] == roster.FARMING]
-    quiet = [(n, i) for n, i in items if i["status"] == roster.QUIET]
-    attn = [(n, i) for n, i in items if i["status"] == roster.ATTENTION]
-    dead = [(n, i) for n, i in items if i["status"] == roster.DEAD]
+    farming, quiet, attn, dead = [], [], [], []
+    for n, info in items:
+        s = info.get("status", "")
+        if s == roster.FARMING:
+            farming.append((n, info))
+        elif s == roster.QUIET:
+            quiet.append((n, info))
+        elif s == roster.DEAD:
+            dead.append((n, info))
+        else:  # ATTENTION and any unexpected status → visible in triage, never dropped
+            attn.append((n, info))
 
-    # All-green fast path — keep the channel quiet when nothing is wrong.
+    # All-green fast path — quiet when nothing is wrong, but still surface a
+    # recovery (the best news) when the fleet just healed to all-green.
     if len(farming) == total:
-        tail = fix_line or "🔧 no fixes needed"
-        return f"🐕 {hhmm} — ✅ all {total} farming · {tail}", new_state
+        parts = [f"🐕 {hhmm} — ✅ all {total} farming"]
+        if recovered:
+            parts.append("recovered: " + " ".join(f"SF{n}" for n in recovered))
+        parts.append(fix_line or "🔧 no fixes needed")
+        return " · ".join(parts), new_state
 
     lines = []
     header = f"🐕 Hourly Report — {hhmm}"

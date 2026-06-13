@@ -65,11 +65,12 @@ def test_panel_action_variants():
     assert hr._panel_action({"novel": 1}) == "cold-cased, needs PC"
     assert hr._panel_action(
         {"novel": 0, "fix_attempted": "", "fix_retries": 0}) == "incident open"
+    # one attempt (fix_retries increments to 1 on the first) → label, no ×
     assert hr._panel_action(
-        {"novel": 0, "fix_attempted": "relaunch", "fix_retries": 0}) == "relaunch"
+        {"novel": 0, "fix_attempted": "novel-ladder", "fix_retries": 1}) == "novel ladder"
+    # two attempts → ×2
     assert hr._panel_action(
-        {"novel": 0, "fix_attempted": "novel-ladder", "fix_retries": 1}
-    ) == "novel ladder ×2"
+        {"novel": 0, "fix_attempted": "retry", "fix_retries": 2}) == "retry ×2"
 
 
 def test_panel_reason_uses_detail_then_falls_back():
@@ -103,6 +104,13 @@ def test_build_all_green_with_fixes_shows_fix_clause():
     assert text == "🐕 03:00 — ✅ all 3 farming · 🔧 Fixed last hour: SF1 proxy"
 
 
+def test_build_all_green_shows_recovery():
+    fleet = {n: _fleet_entry("✅ farming", 2, f"SinFermera{n}") for n in (1, 2)}
+    prev = {"last_snapshot": {"1": "🔴", "2": "✅"}, "last_sent_iso": "2026-06-13T02:00:00"}
+    text, _ = hr.build(fleet, [], None, prev, datetime(2026, 6, 13, 3, 0))
+    assert text == "🐕 03:00 — ✅ all 2 farming · recovered: SF1 · 🔧 no fixes needed"
+
+
 def test_build_empty_roster():
     text, _ = hr.build({}, [], None, {}, datetime(2026, 6, 13, 3, 0))
     assert text == "🐕 03:00 — no panels in watch"
@@ -127,14 +135,21 @@ def test_build_layered_sections_and_ordering():
     assert "🔧 No fixes needed last hour." in text
 
 
-def test_build_joins_incident_action():
+def test_build_joins_incident_action(tmp_path):
+    # Real IncidentTracker (not a dict fake): two recorded attempts → "×2".
+    from watcherdog.incident_tracker import IncidentTracker
+    tr = IncidentTracker(str(tmp_path / "inc.db"))
+    tr.open("bot_error", "SinFermera10", "bot_error:SinFermera10", "high",
+            "accounts low", fixable=True)
+    tr.note_fix_attempt("bot_error:SinFermera10", "retry")
+    tr.note_fix_attempt("bot_error:SinFermera10", "retry")
+    incidents = tr.open_list()
+
     fleet = {
         10: _fleet_entry("🔴 needs attention", 24, "SinFermera10", "accounts", "accounts 2/4"),
     }
-    incidents = [{"bot": "SinFermera10", "novel": 0, "fix_attempted": "relaunch",
-                  "fix_retries": 1, "severity": "high"}]
     text, _ = hr.build(fleet, incidents, None, {}, datetime(2026, 6, 13, 3, 0))
-    assert "🔴 SF10 — accounts 2/4 · 24m · relaunch ×2" in text
+    assert "🔴 SF10 — accounts 2/4 · 24m · retry ×2" in text
 
 
 def test_build_new_and_recovered_markers():
