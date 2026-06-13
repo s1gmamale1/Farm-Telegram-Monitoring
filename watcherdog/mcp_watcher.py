@@ -1016,7 +1016,7 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
         status = (outcome or {}).get("status")
         fix_status = status
         if status == "suppressed":
-            store.record(bot, severity, analysis, h, text, notified=False, ts=now)
+            store.record(bot, severity, analysis, h, text, notified=False, benign=True, ts=now)
             log.info("AUTO-SUPPRESS %s (%s) — known no-op, no AI", bot, severity)
             return
         if status == "fixed":
