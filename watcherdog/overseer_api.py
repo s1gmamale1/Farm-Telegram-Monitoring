@@ -121,8 +121,9 @@ async def _h_press_button(ctx, params):
         raise ValueError("dry-run: refusing to press real buttons")
     button = str(params.get("button") or "")
     confirmed = bool(params.get("confirmed", False))
-    res = await tg_actions.press_button(ctx["client"], ent, button,
-                                        confirmed=confirmed)
+    res = await tg_actions.press_button(
+        ctx["client"], ent, button, confirmed=confirmed,
+        allow_destructive=getattr(ctx["cfg"], "overseer_allow_destructive", False))
     # Audit keyed on the RESULT, not the raw param: press_button matches labels
     # by prefix/substring, so the param may understate what was pressed (or the
     # press may have failed entirely — no false "ok" records).
@@ -137,6 +138,9 @@ async def _h_run_ladder(ctx, params):
     name, ent = _entity(ctx, params.get("bot"))
     if ent is None:
         raise ValueError(f"unknown bot: {params.get('bot')!r} (not in watch roster)")
+    if not getattr(ctx["cfg"], "overseer_allow_destructive", False):
+        raise ValueError("run_ladder is destructive: set OVERSEER_ALLOW_DESTRUCTIVE=true "
+                         "to authorize")
     return await novel_recovery.attempt(ctx["client"], ctx["cfg"], name,
                                         params.get("text") or "",
                                         chat=ent, deliver=ctx["deliver"])
