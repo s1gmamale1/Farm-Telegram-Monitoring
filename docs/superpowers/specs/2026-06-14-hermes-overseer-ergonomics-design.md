@@ -88,8 +88,13 @@ Reads:
 - `process_alive` — is a `run_watcher.py` process running (scan via `pgrep`-equivalent
   / `psutil`-free `subprocess`; match the command line, exclude self).
 - `beacon_age_s` — `now - mtime(cfg.watcher_health_path)` (the `data/watcher_healthy`
-  beacon `self_restart.mark_healthy` writes). `wedged = process_alive and
-  beacon_age_s > 5 * cfg.watch_poll_interval`.
+  beacon). `wedged = process_alive and beacon_age_s > 5 * cfg.watch_poll_interval`.
+  **Design correction (found during build):** `mark_healthy` was called only once at
+  startup, so the beacon mtime equalled *uptime*, not liveness — a live watcher would
+  false-flag as wedged after ~10 min. Fix: `monitor_once` now calls
+  `self_restart.mark_healthy(cfg)` every sweep, making the beacon a true per-sweep
+  heartbeat (a hung sweep loop stops refreshing it → correctly wedged). This is the
+  one small touch to the monitor loop in this work.
 - `flagged` — `IncidentTracker(cfg.db_path).novel_list()` read **directly from
   SQLite** (works when the watcher is down): `{"count": N, "bots": [...]}`.
 - `last_sweep` — newest `Sweep: N chats, M healthy` line in `cfg` gui log
