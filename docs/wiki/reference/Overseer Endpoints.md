@@ -6,6 +6,15 @@ the core imports no model. Opt-in: the watcher binds the socket only when
 `OVERSEER_SOCKET` is set in `.env`. Optional shared secret via
 `OVERSEER_TOKEN` (each request must then carry `"token"`).
 
+**Destructive safe-mode (`OVERSEER_ALLOW_DESTRUCTIVE`, default `false`).** Observe,
+diagnose, and teach are always available, but **destructive presses (Kill / Reboot /
+Shutdown …) and `run_ladder` are refused unless `OVERSEER_ALLOW_DESTRUCTIVE=true`** —
+even with `confirmed:true`. The gate is on the *matched* button label, so a benign-
+looking param (`"all cs"`) that resolves to a destructive button (`"Kill All CS &
+Steam"`) is still refused. This is SEPARATE from `PANEL_AUTO_DESTRUCTIVE` (the
+in-process core's own owner-authorized auto-recovery, default on) — the core keeps
+recovering panels itself; this flag only governs the external socket path.
+
 ## Protocol
 
 One JSON object per line (ndjson), request → response:
@@ -23,7 +32,10 @@ Request lines are capped at 64 KB. Every call is audit-logged, including
 unauthorized and unknown-method requests; confirmed destructive presses are
 additionally recorded to the daily fix log with the actually-pressed label.
 Under a dry run, `press_button` refuses and `run_ladder` returns `skipped` —
-the overseer can never press what the loop couldn't.
+the overseer can never press what the loop couldn't. Independently, with
+`OVERSEER_ALLOW_DESTRUCTIVE` off (the default), a destructive `press_button` returns
+`{"refused": "destructive", "button": "<label>"}` and `run_ladder` returns an
+`OVERSEER_ALLOW_DESTRUCTIVE` error before any action.
 
 Teaching policy: `teach_fix` rejects control characters in every field (the
 brain file is line-oriented), and refuses `auto: yes` combined with a
@@ -38,8 +50,8 @@ authority. Teach destructive fixes with `auto: ""`.
 | `list_flagged` | — | `IncidentTracker.novel_list()` | open `novel=1` incident rows (the overseer queue) |
 | `read_bot` | `bot`, `limit=15` | `tg_tools.read_history` (watch-roster entity only) | `{chat, id, messages:[{from,date,text}]}` |
 | `list_buttons` | `bot` | `tg_actions.panel_menu` | panel inline-button labels |
-| `press_button` | `bot`, `button`, `confirmed=false` | `tg_actions.press_button` | press result; destructive labels refused without `confirmed:true` (confirmed destructive presses are recorded to the daily fix log) |
-| `run_ladder` | `bot`, `text=""` | `novel_recovery.attempt` (all gates honored: needs_human, NOVEL_RECOVERY, dry-run) | attempt outcome (`attempted/failed/skipped/human_needed`) |
+| `press_button` | `bot`, `button`, `confirmed=false` | `tg_actions.press_button` | press result. A destructive **matched label** is refused unless **both** `confirmed:true` **and** `OVERSEER_ALLOW_DESTRUCTIVE=true` (returns `{"refused":"destructive"}` when the flag is off); confirmed destructive presses are recorded to the daily fix log |
+| `run_ladder` | `bot`, `text=""` | `novel_recovery.attempt` (gates: needs_human, NOVEL_RECOVERY, dry-run) | attempt outcome (`attempted/failed/skipped/human_needed`). **Refused entirely unless `OVERSEER_ALLOW_DESTRUCTIVE=true`** (the kill→select→start ladder is destructive) |
 | `get_stats` | — | `fleet_report.snapshot` | the fleet (per-bot status, drops, value) |
 | `resolve_flagged` | `id`, `resolution` | `IncidentTracker.resolve_by_id` | `{"resolved": true|false}` (false = already closed/unknown) |
 | `teach_fix` | `signature`, `match`, `fix`, `action=""`, `auto=""`, `type="ai"` | `learned_fixes.append_fix` (added_by `overseer`, dated) | the written fix block |
@@ -53,6 +65,12 @@ raw Telegram username is never resolved.
 
 `list_flagged` → `read_bot` (investigate) → `press_button`/`run_ladder` (fix)
 → `teach_fix` (so next time is script-only) → `resolve_flagged`.
+
+The fix step needs `OVERSEER_ALLOW_DESTRUCTIVE=true` for any destructive press or the
+ladder; with the flag off the overseer still investigates, teaches non-destructive
+fixes, and resolves — it just can't take destructive host actions. For the host-side
+wiring (launchd, the wake-on-trouble health probe, the strict prompt), see
+[[Hermes Overseer Runbook]].
 
 ## The vision loop (Phase 6)
 
