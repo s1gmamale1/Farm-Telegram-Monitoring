@@ -24,6 +24,17 @@ def test_farming_indicator():
     assert roster.farming_indicator("collected drop") is False
 
 
+def test_farming_indicator_includes_launch_vocab():
+    # Real SinFermera farm-loop chatter ("Accounts launching...", "...launched")
+    # is the panel actively working and must read as healthy, not flag.
+    assert roster.farming_indicator("Accounts launching...") is True
+    assert roster.farming_indicator("launched 4 accounts") is True
+    assert roster.farming_indicator("Starting lobby creation in 60 sec.") is True
+    # Routine non-farming lines stay False so they don't get a false ✅.
+    assert roster.farming_indicator("collected drop") is False
+    assert roster.farming_indicator("farmed this week") is False
+
+
 def test_invert_pc_map_both_shapes():
     assert roster._invert_pc_map({"5": [9, 10]}) == {9: "5", 10: "5"}
     assert roster._invert_pc_map({"9": "5"}) == {9: "5"}
@@ -99,9 +110,58 @@ def test_classify_status_quiet_at_exactly_90_min():
     assert roster.classify_status("collected drop", 90, _cfg(quiet=60)) == roster.QUIET
 
 
-def test_classify_status_attention_when_no_text_and_recent():
-    """No text (bot never replied) → not farming → ATTENTION."""
-    assert roster.classify_status(None, 5, _cfg()) == roster.ATTENTION
+def test_classify_status_no_text_but_recent_is_quiet():
+    """A fresh message with no text body (e.g. media-only) is heard-from-recently,
+    so QUIET — never 🔴. Flagging is freshness-driven, not content-driven. (In
+    practice scan maps a truly silent bot to age≈1e6 → DEAD; this guards the
+    (no-text, recent) edge.)"""
+    assert roster.classify_status(None, 5, _cfg()) == roster.QUIET
+
+
+# --- freshness over content: unknown chatter is not a red flag ---------------
+
+def test_fresh_lobby_creation_is_farming_not_attention():
+    """The reported bug: a fresh 'lobby creation' line is the panel working, not a
+    problem. classify() buckets it 'unknown', but fresh + farming keyword → ✅."""
+    status, code, _ = roster.classify_status_detailed(
+        "Starting lobby creation in 60 sec.", 10, _cfg())
+    assert status == roster.FARMING
+    assert code == ""
+
+
+def test_fresh_launching_status_is_farming():
+    """Real panel status line ('Accounts launching...') reads as ✅ farming."""
+    status, _, _ = roster.classify_status_detailed(
+        "📋 Panel status:\n└ 🚀 Status: Accounts launching...", 8, _cfg())
+    assert status == roster.FARMING
+
+
+def test_fresh_unknown_chatter_is_quiet_not_attention():
+    """A fresh but non-farming unknown line is QUIET (heard from recently), never
+    🔴 — the report flags on freshness, not unrecognized content. Mirrors the live
+    path, which drops 'unknown' messages (mcp_watcher: analyze_unknown off)."""
+    status, code, _ = roster.classify_status_detailed(
+        "status update: all systems nominal", 10, _cfg())
+    assert status == roster.QUIET
+    assert code == "quiet"
+
+
+def test_stale_unknown_chatter_is_attention():
+    """🔴 is reserved for staleness: the same fresh-looking line past 90 min IS
+    flagged, driven by age not content."""
+    status, code, _ = roster.classify_status_detailed(
+        "Starting lobby creation in 60 sec.", 95, _cfg())
+    assert status == roster.ATTENTION
+    assert code == "stale"
+
+
+def test_fresh_error_still_attention_despite_farming_words():
+    """A real error wins over farming vocabulary: 'crashed on launch' stays 🔴
+    even though it contains 'launch'."""
+    status, code, _ = roster.classify_status_detailed(
+        "CS crashed on launch", 5, _cfg())
+    assert status == roster.ATTENTION
+    assert code == "error"
 
 
 # --- load_pc_map: file-based ------------------------------------------------
