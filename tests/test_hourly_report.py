@@ -172,3 +172,25 @@ def test_build_first_run_suppresses_new_markers():
     }
     text, _ = hr.build(fleet, [], None, {}, datetime(2026, 6, 13, 3, 0))
     assert "🆕" not in text
+
+
+def test_hourly_state_roundtrip(tmp_path):
+    from watcherdog import mcp_watcher
+
+    class _Cfg:
+        db_path = str(tmp_path / "incidents.db")
+
+    cfg = _Cfg()
+    assert mcp_watcher._load_hourly_state(cfg) == {}  # absent file → {}
+
+    state = {"last_hour": "2026-06-13 03",
+             "last_sent_iso": "2026-06-13T03:00:00",
+             "last_snapshot": {"1": "🔴", "2": "✅"}}
+    mcp_watcher._save_hourly_state(cfg, state)
+    loaded = mcp_watcher._load_hourly_state(cfg)
+    assert loaded["last_snapshot"] == {"1": "🔴", "2": "✅"}
+    assert loaded["last_sent_iso"] == "2026-06-13T03:00:00"
+
+    # _hourly_already_sent still reads last_hour from the richer file
+    assert mcp_watcher._hourly_already_sent(cfg, "2026-06-13 03") is True
+    assert mcp_watcher._hourly_already_sent(cfg, "2026-06-13 04") is False
