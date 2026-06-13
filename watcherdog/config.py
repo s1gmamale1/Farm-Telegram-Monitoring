@@ -407,6 +407,14 @@ class Config:
         _ovsock = get("OVERSEER_SOCKET", "").strip()
         self.overseer_socket = resolve_path(_ovsock) if _ovsock else ""
         self.overseer_token = get("OVERSEER_TOKEN", "").strip()
+        # Default-OFF guardrail: an external overseer (Hermes) over the socket may
+        # observe/teach freely, but destructive presses (Kill/Reboot/…) and the
+        # run_ladder are refused unless this is explicitly set. SEPARATE from
+        # PANEL_AUTO_DESTRUCTIVE (the in-process core's own owner-authorized auto
+        # recovery, which stays default-on).
+        self.overseer_allow_destructive = get(
+            "OVERSEER_ALLOW_DESTRUCTIVE", "false").strip().lower() in (
+                "1", "true", "yes")
 
         # --- Deterministic panel monitoring & recovery (panel_rules.py) -------
         self.panel_rules_enabled = get(

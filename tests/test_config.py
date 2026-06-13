@@ -336,3 +336,17 @@ def test_launch_grace_and_rdp_reboot_defaults(monkeypatch):
     assert cfg.rdp_bug_reboot_minutes == 30.0
     assert cfg.reboot_wait_minutes == 15.0
     assert Config({"RDP_BUG_REBOOT_MINUTES": "45"}).rdp_bug_reboot_minutes == 45.0
+
+
+def test_overseer_allow_destructive_default_false():
+    from watcherdog.config import Config
+    cfg = Config({})
+    assert cfg.overseer_allow_destructive is False
+
+
+def test_overseer_allow_destructive_parses_true():
+    from watcherdog.config import Config
+    cfg = Config({"OVERSEER_ALLOW_DESTRUCTIVE": "true"})
+    assert cfg.overseer_allow_destructive is True
+    cfg2 = Config({"OVERSEER_ALLOW_DESTRUCTIVE": "1"})
+    assert cfg2.overseer_allow_destructive is True
