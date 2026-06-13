@@ -153,8 +153,14 @@ The knowledge base is a plain-Markdown file you can read and edit:
   exact action it was posted for. By the owner's deliberate choice, **anyone in
   the group can tap** (the token is the authorization, not the user id); the
   presser is logged. Re-tighten with `BOT_ACTION_USERS` if the group is untrusted.
-- **Hourly farm report** — a structured per-PC report posted to the **Class A
-  Farming** forum topic every hour, ending with a *"🔧 Fixed last hour"* line.
+- **Hourly farm report** — a layered, status-grouped report posted to the **Class A
+  Farming** forum topic every hour: a *needs-attention* triage block first (each
+  🔴 panel one line with its reason + the watcher's last action, e.g.
+  `accounts 2/4 · 24m · relaunch ×2` or `cold-cased, needs PC`; ⚠️ quiet panels
+  compacted), then the ✅ farming roster, then what changed since the last report
+  (`🆕` newly-flagged, `recovered since HH:MM`) and an `⏰ gap` notice if reports
+  were skipped. Collapses to a one-liner when all panels are farming, and ends with
+  the *"🔧 Fixed last hour"* line. No PC map needed — grouping is by status.
 - **Fast slash-commands** (no LLM, instant, free) — `/status`, `/problems`,
   `/silent`, `/fixes`, `/mode`. AI-backed commands (`/weekly`, `/today`, `/top`,
   `/worst`, `/value`, `/check N`, `/bans`, `/compare`, `/whatsnew`) read the
@@ -277,7 +283,8 @@ Sheets, recurring-error watchdog, weekly digest, and the legacy GUI keys).
 | `learned_fixes.py` | The Markdown **brain** (`data/hermes/learned_fixes.md`): read/match/append known fixes with runnable `action`s. |
 | `agent.py` | The read/act tool-calling agent (OpenRouter). Handles novel errors + answers questions; saves fixes. |
 | `buttons.py` | Signed single-use inline confirm/action buttons (callback queries handled with no LLM). |
-| `roster.py` | Deterministic per-bot health scan shared by the hourly report + fast commands. |
+| `roster.py` | Deterministic per-bot health scan (`status` + `reason_code`/`reason_detail`) shared by the hourly report + fast commands. |
+| `hourly_report.py` | Pure builder for the layered hourly report — status-grouped sections, incident-joined actions, snapshot diff (`🆕`/recovered/gap). No LLM, no Telethon. |
 | `fast_commands.py` / `commands.py` | No-LLM slash commands / AI-prompt slash commands. |
 | `tg_tools.py` / `tg_actions.py` | Read-only Telegram helpers / the action layer (drive panels, press buttons). |
 | `classifier.py` / `analyzer.py` | Cheap rule prefilter / Ollama triage (`is_error`, severity, summary, fix). |
