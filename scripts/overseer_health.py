@@ -43,11 +43,19 @@ _SWEEP_RE = re.compile(r"Sweep:\s*(\d+)\s*chats,\s*(\d+)\s*healthy")
 _TS_RE = re.compile(r"(\d{2}:\d{2})")
 _ERR_RE = re.compile(r"Traceback|ERROR|CRITICAL")
 
+# A live watcher's command line is "<python> [/path/]run_watcher.py …". Requiring
+# the python interpreter excludes CARRIERS that merely mention the script — an
+# editor (`vim run_watcher.py`), `tail -f …/run_watcher.py`, a shell history line —
+# which a bare "run_watcher.py" substring would falsely report as "alive", masking
+# a dead watcher. The `[ /]` makes the script the last path/word segment.
+_PROC_PATTERN = r"[Pp]ython.*[ /]run_watcher\.py"
 
-def _process_alive(pattern="run_watcher.py"):
-    """True if a process whose command line contains `pattern` is running. Uses
-    `pgrep -f`; the probe's own argv is `overseer_health.py`, so it never matches
-    itself. Any pgrep failure → False (fail-safe: the host then wakes Hermes)."""
+
+def _process_alive(pattern=_PROC_PATTERN):
+    """True if a *python* process running run_watcher.py is alive. Uses `pgrep -f`
+    with an interpreter-anchored pattern so non-python carriers don't false-positive;
+    the probe's own argv is `overseer_health.py`, so it never matches itself. Any
+    pgrep failure → False (fail-safe: the host then wakes Hermes)."""
     try:
         res = subprocess.run(["pgrep", "-f", pattern],
                              capture_output=True, text=True, timeout=10)
@@ -126,7 +134,12 @@ def build_report(cfg, now, *, alive_fn=_process_alive):
     alive = alive_fn()
     beacon_age = _beacon_age_s(getattr(cfg, "watcher_health_path", "") or "", now)
     stale_thr = 5 * float(getattr(cfg, "watch_poll_interval", 120) or 120)
-    wedged = bool(alive and beacon_age is not None and beacon_age > stale_thr)
+    # A stale beacon means the sweep loop stopped heartbeating. Drive the wake
+    # trigger off `beacon_stale` DIRECTLY (not gated on `alive`): if liveness is
+    # ever misread, a stale beacon must still wake Hermes. `wedged` keeps its
+    # "alive but not heartbeating" meaning for the human-readable field.
+    beacon_stale = beacon_age is not None and beacon_age > stale_thr
+    wedged = bool(alive and beacon_stale)
     flagged = _flagged(cfg.db_path)
     sock = getattr(cfg, "overseer_socket", "") or ""
     report = {
@@ -140,7 +153,7 @@ def build_report(cfg, now, *, alive_fn=_process_alive):
              getattr(cfg, "gui_run_log", "") or ""]),
         "socket_present": (os.path.exists(sock) if sock else None),
     }
-    unhealthy = (not alive) or wedged or flagged.get("count", 0) > 0
+    unhealthy = (not alive) or beacon_stale or flagged.get("count", 0) > 0
     report["healthy"] = not unhealthy
     return report, (1 if unhealthy else 0)
 

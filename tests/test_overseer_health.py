@@ -147,3 +147,34 @@ def test_conftest_puts_repo_root_first():
     # Regression: an external PYTHONPATH entry must not shadow repo packages.
     root = os.path.dirname(os.path.dirname(os.path.abspath(oh.__file__)))
     assert sys.path[0] == root
+
+
+def test_proc_pattern_matches_python_not_carriers():
+    # The pattern must match a real "python … run_watcher.py" command line but NOT
+    # carriers that merely mention the script (editor/tail/shell history) — those
+    # would falsely report a dead watcher as alive.
+    import re
+    pat = oh._PROC_PATTERN
+    for c in ["/opt/homebrew/.../Python run_watcher.py --verbose",
+              "python3 /Users/x/proj/run_watcher.py",
+              ".venv/bin/python run_watcher.py"]:
+        assert re.search(pat, c), f"should match: {c!r}"
+    for c in ["vim run_watcher.py",
+              "/usr/bin/tail -f /Users/x/proj/data/run_watcher.py",
+              "less run_watcher.py"]:
+        assert not re.search(pat, c), f"should NOT match: {c!r}"
+
+
+def test_build_report_dead_with_stale_beacon_exit_1_not_wedged(tmp_path):
+    # A dead watcher with a stale leftover beacon → unhealthy (exit 1) via BOTH
+    # not-alive and beacon_stale; `wedged` stays False (its meaning is "alive but
+    # not heartbeating"), proving the wake trigger is decoupled from `alive`.
+    cfg = _cfg(tmp_path)
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))                 # 700s old > 5*120
+    report, code = oh.build_report(cfg, 1700.0, alive_fn=lambda: False)
+    assert code == 1
+    assert report["process_alive"] is False
+    assert report["wedged"] is False                   # dead, not "wedged"
+    assert report["healthy"] is False
