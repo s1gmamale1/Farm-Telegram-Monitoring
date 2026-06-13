@@ -25,6 +25,12 @@ import subprocess
 import sys
 import time
 
+# Ensure local package imports work when this script is launched from an arbitrary
+# directory or launchd sandbox (e.g. when run as a health probe).
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 from watcherdog.config import load_config
 from watcherdog.incident_tracker import IncidentTracker
 
@@ -103,3 +109,43 @@ def _recent_errors(paths, limit=5):
         if len(deduped) >= limit:
             break
     return deduped
+
+
+def build_report(cfg, now, *, alive_fn=_process_alive):
+    """Gather health facts → (report_dict, exit_code). Pure given alive_fn.
+
+    exit_code is 1 when a wake-trigger holds (process dead, wedged, or any
+    flagged incident), else 0. recent_errors + socket_present are report-only.
+    """
+    data_dir = os.path.dirname(cfg.db_path) or "."
+    alive = alive_fn()
+    beacon_age = _beacon_age_s(getattr(cfg, "watcher_health_path", "") or "", now)
+    stale_thr = 5 * float(getattr(cfg, "watch_poll_interval", 120) or 120)
+    wedged = bool(alive and beacon_age is not None and beacon_age > stale_thr)
+    flagged = _flagged(cfg.db_path)
+    sock = getattr(cfg, "overseer_socket", "") or ""
+    report = {
+        "process_alive": alive,
+        "beacon_age_s": None if beacon_age is None else round(beacon_age, 1),
+        "wedged": wedged,
+        "flagged": flagged,
+        "last_sweep": _last_sweep(getattr(cfg, "gui_run_log", "") or ""),
+        "recent_errors": _recent_errors(
+            [os.path.join(data_dir, "telegram.err.log"),
+             getattr(cfg, "gui_run_log", "") or ""]),
+        "socket_present": (os.path.exists(sock) if sock else None),
+    }
+    unhealthy = (not alive) or wedged or flagged.get("count", 0) > 0
+    report["healthy"] = not unhealthy
+    return report, (1 if unhealthy else 0)
+
+
+def main(argv=None):
+    cfg = load_config()
+    report, code = build_report(cfg, time.time())
+    print(json.dumps(report))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

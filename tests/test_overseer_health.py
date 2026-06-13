@@ -53,3 +53,91 @@ def test_recent_errors_newest_first_bounded(tmp_path):
     log.write_text("".join(lines))
     errs = oh._recent_errors([str(log)], limit=2)
     assert errs == ["ERROR boom two", "ERROR boom one"]
+
+
+def _cfg(tmp_path, **kw):
+    base = dict(db_path=str(tmp_path / "i.db"),
+                watcher_health_path=str(tmp_path / "watcher_healthy"),
+                watch_poll_interval=120.0,
+                gui_run_log=str(tmp_path / "gui_run.log"),
+                overseer_socket="")
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_build_report_all_healthy(tmp_path):
+    cfg = _cfg(tmp_path)
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1100.0, alive_fn=lambda: True)
+    assert code == 0 and report["healthy"] is True
+    assert report["process_alive"] is True and report["wedged"] is False
+    assert report["flagged"]["count"] == 0
+
+
+def test_build_report_process_dead_exit_1(tmp_path):
+    report, code = oh.build_report(_cfg(tmp_path), 1100.0, alive_fn=lambda: False)
+    assert code == 1 and report["healthy"] is False
+    assert report["process_alive"] is False
+
+
+def test_build_report_wedged_beacon(tmp_path):
+    cfg = _cfg(tmp_path)
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1700.0, alive_fn=lambda: True)
+    assert report["wedged"] is True and code == 1
+
+
+def test_build_report_fresh_beacon_not_wedged(tmp_path):
+    cfg = _cfg(tmp_path)
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1060.0, alive_fn=lambda: True)
+    assert report["wedged"] is False and code == 0
+
+
+def test_build_report_flagged_triggers_exit_1(tmp_path):
+    cfg = _cfg(tmp_path)
+    tr = IncidentTracker(cfg.db_path)
+    tr.open("panel", "SinFermera15", "panel:SinFermera15", "high", "x",
+            fixable=False, novel=True)
+    tr.close()
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1060.0, alive_fn=lambda: True)
+    assert code == 1 and report["flagged"]["bots"] == ["SinFermera15"]
+
+
+def test_build_report_socket_present_is_report_only(tmp_path):
+    sock = tmp_path / "overseer.sock"
+    sock.write_text("")
+    cfg = _cfg(tmp_path, overseer_socket=str(sock))
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1060.0, alive_fn=lambda: True)
+    assert report["socket_present"] is True
+    assert code == 0
+
+
+def test_build_report_recent_errors_report_only(tmp_path):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "telegram.err.log").write_text("ERROR something bad\n")
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1060.0, alive_fn=lambda: True)
+    assert report["recent_errors"] == ["ERROR something bad"]
+    assert code == 0
+
+
+def test_build_report_json_serializable_and_mirrors_exit(tmp_path):
+    report, code = oh.build_report(_cfg(tmp_path), 1100.0, alive_fn=lambda: False)
+    import json as _json
+    _json.dumps(report)
+    assert report["healthy"] == (code == 0)
