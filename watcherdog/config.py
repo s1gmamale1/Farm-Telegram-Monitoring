@@ -311,6 +311,10 @@ class Config:
             "GUI_RUN_LOG",
             os.path.join(os.path.dirname(self.db_path) or ".", "gui_run.log"),
         )
+        # Log rotation (RotatingFileHandler) for gui_run_log — keep it from growing
+        # unbounded under --verbose. Defaults cap total at ~25MB * (5+1).
+        self.gui_run_log_max_mb = int(get("GUI_RUN_LOG_MAX_MB", "25"))
+        self.gui_run_log_backups = int(get("GUI_RUN_LOG_BACKUPS", "5"))
         # On startup, auto-open a stacked column of Terminal windows down the
         # RIGHT side of the screen, each tailing one log (activity + Hermes chat).
         self.gui_monitor_terminals = get(

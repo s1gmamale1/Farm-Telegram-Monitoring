@@ -350,3 +350,11 @@ def test_overseer_allow_destructive_parses_true():
     assert cfg.overseer_allow_destructive is True
     cfg2 = Config({"OVERSEER_ALLOW_DESTRUCTIVE": "1"})
     assert cfg2.overseer_allow_destructive is True
+
+
+def test_gui_run_log_rotation_defaults():
+    from watcherdog.config import Config
+    cfg = Config({})
+    assert cfg.gui_run_log_max_mb == 25 and cfg.gui_run_log_backups == 5
+    cfg2 = Config({"GUI_RUN_LOG_MAX_MB": "10", "GUI_RUN_LOG_BACKUPS": "3"})
+    assert cfg2.gui_run_log_max_mb == 10 and cfg2.gui_run_log_backups == 3
