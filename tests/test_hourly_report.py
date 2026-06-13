@@ -1,38 +1,49 @@
-"""Tests for the hourly farm report's PC-map handling."""
+"""Tests for the deterministic hourly-report builder (pure; no Telethon)."""
+from datetime import datetime
 
-from __future__ import annotations
-
-import types
-
-from watcherdog import mcp_watcher, roster
+from watcherdog import hourly_report as hr
 
 
-def test_invert_pc_to_bots_mapping():
-    # {PC: [bots]} — the natural way to write it — inverts to bot -> PC.
-    raw = {"1": [1, 2], "5": [23, 24], "6": [7, 8]}
-    got = roster._invert_pc_map(raw)
-    assert got == {1: "1", 2: "1", 23: "5", 24: "5", 7: "6", 8: "6"}
+def test_snapshot_maps_botnum_to_emoji():
+    fleet = {
+        1: {"status": "🔴 needs attention", "age_min": 5, "name": "SinFermera1",
+            "reason_code": "error", "reason_detail": "x"},
+        3: {"status": "✅ farming", "age_min": 2, "name": "SinFermera3",
+            "reason_code": "", "reason_detail": ""},
+    }
+    snap = hr._snapshot(fleet)
+    assert snap == {"1": "🔴", "3": "✅"}
 
 
-def test_accepts_already_bot_keyed_mapping():
-    # {bot: PC} is passed through unchanged.
-    raw = {"3": "2", "4": "2"}
-    assert roster._invert_pc_map(raw) == {3: "2", 4: "2"}
+def test_diff_flags_new_and_recovered():
+    prev = {"1": "✅", "2": "🔴", "3": "⚠️"}
+    cur = {"1": "🔴", "2": "🔴", "3": "✅"}
+    new_flagged, recovered = hr._diff(prev, cur)
+    assert new_flagged == {"1"}
+    assert recovered == [3]
+    assert "2" not in new_flagged
 
 
-def test_hourly_dedupe_one_per_clock_hour(tmp_path):
-    cfg = types.SimpleNamespace(db_path=str(tmp_path / "incidents.db"))
-    assert mcp_watcher._hourly_already_sent(cfg, "2026-06-03 10") is False
-    mcp_watcher._hourly_mark_sent(cfg, "2026-06-03 10")
-    assert mcp_watcher._hourly_already_sent(cfg, "2026-06-03 10") is True   # same hour → skip
-    assert mcp_watcher._hourly_already_sent(cfg, "2026-06-03 11") is False  # next hour → send
+def test_diff_absent_prev_counts_as_new():
+    new_flagged, recovered = hr._diff({}, {"5": "⚠️"})
+    assert new_flagged == {"5"}
+    assert recovered == []
 
 
-def test_full_24_bot_map_covers_every_bot():
-    raw = {"1": [1, 2], "2": [3, 4], "3": [5, 6], "4": [9, 10], "5": [23, 24],
-           "6": [7, 8], "7": [11, 12], "8": [15, 16], "9": [13, 14],
-           "10": [17, 18], "11": [19, 20], "12": [21, 22]}
-    got = roster._invert_pc_map(raw)
-    assert len(got) == 24                       # every bot mapped
-    assert all(b in got for b in range(1, 25))  # 1..24 all present
-    assert len(set(got.values())) == 12         # across 12 PCs
+def test_gap_line_only_when_over_threshold():
+    now = datetime(2026, 6, 13, 3, 0, 0)
+    # 4h gap (prev send 2026-06-12 23:00) → line present
+    line = hr._gap_line({"last_sent_iso": "2026-06-12T23:00:00"}, now)
+    assert line and "gap" in line and "23:00" in line
+    # 60 min → no line
+    assert hr._gap_line({"last_sent_iso": "2026-06-13T02:00:00"}, now) is None
+    # absent / malformed → no line, no crash
+    assert hr._gap_line({}, now) is None
+    assert hr._gap_line({"last_sent_iso": "not-a-date"}, now) is None
+
+
+def test_truncate():
+    assert hr._truncate("short", 60) == "short"
+    long = "x" * 80
+    out = hr._truncate(long, 60)
+    assert len(out) == 60 and out.endswith("…")
