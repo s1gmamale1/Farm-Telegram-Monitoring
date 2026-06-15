@@ -159,6 +159,45 @@ under-target/not-live relaunch, idle make-lobbies, R6 dead-by-silence flag).
 This whole path is deterministic; **panel recovery never routes through a model**,
 so it runs identically with `DISABLE_AI=true`.
 
+### Per-panel recovery lock (`_panel_lock` / `state["panel_locks"]`)
+The sweep and the opt-in overseer socket run as sibling tasks on the **same event
+loop sharing one Telethon client**, so a recovery press could interleave with an
+overseer press on the same chat (double-kill, a reboot knocking out a just-started
+panel, `_await_reply` cross-talk). `_panel_lock(state, name)` lazily creates one
+`asyncio.Lock` per panel (kept in `state["panel_locks"]`, seeded in `run()` next to
+`agent_lock`). The **sweep** holds it across **every** panel-driving recovery
+press — the relaunch `run_sequence`, the RDP-bug `reboot_pc`, the Phase-2
+`auto_fix.try_auto_fix`, the `novel_recovery.attempt` ladder, and the follow-up
+re-fix in `_incident_followup_tick` (all six call sites are wrapped). The
+**overseer** socket resolves the same canonical roster name and, before any
+mutating press (`press_button` / `run_ladder`), **refuses** if the lock is held:
+`{"refused":"in_flight_recovery","bot":name}`. The deterministic ladder **owns**
+recovery; the overseer never queues behind it or races it (refuse, not queue — the
+owner's reduce-AI / deterministic-core preference). Read-only socket handlers
+(`read_bot`, `list_buttons`, `get_stats`, `screenshot`) never refuse.
+
+### Needs-PC `parked` lifecycle (`incident_tracker.py`)
+A dead-PC cold case is **human-owned** (only a physical power-on fixes it), so it
+gets its own terminal status — `open_incidents.status='parked'` — distinct from the
+fading `escalated`. Reached when the follow-up loop escalates a `source='panel'`
+(needs-PC) incident via `park_by_id`. It exists to fix two problems:
+
+- **Churn.** `open()` deduped only on `status='open'`, so an escalated key looked
+  like "nothing open" → a fresh incident was re-INSERTed and re-escalated every
+  episode (2–3 owner pings each). Now `parked_by_key("panel:{name}")` makes the
+  per-panel open path **parked-aware**: a still-off PC re-flagging the same
+  condition `touch`es the existing row (heartbeat bump, no INSERT, no re-alert).
+- **Restart re-arm.** The in-process `coldcase_reported` latch was re-armed only
+  from `open_list()`, so a **restart** lost it for escalated panels → re-cold-case
+  ~60 min later. `_rearm_panel_episodes` now also iterates `parked_list()` and
+  re-arms the latch, so a parked panel survives a restart silently.
+
+Recovery clears parked **only on a fresh healthy card**: `resolve_open_for_bot`
+matches `status='parked'` too, gated on the same freshness guard so a stale re-read
+can't false-clear. A still-off PC stays visible via the probe's report-only
+`needs_human` field (`parked_list()`, **no 24h fade** — see §7); a *new* or *worse*
+`bot_error:{name}` on a parked panel still opens and alerts (separate key/source).
+
 ---
 
 ## 4. The agent (`agent.py`)
@@ -272,6 +311,47 @@ and the fast commands.
 | `task_store.py`, `bot_access.py`, `self_restart.py`, `restart_helper.py` | Task persistence, access grants, safe restart (above). |
 | `monitor.py`, `bot_logging.py`, `telegram_source.py`, `gui_mac.py`, `hermes_bridge.py` | Legacy/alternate modes (log-file tailer, drop-in logger, group reader, GUI primitives, Hermes CLI bridge). |
 
+### The overseer wake trigger (`scripts/overseer_health.py` + `scripts/overseer_wake.py`)
+The on-trouble wake for the external Hermes overseer (Option B). Two pieces, both
+deterministic, testable, and **socket-free** (they read the process table, the
+beacon mtime, the incident SQLite, and the log tail directly — so they work even
+when the watcher is fully down and the socket has not opened):
+
+- **`overseer_health.py`** — `build_report(cfg, now)` returns `(report_dict,
+  exit_code)`. The exit code gates on STUCK incidents: `flagged_stuck` is the
+  subset of open novel incidents older than `OVERSEER_STUCK_MIN` (default 12 min,
+  just past the ~10-min recovery ladder), so a freshly-flagged panel the core is
+  still laddering stays **exit 0** and does not wake the agent. `flagged` still
+  reports the full open set for visibility. An incident whose `opened_ts` is
+  missing/unparseable counts as stuck (`open_min:null`, `reason:"age_unknown"` —
+  fail toward waking). `needs_human` is the report-only parked set (`parked_list()`,
+  no fade); like `escalated_recent` it never flips the exit code.
+- **`overseer_wake.py`** — the host-side wrapper run by the launchd timer. The
+  decision logic (`run_wake` / `_decide_and_wake`) is pure (clock, runner, env, and
+  `build_report` are injected, so it unit-tests with a fake runner and `tmp_path`).
+  It runs the probe in-process and, only when the core has genuinely failed, invokes
+  the pluggable `OVERSEER_WAKE_CMD` (shlex-split + reason appended as the last argv,
+  probe JSON on stdin; **unset ⇒ `would-wake` no-op**). Hardening: an
+  `fcntl.flock(LOCK_EX|LOCK_NB)` **single-flight** lock held only around the invoke
+  (no write-gap, kernel-released on death — no stale-PID logic); a **keyed**
+  cooldown (`OVERSEER_WAKE_COOLDOWN_MIN`=30, key = sorted stuck-bot set, so an
+  unrelated new stuck bot is never suppressed; dead/wedged are urgent and bypass it);
+  a **process-group kill** on timeout (`OVERSEER_WAKE_TIMEOUT_MIN`=15,
+  `start_new_session=True` + `killpg`, so a hung agent can't hold the lock forever);
+  and a size-bounded wake log. Decisions logged: `ok`, `skip:inflight`,
+  `skip:cooldown`, `would-wake`, `woke`, `error`. The agent's exit code is logged,
+  never acted on; the timer always exits 0.
+
+### Fleet board enrichment (`fleet_report.snapshot` → `get_stats`)
+`fleet_report.snapshot()` tags each `FleetEntry` from the incident ledger with
+`incident` (`"open"` / `"parked"` / `None`) and `down_since_h` (hours since that
+incident began — the earliest open row's age, else the park-time age). The overseer
+`get_stats` endpoint surfaces these, so one call is the whole fleet board and Hermes
+no longer hand-sweeps `read_bot`/`list_buttons` across all 24 panels. The tagging
+opens one extra read connection to the SQLite file (or reuses the caller's `tracker`)
+and is tolerant of any single read failing (leaves the entry untagged). Read-endpoint
+success logs over the socket were also demoted to DEBUG (mutating calls stay INFO).
+
 ---
 
 ## 8. Data / state (`data/`, all git-ignored)
@@ -288,6 +368,10 @@ and the fast commands.
 | `data/watcher_healthy` | Health beacon — touched at startup AND **every sweep** (per-sweep heartbeat). The restart supervisor waits on it; `scripts/overseer_health.py` reads its mtime to tell a live watcher from a wedged one. |
 | `data/telegram.out.log` / `data/telegram.err.log` | launchd stdout/stderr (when run under `com.watcherdog.telegram.plist`); the overseer health probe tails the err log. |
 | `data/overseer.sock` | The opt-in overseer UNIX socket (bound only when `OVERSEER_SOCKET` is set). The external Hermes overseer drives the core through it — see [the Overseer Endpoints + Runbook](docs/wiki/reference/). |
+| `data/overseer_wake.log` | One compact line per wake decision (`ts decision reason bots rc elapsed_s`); truncated to its last ~1 MB. Written by `scripts/overseer_wake.py`. |
+| `data/overseer_wake.cooldowns.json` | Keyed `{key: last_wake_epoch}` stuck-incident cooldown state (pruned to ~1 day on write). |
+| `data/overseer_wake.lock` | The wake wrapper's `fcntl.flock` single-flight lock file. |
+| `data/overseer-wake.out.log` / `data/overseer-wake.err.log` | launchd stdout/stderr for the wake timer (`com.watcherdog.overseer-wake`). |
 | `data/farmer_pc_map.json` | `{PC: [bot, ...]}` map of which panel runs on which PC (read by `roster.load_pc_map`). No longer used by the hourly report (now status-grouped); optional. |
 | `data/watcher.session` / `data/bot.session` | Telethon sessions (user account / bot). If `tg_probe.py` says `NOT_AUTHORIZED` or login codes do not arrive, run `tools/tg_login.py --reset-session --legacy-start` to move stale watcher session files aside and use the original Telethon login flow. |
 | `data/gui_run.log` | Activity log (sweeps, detections, alerts). |
