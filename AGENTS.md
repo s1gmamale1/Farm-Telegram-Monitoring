@@ -11,7 +11,10 @@ A host healthcheck runs `scripts/overseer_health.py` every 1–2 min and wakes y
 **only on a non-zero exit**. When woken:
 
 1. Read the probe JSON you were handed (`process_alive`, `wedged`, `flagged`,
-   `last_sweep`, `recent_errors`, `socket_present`, `healthy`).
+   `escalated_recent`, `needs_human`, `last_sweep`, `recent_errors`,
+   `socket_present`, `healthy`). `needs_human` is the persistent, report-only
+   needs-PC set (parked panels — human-owned, never fades and never wakes you in
+   a loop); like `escalated_recent` it's context only, not yours to re-act on.
 2. **If the watcher is down** (`process_alive:false` or `wedged:true`): inspect
    `data/telegram.err.log` + `data/gui_run.log`, then restart via launchd
    (`launchctl kickstart -k gui/$(id -u)/com.watcherdog.telegram`) or directly
@@ -37,6 +40,9 @@ python -m scripts.overseer_cli --socket data/overseer.sock \
 9 endpoints (full table in the endpoint doc): `list_flagged read_bot list_buttons
 press_button run_ladder get_stats resolve_flagged teach_fix screenshot`. `bot`
 resolves against the watch roster only (`"SF7"`/`"7"`/`"SinFermera7"`).
+`get_stats` is now a **one-call fleet board** — per-panel status plus `incident`
+(`"open"`/`"parked"`/`null`) and `down_since_h` — so you don't hand-sweep
+`read_bot`/`list_buttons` across all 24 panels to build the picture.
 
 ## Hard rules (these prevent the common confusions)
 

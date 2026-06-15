@@ -18,6 +18,7 @@ from datetime import datetime
 from watcherdog import drop_stats, farm_stats, roster, tg_tools
 from watcherdog.classifier import severity_of, summarize
 from watcherdog.farm_stats import BotStats
+from watcherdog.incident_tracker import IncidentTracker
 
 logger = logging.getLogger("watcherdog.fleet_report")
 
@@ -33,6 +34,8 @@ class FleetEntry:
     age_min: float = 0.0
     last_text: str = ""
     stats: BotStats = field(default_factory=BotStats)
+    incident: str | None = None        # "open" | "parked" | None — from the ledger
+    down_since_h: float | None = None  # hours since that incident began, or None
 
 
 @dataclass
@@ -96,38 +99,86 @@ def _coerce_float(v):
         return None
 
 
-async def snapshot(client, cfg, watch):
+def _open_tracker(cfg):
+    """Open a READ tracker on cfg.db_path, or None if it can't (no db_path /
+    unreadable). A second read connection to the SQLite file is safe — the live
+    watcher's own connection is untouched. Never raises."""
+    db_path = getattr(cfg, "db_path", None)
+    if not db_path:
+        return None
+    try:
+        return IncidentTracker(db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("fleet snapshot: could not open incident ledger; "
+                       "entries left untagged")
+        return None
+
+
+def _tag_incident(tracker, name, now_ts):
+    """(incident, down_since_h) for ``name`` from the ledger: "open" (with the
+    earliest open row's age) wins; else "parked" (park-time age); else
+    (None, None). Tolerant of any single read failing."""
+    if tracker is None:
+        return None, None
+    try:
+        open_rows = tracker.open_list_for_bot(name)
+        if open_rows:
+            earliest = min(r["opened_ts"] for r in open_rows)
+            return "open", round((now_ts - earliest) / 3600.0, 1)
+        parked = tracker.parked_by_key(f"panel:{name}")
+        if parked is not None and parked["resolved_ts"] is not None:
+            return "parked", round((now_ts - parked["resolved_ts"]) / 3600.0, 1)
+    except Exception:  # noqa: BLE001
+        logger.warning("fleet snapshot: incident tag failed for %s", name)
+    return None, None
+
+
+async def snapshot(client, cfg, watch, *, tracker=None):
     """One cheap latest_message sweep merged with the latest weekly buffer ->
     Fleet(list[FleetEntry]). No button presses, no model. Never raises on a single
-    bot's read; bots without a number in their name are skipped."""
+    bot's read; bots without a number in their name are skipped.
+
+    Each entry is tagged from the incident ledger (incident/down_since_h). Pass
+    the live ``tracker`` to reuse the caller's connection (left open — the caller
+    owns it); otherwise one read connection is opened once for the whole snapshot
+    and closed at the end."""
     pc_map = roster.load_pc_map(cfg)
     by_num, week, collected = _load_latest_buffer(getattr(cfg, "drop_stats_dir", None))
     now_ts = time.time()
-    entries = []
-    for name, ent in (watch or []):
-        m = _NUM_RE.search(name or "")
-        if not m:
-            continue
-        num = int(m.group(1))
-        try:
-            text, date = await tg_tools.latest_message(client, ent, mark_read=False)
-        except Exception:  # noqa: BLE001
-            text, date = None, None
-        age_min = ((now_ts - date.timestamp()) / 60.0) if date else 1_000_000.0
-        st = BotStats(bot=name)
-        st.last_status = farm_stats.parse_status_event(text)
-        st.accounts_up = roster.extract_account_count(text) if text else None
-        row = by_num.get(num)
-        if row:
-            st.drops = _coerce_int(row.get("drops"))
-            st.value_usd = _coerce_float(row.get("value"))
-            st.data_source = ("text" if (st.drops is not None or st.value_usd is not None)
-                              else "missing")
-        entries.append(FleetEntry(num=num, name=name, pc=pc_map.get(num, "?"),
-                                  status=roster.classify_status(text, age_min, cfg),
-                                  age_min=age_min, last_text=text or "", stats=st))
-    entries.sort(key=lambda e: e.num)
-    return Fleet(entries=entries, week=week, collected=collected)
+    owns_tracker = tracker is None
+    if owns_tracker:
+        tracker = _open_tracker(cfg)
+    try:
+        entries = []
+        for name, ent in (watch or []):
+            m = _NUM_RE.search(name or "")
+            if not m:
+                continue
+            num = int(m.group(1))
+            try:
+                text, date = await tg_tools.latest_message(client, ent, mark_read=False)
+            except Exception:  # noqa: BLE001
+                text, date = None, None
+            age_min = ((now_ts - date.timestamp()) / 60.0) if date else 1_000_000.0
+            st = BotStats(bot=name)
+            st.last_status = farm_stats.parse_status_event(text)
+            st.accounts_up = roster.extract_account_count(text) if text else None
+            row = by_num.get(num)
+            if row:
+                st.drops = _coerce_int(row.get("drops"))
+                st.value_usd = _coerce_float(row.get("value"))
+                st.data_source = ("text" if (st.drops is not None or st.value_usd is not None)
+                                  else "missing")
+            incident, down_since_h = _tag_incident(tracker, name, now_ts)
+            entries.append(FleetEntry(num=num, name=name, pc=pc_map.get(num, "?"),
+                                      status=roster.classify_status(text, age_min, cfg),
+                                      age_min=age_min, last_text=text or "", stats=st,
+                                      incident=incident, down_since_h=down_since_h))
+        entries.sort(key=lambda e: e.num)
+        return Fleet(entries=entries, week=week, collected=collected)
+    finally:
+        if owns_tracker and tracker is not None:
+            tracker.close()
 
 
 def _money(v):

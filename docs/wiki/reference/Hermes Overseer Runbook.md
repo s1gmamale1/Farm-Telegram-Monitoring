@@ -61,10 +61,14 @@ down and the overseer socket has not opened yet.
 | `wedged` | beacon is stale (watcher running but silent) |
 | `flagged.count` | number of unresolved flagged incidents |
 | `flagged.bots` | list of bot names with open flags |
-| `last_sweep` | ISO timestamp of last completed sweep |
-| `recent_errors` | last few lines from `data/telegram.err.log` |
+| `escalated_recent` | `{count, bots}` — panels that escalated (auto-recovery gave up → human alerted) in the last 24h. **Report-only**: a fading 24h window, never flips the exit code. |
+| `needs_human` | `{count, bots, stale:[{bot, parked_h}]}` — panels parked because the PC is off (only a human power-on fixes them). **Report-only and human-owned**: NO fade (a still-off PC stays visible forever) and it NEVER flips `healthy`, so Hermes is not woken in a loop on it. |
+| `last_sweep` | newest sweep line as `"HH:MM (N chats, M healthy)"` (parsed from `data/gui_run.log`), NOT an ISO timestamp |
+| `recent_errors` | newest-first error/traceback lines across BOTH `data/telegram.err.log` AND `data/gui_run.log`, deduped + bounded |
 | `socket_present` | overseer socket file exists (watcher is up and socket is open) |
 | `healthy` | overall boolean summary |
+
+`get_stats` now also returns, per fleet entry, an `incident` (`"open"` / `"parked"` / `null`) and `down_since_h` (hours since that incident began) — so one `get_stats` call is the whole fleet board.
 
 **Cron example (every 2 minutes):**
 
