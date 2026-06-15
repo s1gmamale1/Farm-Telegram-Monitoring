@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd TIMER for the WatcherDog overseer wake-wrapper (scripts/overseer_wake.py).
+  Runs the deterministic health probe in-process every StartInterval seconds and
+  invokes the pluggable agent command (OVERSEER_WAKE_CMD) ONLY when the core has
+  genuinely failed (dead / wedged / stuck incident) — with single-flight, keyed
+  cooldown, and a wake log. This is a periodic ONE-SHOT, NOT a KeepAlive daemon:
+  it runs, decides, and exits; launchd re-runs it on the timer. Do NOT add
+  KeepAlive (that would respawn it in a tight loop).
+
+  The wrapper NEVER touches Hermes's own setup and NEVER acts on the agent's exit
+  code (it logs it). With OVERSEER_WAKE_CMD unset/empty it logs "would-wake" and
+  no-ops — safe to install and verify the whole trigger BEFORE Sherlock is plugged
+  in. See docs/wiki/reference/Hermes Overseer Runbook.md §2 for the full contract,
+  the knobs, and where to set OVERSEER_WAKE_CMD.
+
+  Prereq: scripts/overseer_health.py + scripts/overseer_wake.py present and the
+  repo .venv built (the watcher's own deps suffice — no extra install).
+
+  Install:
+    cp com.watcherdog.overseer-wake.plist ~/Library/LaunchAgents/
+    launchctl load     ~/Library/LaunchAgents/com.watcherdog.overseer-wake.plist
+    launchctl kickstart gui/$(id -u)/com.watcherdog.overseer-wake   # run once now
+
+  Stop / uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.watcherdog.overseer-wake.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.watcherdog.overseer-wake</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/.venv/bin/python</string>
+        <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/scripts/overseer_wake.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring</string>
+
+    <!-- Periodic one-shot: run every 120 s. NOT a KeepAlive daemon. -->
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Clear PYTHONPATH so Hermes's own `tools` package can't shadow this
+             repo's `from tools import …` (same rule as every WatcherDog one-shot). -->
+        <key>PYTHONPATH</key>
+        <string></string>
+
+        <!-- The manager's INVOCATION command. Unset/empty ⇒ the wrapper logs
+             "would-wake" and no-ops (safe to install + verify before Sherlock is
+             plugged in). Set it HERE (uncomment + edit) or in the launchctl
+             environment (`launchctl setenv OVERSEER_WAKE_CMD …`). It is a
+             shlex-splittable command string or an executable path (run with
+             shell=False); the wrapper appends the one-line reason as the final
+             argv element and feeds the probe JSON on stdin. Point it at the
+             manager's shim, e.g.:
+        <key>OVERSEER_WAKE_CMD</key>
+        <string>/Users/aisigma/Sigma-Agents/watcherdog/sherlock-wake-cmd.sh</string>
+        -->
+
+        <!-- Optional knobs (defaults shown; uncomment to override):
+        <key>OVERSEER_STUCK_MIN</key>
+        <string>12</string>
+        <key>OVERSEER_WAKE_COOLDOWN_MIN</key>
+        <string>30</string>
+        <key>OVERSEER_WAKE_TIMEOUT_MIN</key>
+        <string>15</string>
+        -->
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/data/overseer-wake.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/data/overseer-wake.err.log</string>
+</dict>
+</plist>
