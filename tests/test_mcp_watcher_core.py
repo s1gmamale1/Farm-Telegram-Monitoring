@@ -1762,3 +1762,45 @@ def test_monitor_once_refreshes_health_beacon(tmp_path, monkeypatch):
     asyncio.run(mcp_watcher.monitor_once(
         client, cfg, store, {}, [("Good", object())], "ibo", deliver=True))
     assert os.path.exists(cfg.watcher_health_path)            # the sweep wrote it
+
+
+# ---------------------------------------------------------------------------
+# per-panel recovery lock — the PRIMARY Phase-2 auto-fix press must be held
+# under the panel lock (overseer refuses a mutating press while it's in flight)
+# ---------------------------------------------------------------------------
+
+def test_evaluate_bot_holds_panel_lock_during_phase2_auto_fix(tmp_path, monkeypatch):
+    # The Phase-2 deterministic auto-fix (`auto_fix.try_auto_fix`) presses real
+    # buttons on the panel. It must run UNDER the per-panel recovery lock so the
+    # overseer socket refuses a concurrent press/run_ladder on the same chat.
+    # Pin THIS site: a future refactor that drops the `async with _panel_lock`
+    # wrap leaves the lock unheld here and fails this test.
+    cfg = _cfg(tmp_path, {
+        "DISABLE_AI": "true",
+        "AGENT_ACTIONS_ENABLED": "true",
+        "MIN_SEVERITY": "high",
+        "DEDUPE_WINDOW": "0",
+    })
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    client = _FakeClient()
+    state = {"panel_locks": {}}    # seeded as run() does; lock created lazily
+    seen = {}
+
+    async def fake_fix(client, cfg, bot, text, *, chat=None):
+        # The lock for THIS panel must be held by the sweep at press time, and
+        # locked via the SAME key the overseer resolves (the roster name `bot`).
+        lock = (state.get("panel_locks") or {}).get(bot)
+        seen["held"] = lock is not None and lock.locked()
+        return {"status": "unknown"}
+
+    monkeypatch.setattr(mcp_watcher.auto_fix, "try_auto_fix", fake_fix)
+
+    async def main():
+        await mcp_watcher._evaluate_bot(
+            client, cfg, store, state, "ibo", "SinFermera9",
+            "[SinFermera9] Got an error while launching accounts.",
+            time.time(), asyncio.get_running_loop(), deliver=True, ent=None)
+
+    asyncio.run(main())
+    assert seen["held"] is True            # the Phase-2 press ran UNDER the lock
+    store.close()

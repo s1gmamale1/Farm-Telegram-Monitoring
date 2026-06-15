@@ -369,3 +369,185 @@ def test_run_ladder_refused_when_destructive_disabled(tmp_path, monkeypatch):
     resp = _run_with_server(cfg, state, go)
     assert "error" in resp and "OVERSEER_ALLOW_DESTRUCTIVE" in resp["error"]
     assert reached["called"] is False
+
+
+# --- per-panel recovery lock: refuse a mutating press mid-ladder ----------------
+# The sweep's deterministic ladder OWNS recovery on a panel. While it holds the
+# panel's lock, an overseer mutating handler (press_button / run_ladder) must
+# REFUSE (not block / not queue) BEFORE any click, so two ladders never race the
+# same chat. The lock is keyed on the canonical roster name shared by both sides.
+
+def test_press_button_refused_while_recovery_in_flight(tmp_path, monkeypatch):
+    pressed = []
+
+    async def fake_press(*a, **k):
+        pressed.append(a)
+        raise AssertionError("BUG: press happened mid-recovery")
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object())], "panel_locks": {}}
+
+    async def go(sock):
+        lock = asyncio.Lock()                      # sweep's per-panel lock
+        state["panel_locks"]["SinFermera7"] = lock
+        async with lock:                           # sweep is MID-recovery
+            return await _call(sock, "press_button",
+                               {"bot": "SF7", "button": "kill all cs",
+                                "confirmed": True})
+
+    resp = _run_with_server(cfg, state, go)
+    assert resp["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
+    assert pressed == []                           # refused BEFORE any click
+
+
+def test_run_ladder_refused_while_recovery_in_flight(tmp_path, monkeypatch):
+    reached = {"called": False}
+
+    async def fake_attempt(client, cfg, bot, text, *, chat=None, deliver=True):
+        reached["called"] = True
+        return {"status": "ran"}
+
+    monkeypatch.setattr(overseer_api.novel_recovery, "attempt", fake_attempt)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object())], "panel_locks": {}}
+
+    async def go(sock):
+        lock = asyncio.Lock()
+        state["panel_locks"]["SinFermera7"] = lock
+        async with lock:
+            return await _call(sock, "run_ladder", {"bot": "SinFermera7"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert resp["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
+    assert reached["called"] is False              # the unlocked attempt never ran
+
+
+def test_press_button_proceeds_when_lock_free(tmp_path, monkeypatch):
+    pressed = []
+
+    async def fake_press(client, ent, button, *, confirmed=False,
+                         allow_destructive=True, timeout=20.0):
+        pressed.append(button)
+        return {"pressed": button, "destructive": False}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object())], "panel_locks": {}}
+
+    async def go(sock):
+        # lock exists but is NOT held — the press must go through normally.
+        state["panel_locks"]["SinFermera7"] = asyncio.Lock()
+        return await _call(sock, "press_button", {"bot": "SF7", "button": "x"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert resp["result"].get("pressed") == "x"
+    assert pressed == ["x"]
+
+
+def test_other_panel_lock_does_not_block_this_panel(tmp_path, monkeypatch):
+    pressed = []
+
+    async def fake_press(client, ent, button, *, confirmed=False,
+                         allow_destructive=True, timeout=20.0):
+        pressed.append(button)
+        return {"pressed": button, "destructive": False}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object()), ("SinFermera8", object())],
+             "panel_locks": {}}
+
+    async def go(sock):
+        other = asyncio.Lock()                     # a DIFFERENT panel is recovering
+        state["panel_locks"]["SinFermera8"] = other
+        async with other:
+            return await _call(sock, "press_button", {"bot": "SF7", "button": "x"})
+
+    resp = _run_with_server(cfg, state, go)
+    assert resp["result"].get("pressed") == "x"    # SF7 proceeds; SF8's lock is irrelevant
+    assert pressed == ["x"]
+
+
+def test_read_only_handler_not_refused_while_lock_held(tmp_path, monkeypatch):
+    async def fake_menu(client, ent):
+        return ["start selected", "kill all cs"]
+
+    monkeypatch.setattr(overseer_api.tg_actions, "panel_menu", fake_menu)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object())], "panel_locks": {}}
+
+    async def go(sock):
+        lock = asyncio.Lock()
+        state["panel_locks"]["SinFermera7"] = lock
+        async with lock:                           # recovery in flight…
+            return await _call(sock, "list_buttons", {"bot": "SF7"})
+
+    resp = _run_with_server(cfg, state, go)
+    # a read-only handler is UNCHANGED by the lock — it still serves.
+    assert resp["result"] == ["start selected", "kill all cs"]
+
+
+def test_overseer_refused_while_phase2_auto_fix_in_flight(tmp_path, monkeypatch):
+    # The PRIMARY Phase-2 deterministic auto-fix (mcp_watcher._evaluate_bot ->
+    # auto_fix.try_auto_fix) drives real panel presses under the per-panel lock.
+    # Pin the overseer contract for THAT site: while the lock is held, BOTH
+    # mutating handlers refuse before any click. (The held lock here stands in
+    # for an in-flight auto-fix on the same canonical roster name.)
+    pressed, laddered = [], {"called": False}
+
+    async def fake_press(*a, **k):
+        pressed.append(a)
+        raise AssertionError("BUG: press happened during Phase-2 auto-fix")
+
+    async def fake_attempt(*a, **k):
+        laddered["called"] = True
+        return {"status": "ran"}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    monkeypatch.setattr(overseer_api.novel_recovery, "attempt", fake_attempt)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object())], "panel_locks": {}}
+
+    async def go(sock):
+        lock = asyncio.Lock()
+        state["panel_locks"]["SinFermera7"] = lock
+        async with lock:                           # Phase-2 auto-fix mid-press
+            pb = await _call(sock, "press_button",
+                             {"bot": "SF7", "button": "kill all cs", "confirmed": True})
+            rl = await _call(sock, "run_ladder", {"bot": "SF7"})
+        return pb, rl
+
+    pb, rl = _run_with_server(cfg, state, go)
+    assert pb["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
+    assert rl["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
+    assert pressed == [] and laddered["called"] is False
+
+
+def test_press_button_unwedges_after_recovery_releases_lock(tmp_path, monkeypatch):
+    # A transient recovery must not PERMANENTLY wedge the overseer: refused WHILE
+    # the lock is held, then the SAME press proceeds once the block exits and the
+    # lock is released (lock.locked() flips back to False).
+    pressed = []
+
+    async def fake_press(client, ent, button, *, confirmed=False,
+                         allow_destructive=True, timeout=20.0):
+        pressed.append(button)
+        return {"pressed": button, "destructive": False}
+
+    monkeypatch.setattr(overseer_api.tg_actions, "press_button", fake_press)
+    cfg = _cfg(tmp_path, overseer_allow_destructive=True)
+    state = {"watch": [("SinFermera7", object())], "panel_locks": {}}
+
+    async def go(sock):
+        lock = asyncio.Lock()
+        state["panel_locks"]["SinFermera7"] = lock
+        async with lock:                           # recovery in flight
+            during = await _call(sock, "press_button", {"bot": "SF7", "button": "x"})
+        after = await _call(sock, "press_button", {"bot": "SF7", "button": "x"})
+        return during, after
+
+    during, after = _run_with_server(cfg, state, go)
+    assert during["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
+    assert after["result"].get("pressed") == "x"   # lock released -> press proceeds
+    assert pressed == ["x"]                         # exactly the post-release press

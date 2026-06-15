@@ -252,6 +252,25 @@ def _panel_target(ent, bot):
         return bot
 
 
+def _panel_lock(state, name):
+    """The per-panel recovery lock, lazily created and shared with the overseer
+    socket. The SWEEP holds it across its panel-driving recovery press-sequence
+    (kill/select/start, relaunch, reboot, the novel ladder); the overseer's
+    mutating handlers REFUSE while it's held (overseer_api._recovery_in_flight),
+    so a deterministic ladder and an external press never race the same chat.
+
+    Keyed on the canonical watch-roster ``name`` — the SAME key the overseer
+    resolves via ``_entity`` — so both sides agree. One lock per panel, never
+    held across a call that re-needs it (no nested ladders), so no deadlock. The
+    dict lives in ``state`` (a dict caller seeds in run()); we tolerate it being
+    absent for the same defensive reason ``agent_lock`` does."""
+    locks = state.setdefault("panel_locks", {})
+    lock = locks.get(name)
+    if lock is None:
+        lock = locks[name] = asyncio.Lock()
+    return lock
+
+
 async def _offer_card(state, title, options, *, panel_target):
     """Post an inline-button card via the bot (anyone in the group can tap).
     Returns the sent message, or None if no bot is available / the post failed —
@@ -412,7 +431,10 @@ async def _maybe_reboot_for_rdp_bug(client, cfg, name, target_ref, ps, state,
     ps.reboot_attempted = True
     ps.reboot_ts = now
     try:
-        res = await panel_actions.reboot_pc(client, target_ref, cfg)
+        # Hold the panel lock across the destructive Reboot->Confirm pair so an
+        # overseer press can't land on a host we're rebooting (see _panel_lock).
+        async with _panel_lock(state, name):
+            res = await panel_actions.reboot_pc(client, target_ref, cfg)
     except Exception:  # noqa: BLE001
         log.exception("[panel] %s Reboot PC press raised — treating as attempted", name)
         res = {"error": "press raised — may have gone through"}
@@ -691,8 +713,11 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         ps.last_action_ts = now
         return f"alert (no card): {decision.actions}"
 
-    results = await panel_actions.run_sequence(
-        client, target_ref, decision.actions, cfg, confirmed=True)
+    # Own the panel for the whole recovery press-sequence — the overseer socket
+    # refuses a mutating press while this lock is held (see _panel_lock).
+    async with _panel_lock(state, name):
+        results = await panel_actions.run_sequence(
+            client, target_ref, decision.actions, cfg, confirmed=True)
     ps.last_action_ts = now
     if decision.actions[:2] == ["select_unfarmed", "start_selected"]:
         ps.r2_attempted_ts = now
@@ -832,7 +857,10 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
     # Relaunch through the existing gate, arming the SAME state R2 does.
     actions = ["select_unfarmed", "start_selected"]
     if cfg.panel_auto_recover:
-        results = await panel_actions.run_sequence(client, target_ref, actions, cfg, confirmed=True)
+        # Own the panel across the relaunch sequence — the overseer refuses a
+        # mutating press while this lock is held (see _panel_lock).
+        async with _panel_lock(state, name):
+            results = await panel_actions.run_sequence(client, target_ref, actions, cfg, confirmed=True)
         ps.last_action_ts = now
         ps.r2_attempted_ts = now
         if ps.recover_attempts == 0:
@@ -1012,7 +1040,10 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     # gated on live action capability (a dry run must not press real buttons).
     fix_status = None
     if cfg.agent_actions_enabled and deliver:
-        outcome = await auto_fix.try_auto_fix(client, cfg, bot, text, chat=ent)
+        # Own the panel across the deterministic auto-fix press(es) — the overseer
+        # refuses a mutating press while this lock is held (see _panel_lock).
+        async with _panel_lock(state, bot):
+            outcome = await auto_fix.try_auto_fix(client, cfg, bot, text, chat=ent)
         status = (outcome or {}).get("status")
         fix_status = status
         if status == "suppressed":
@@ -1061,8 +1092,11 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
     # the panel.
     if fix_status is None and learned_fixes.find_fix(
             text, path=getattr(cfg, "learned_fixes_path", None)) is None:
-        recovery = await novel_recovery.attempt(client, cfg, bot, text,
-                                                chat=ent, deliver=deliver)
+        # Own the panel across the novel restart ladder — the overseer refuses a
+        # mutating press (incl. its own run_ladder) while held (see _panel_lock).
+        async with _panel_lock(state, bot):
+            recovery = await novel_recovery.attempt(client, cfg, bot, text,
+                                                    chat=ent, deliver=deliver)
         ok = await _alert(state, client, target,
                           format_novel_alert(bot, severity, analysis, text, recovery),
                           deliver)
@@ -1403,14 +1437,17 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
         if did_refix:
             err_text = row["raw_excerpt"] or row["summary"]
             try:
-                if row.get("novel"):
-                    # Phase 4: novel incidents re-run the generic ladder (no
-                    # learned fix exists for auto_fix to find).
-                    outcome = await novel_recovery.attempt(
-                        client, cfg, bot, err_text, chat=ent, deliver=deliver)
-                else:
-                    outcome = await auto_fix.try_auto_fix(
-                        client, cfg, bot, err_text, chat=ent)
+                # Own the panel across the re-fix press(es) — the overseer refuses
+                # a mutating press while this lock is held (see _panel_lock).
+                async with _panel_lock(state, bot):
+                    if row.get("novel"):
+                        # Phase 4: novel incidents re-run the generic ladder (no
+                        # learned fix exists for auto_fix to find).
+                        outcome = await novel_recovery.attempt(
+                            client, cfg, bot, err_text, chat=ent, deliver=deliver)
+                    else:
+                        outcome = await auto_fix.try_auto_fix(
+                            client, cfg, bot, err_text, chat=ent)
             except Exception:  # noqa: BLE001
                 log.exception("incident re-fix raised for %s", bot)
                 outcome = None
@@ -1807,7 +1844,11 @@ async def run(cfg, store, *, once=False, system_prompt="", bot_system_prompt="",
 
         # Shared by the monitor's incident handler, the ibo listener, and the bot
         # so they use one agent lock and never run the agent concurrently.
-        state = {"system_prompt": system_prompt, "agent_lock": asyncio.Lock()}
+        # `panel_locks` is the per-panel recovery lock dict (see `_panel_lock`):
+        # the sweep holds a panel's lock across its recovery presses and the
+        # overseer socket refuses a mutating press while it's held.
+        state = {"system_prompt": system_prompt, "agent_lock": asyncio.Lock(),
+                 "panel_locks": {}}
         if cfg.incident_tracking_enabled:
             state["tracker"] = IncidentTracker(cfg.db_path, dry_run=not deliver)
             _rearm_panel_episodes(state)
