@@ -11,10 +11,16 @@ A host healthcheck runs `scripts/overseer_health.py` every 1–2 min and wakes y
 **only on a non-zero exit**. When woken:
 
 1. Read the probe JSON you were handed (`process_alive`, `wedged`, `flagged`,
-   `escalated_recent`, `needs_human`, `last_sweep`, `recent_errors`,
-   `socket_present`, `healthy`). `needs_human` is the persistent, report-only
-   needs-PC set (parked panels — human-owned, never fades and never wakes you in
-   a loop); like `escalated_recent` it's context only, not yours to re-act on.
+   `flagged_stuck`, `escalated_recent`, `needs_human`, `last_sweep`,
+   `recent_errors`, `socket_present`, `healthy`). The **exit code now wakes you
+   only on STUCK incidents** — `flagged_stuck` is the subset of `flagged` open
+   longer than `OVERSEER_STUCK_MIN` (default 12 min, just past the recovery
+   ladder), so a freshly-flagged panel the core is still laddering does NOT wake
+   you. `flagged` still reports **every** open incident for visibility, but treat
+   `flagged_stuck.bots` as the panels actually worth your attention.
+   `needs_human` is the persistent, report-only needs-PC set (parked panels —
+   human-owned, never fades and never wakes you in a loop); like
+   `escalated_recent` it's context only, not yours to re-act on.
 2. **If the watcher is down** (`process_alive:false` or `wedged:true`): inspect
    `data/telegram.err.log` + `data/gui_run.log`, then restart via launchd
    (`launchctl kickstart -k gui/$(id -u)/com.watcherdog.telegram`) or directly
