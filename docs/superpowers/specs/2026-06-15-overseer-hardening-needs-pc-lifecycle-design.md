@@ -43,9 +43,15 @@ loop. Real consequences: double-kill, reboot knocking out a just-started panel,
   `agent_lock` (`mcp_watcher.py:~1810`); helper `_panel_lock(state, name)` lazily creates
   one lock per panel name.
 - **Sweep side:** wrap the actual panel-driving call (the `panel_actions.run_sequence` /
-  `novel_recovery.attempt` invocation, not the whole `_evaluate_*`) in
-  `async with _panel_lock(state, name):` at the recovery call sites
-  (`mcp_watcher.py:694, 835, 1064`).
+  `novel_recovery.attempt` / `auto_fix.try_auto_fix` / `panel_actions.reboot_pc` invocation,
+  not the whole `_evaluate_*`) in `async with _panel_lock(state, name):` at **every**
+  recovery/auto-fix call site driven from the sweep + follow-up loops — implemented at the
+  six sites: `reboot_pc` (`_maybe_reboot_for_rdp_bug`), the two `run_sequence` relaunch sites
+  (`_evaluate_panel`, `_handle_panel_selfreport_silence`), the PRIMARY Phase-2
+  `auto_fix.try_auto_fix` and the novel `novel_recovery.attempt` in `_evaluate_bot`, and the
+  follow-up re-fix block (`novel_recovery.attempt` / `auto_fix.try_auto_fix`) in
+  `_incident_followup_tick`. ALL `try_auto_fix` / `run_sequence` / `reboot_pc` /
+  `novel_recovery.attempt` call sites must be wrapped — none may be left unlocked.
 - **Socket side:** in `overseer_api.py` `_h_press_button` and `_h_run_ladder` (they already
   receive `ctx["state"]`), resolve the panel name (`_entity`) and, **before** any click, if
   that panel's lock is held, refuse: `{"refused":"in_flight_recovery","bot":name}`. (Cheap
@@ -62,10 +68,16 @@ deterministic-core preference). Hermes should not preempt an in-flight ladder.
 - a different panel's lock does not block this panel.
 - read-only endpoints never refuse.
 
-**Out of scope (note only):** `auto_fix.try_auto_fix` can run a learned `auto:yes`
-destructive fix unattended with `confirmed=True` (`auto_fix.py:93-101`). The socket
-`teach_fix` guard is sound; a pre-existing brain-file entry is a separate latent risk —
-audit `data/.../learned_fixes` separately; do NOT fold into Fix 1.
+**Out of scope (note only) — strictly the brain-file destructive-CONTENT audit:** Fix 1
+locks the *concurrency* of `try_auto_fix` (BOTH call sites — the Phase-2 router in
+`_evaluate_bot` and the follow-up re-fix in `_incident_followup_tick` — are lock-wrapped, so
+neither can race an overseer press). What is deferred is ONLY the orthogonal *content* risk:
+a pre-existing learned `auto:yes` destructive brain-file entry could be pressed unattended
+with `confirmed=True` (`auto_fix.py:93-101`). The socket `teach_fix` guard already blocks
+minting new auto-destructive authority; auditing a standing destructive entry already in
+`data/.../learned_fixes` is the separate deferred task. This note is NOT license to leave any
+`try_auto_fix` (or other recovery-press) call site unlocked — every such site is wrapped
+under Fix 1; only the standing-brain-entry content audit is out of scope.
 
 ---
 

@@ -45,6 +45,20 @@ def _entity(ctx, bot):
     return None, None
 
 
+def _recovery_in_flight(ctx, name):
+    """True if the sweep's deterministic ladder currently HOLDS this panel's
+    recovery lock. The sweep owns recovery: a mutating overseer press REFUSES
+    while a ladder is mid-flight on the same canonical roster name, so two
+    ladders never race one chat (reboot landing on a just-started panel,
+    `_await_reply` cross-talk, FloodWait). We only READ `.locked()` — never
+    acquire — so this refuses (it does not block or queue) and can't deadlock.
+    `panel_locks` is the SAME dict the sweep populates in `state` (keyed on the
+    roster `name`); absent in dry-run/legacy callers, where nothing is in
+    flight, so the press proceeds."""
+    lock = (ctx["state"].get("panel_locks") or {}).get(name)
+    return lock is not None and lock.locked()
+
+
 async def _h_list_flagged(ctx, params):
     tracker = ctx["state"].get("tracker")
     return tracker.novel_list() if tracker is not None else []
@@ -117,6 +131,8 @@ async def _h_press_button(ctx, params):
     name, ent = _entity(ctx, params.get("bot"))
     if ent is None:
         raise ValueError(f"unknown bot: {params.get('bot')!r} (not in watch roster)")
+    if _recovery_in_flight(ctx, name):
+        return {"refused": "in_flight_recovery", "bot": name}
     if not ctx["deliver"]:
         raise ValueError("dry-run: refusing to press real buttons")
     button = str(params.get("button") or "")
@@ -138,6 +154,8 @@ async def _h_run_ladder(ctx, params):
     name, ent = _entity(ctx, params.get("bot"))
     if ent is None:
         raise ValueError(f"unknown bot: {params.get('bot')!r} (not in watch roster)")
+    if _recovery_in_flight(ctx, name):
+        return {"refused": "in_flight_recovery", "bot": name}
     if not getattr(ctx["cfg"], "overseer_allow_destructive", False):
         raise ValueError("run_ladder is destructive: set OVERSEER_ALLOW_DESTRUCTIVE=true "
                          "to authorize")
