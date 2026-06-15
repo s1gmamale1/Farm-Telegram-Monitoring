@@ -6,6 +6,16 @@
 
 One request per invocation; token read from $OVERSEER_TOKEN when set. This is
 also Hermes's integration reference: ndjson over a UNIX socket.
+
+Note on watcher-process settings (NOT client flags): dry-run and
+OVERSEER_ALLOW_DESTRUCTIVE live in the WATCHER's environment, not here. So a
+response of "dry-run: refusing", "refused: destructive", or
+"refused: in_flight_recovery" means the refusal came from how the *watcher* was
+launched (no flag this client can pass changes it) — check the watcher's env /
+launchd plist, not this command line.
+
+Bot-name resolution is case-insensitive and accepts the number alone:
+"SF7" / "7" / "SinFermera7" all resolve to the same panel.
 """
 
 from __future__ import annotations

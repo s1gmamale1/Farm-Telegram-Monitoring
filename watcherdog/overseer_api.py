@@ -28,6 +28,12 @@ logger = logging.getLogger("watcherdog.overseer_api")
 _MAX_LINE = 64 * 1024
 _NUM_RE = re.compile(r"(\d+)")
 
+# Methods that change state log their success at INFO (audit-worthy); the
+# read-only methods (list_flagged / read_bot / list_buttons / get_stats /
+# screenshot) log success at DEBUG so Hermes's own read traffic doesn't drown
+# the log it must read. Errors / unauthorized / unknown stay at WARNING.
+_MUTATING = {"press_button", "run_ladder", "resolve_flagged", "teach_fix"}
+
 
 def _entity(ctx, bot):
     """Resolve a bot name against the WATCH roster only (never a raw Telegram
@@ -176,8 +182,12 @@ async def _h_screenshot(ctx, params):
 
 
 async def _h_get_stats(ctx, params):
+    # Thread the live ledger tracker through so snapshot reuses it (and doesn't
+    # open a second connection per get_stats); snapshot leaves a passed tracker
+    # OPEN — the watcher owns its lifetime.
     fleet = await fleet_report.snapshot(ctx["client"], ctx["cfg"],
-                                        ctx["state"].get("watch") or [])
+                                        ctx["state"].get("watch") or [],
+                                        tracker=ctx["state"].get("tracker"))
     return asdict(fleet) if is_dataclass(fleet) else fleet
 
 
@@ -225,8 +235,9 @@ async def _dispatch(ctx, line):
     except Exception as exc:  # noqa: BLE001 — the surface never crashes the watcher
         logger.warning("OVERSEER %s failed: %s", method, exc)
         return {"id": rid, "error": str(exc)}
-    logger.info("OVERSEER %s ok (bot=%s)", method,
-                (req.get("params") or {}).get("bot", "-"))
+    level = logging.INFO if method in _MUTATING else logging.DEBUG
+    logger.log(level, "OVERSEER %s ok (bot=%s)", method,
+               (req.get("params") or {}).get("bot", "-"))
     return {"id": rid, "result": result}
 
 

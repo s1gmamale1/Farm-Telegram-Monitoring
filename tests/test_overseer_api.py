@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import types
@@ -522,6 +523,48 @@ def test_overseer_refused_while_phase2_auto_fix_in_flight(tmp_path, monkeypatch)
     assert pb["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
     assert rl["result"] == {"refused": "in_flight_recovery", "bot": "SinFermera7"}
     assert pressed == [] and laddered["called"] is False
+
+
+# --- log noise: read-endpoint success at DEBUG, mutating at INFO ----------------
+
+def test_read_method_logs_success_at_debug_not_info(tmp_path, monkeypatch, caplog):
+    async def fake_history(client, ent, *, limit=15):
+        return ["latest line"]
+
+    monkeypatch.setattr(overseer_api.tg_tools, "read_history", fake_history)
+    cfg = _cfg(tmp_path)
+    state = {"watch": [("SinFermera7", object())]}
+
+    async def go(sock):
+        return await _call(sock, "read_bot", {"bot": "SF7"})
+
+    with caplog.at_level(logging.DEBUG, logger="watcherdog.overseer_api"):
+        resp = _run_with_server(cfg, state, go)
+    assert resp["result"] == ["latest line"]
+    ok = [r for r in caplog.records if r.getMessage().startswith("OVERSEER read_bot ok")]
+    assert ok and all(r.levelno == logging.DEBUG for r in ok)   # NOT info
+    # and nothing about read_bot was logged at INFO+
+    assert not [r for r in caplog.records
+                if r.levelno >= logging.INFO and "read_bot ok" in r.getMessage()]
+
+
+def test_mutating_method_logs_success_at_info(tmp_path, caplog):
+    t = IncidentTracker(str(tmp_path / "i.db"))
+    row = t.open("bot_error", "SF7", "bot_error:SF7", "high", "weird",
+                 fixable=True, novel=True, now=100.0)
+    cfg, state = _cfg(tmp_path), {"tracker": t}
+
+    async def go(sock):
+        return await _call(sock, "resolve_flagged",
+                           {"id": row["id"], "resolution": "overseer_fixed"})
+
+    with caplog.at_level(logging.DEBUG, logger="watcherdog.overseer_api"):
+        resp = _run_with_server(cfg, state, go)
+    t.close()
+    assert resp["result"] == {"resolved": True}
+    ok = [r for r in caplog.records
+          if r.getMessage().startswith("OVERSEER resolve_flagged ok")]
+    assert ok and all(r.levelno == logging.INFO for r in ok)    # mutating stays loud
 
 
 def test_press_button_unwedges_after_recovery_releases_lock(tmp_path, monkeypatch):

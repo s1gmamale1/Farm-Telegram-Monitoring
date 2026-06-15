@@ -52,7 +52,7 @@ authority. Teach destructive fixes with `auto: ""`.
 | `list_buttons` | `bot` | `tg_actions.panel_menu` | panel inline-button labels |
 | `press_button` | `bot`, `button`, `confirmed=false` | `tg_actions.press_button` | press result. A destructive **matched label** is refused unless **both** `confirmed:true` **and** `OVERSEER_ALLOW_DESTRUCTIVE=true` (returns `{"refused":"destructive"}` when the flag is off); confirmed destructive presses are recorded to the daily fix log |
 | `run_ladder` | `bot`, `text=""` | `novel_recovery.attempt` (gates: needs_human, NOVEL_RECOVERY, dry-run) | attempt outcome (`attempted/failed/skipped/human_needed`). **Refused entirely unless `OVERSEER_ALLOW_DESTRUCTIVE=true`** (the kill→select→start ladder is destructive) |
-| `get_stats` | — | `fleet_report.snapshot` | the fleet (per-bot status, drops, value) |
+| `get_stats` | — | `fleet_report.snapshot` | the whole fleet board in one call — per-bot `status`, `drops`, `value`, plus `incident` (`"open"`/`"parked"`/`null`, from the ledger) and `down_since_h` (hours since that incident began). No need to hand-sweep panels. |
 | `resolve_flagged` | `id`, `resolution` | `IncidentTracker.resolve_by_id` | `{"resolved": true|false}` (false = already closed/unknown) |
 | `teach_fix` | `signature`, `match`, `fix`, `action=""`, `auto=""`, `type="ai"` | `learned_fixes.append_fix` (added_by `overseer`, dated) | the written fix block |
 | `screenshot` | `bot` | `tg_actions.screenshot` (presses the panel's Screenshot button, downloads the image) | `{"downloaded": <host-local path>, "caption": ...}`; refused under dry-run |
@@ -81,10 +81,11 @@ appear in `list_flagged` alongside novel bot errors. The overseer then calls
 is pulled at diagnosis time, not carried on the incident), reads the image
 with its own vision model (outside this repo — the core never gains an image
 dependency), and acts via `press_button` / `resolve_flagged` / `teach_fix`.
-The image-only `farmed/N` total stays a `?` in reports (`get_stats` exposes
-`needs_vision`); it is a standing condition, not an incident. With no overseer
-connected, cold-cases remain nagged human alerts — the deterministic baseline
-is unchanged.
+The image-only `farmed/N` total stays a `?` in reports; it is a standing
+condition, not an incident. (`get_stats` does NOT emit a `needs_vision` flag —
+the `fleet_report.snapshot` `BotStats` never sets it; that field exists only on
+the capture-record path, not this socket payload.) With no overseer connected,
+cold-cases remain nagged human alerts — the deterministic baseline is unchanged.
 
 ## Reference client
 
