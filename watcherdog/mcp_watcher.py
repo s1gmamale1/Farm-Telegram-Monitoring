@@ -497,6 +497,11 @@ def _open_panel_incident(state, name, summary, now=None):
             return "deduped"        # same condition still off — swallow silently
         # A genuinely different/worse cold-case: record it on the parked row and
         # tell the caller to re-alert ONCE (don't let parked hide a new failure).
+        # NOTE: a panel oscillating between two cold-case types (e.g. PC-off ↔
+        # black-screen RDP-frozen) re-alerts once PER FLIP. This is intentional and
+        # rare — a flapping cold-case IS new signal worth surfacing — and bounded
+        # to one alert per transition (the summary updates, so the next identical
+        # read dedups). The much-more-common SAME-condition repeat stays silent.
         tracker.update_summary(parked["id"], summary)
         return "realert"
     tracker.open("panel", name, key, "high", summary,
@@ -587,8 +592,12 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                 had_episode = (tracker.open_for_bot("panel", name) is not None
                                or tracker.parked_by_key(f"panel:{name}") is not None)
             if had_episode:
+                # This branch is reached ONLY on a fresh HEALTHY status card
+                # (decide() flags a stale card before here), so include_parked=True
+                # is safe: it's the real power-on recovery. The _evaluate_bot chatter
+                # path keeps the default (False) and can never clear a parked row.
                 await _resolve_incidents_for(state, client, target, name, now, deliver, cfg,
-                                             announce=announce_resolved)
+                                             announce=announce_resolved, include_parked=True)
             ps.recover_attempts = 0
             ps.episode_issue = None
             ps.coldcase_reported = False
@@ -958,16 +967,23 @@ def _open_bot_incident(state, bot, severity, analysis, text, *, fixable,
                  raw_excerpt=(text or "")[:1000], now=now)
 
 
-async def _resolve_incidents_for(state, client, target, bot, now, deliver, cfg, *, announce=True):
-    """Close EVERY open incident for a bot (any source) and, if announce, send one
+async def _resolve_incidents_for(state, client, target, bot, now, deliver, cfg, *,
+                                 announce=True, include_parked=False):
+    """Close open incidents for a bot (any source) and, if announce, send one
     canonical ✅ Resolved. ``fix_attempted=="fixed"`` on any row makes the closure
     read "fixed by WatcherDog" (and stores resolution ``we_fixed``); otherwise it
     reads "recovered on its own" and stores the passed base resolution.
-    Inert when tracking is disabled."""
+    Inert when tracking is disabled.
+
+    ``include_parked`` MUST be True ONLY from the freshness-gated panel-healthy
+    caller (a fresh HEALTHY status card proves the PC powered back on). The
+    ``_evaluate_bot`` chatter caller keeps the default False, so a benign "normal"
+    line can never false-clear a parked PC-off panel."""
     tracker = state.get("tracker")
     if tracker is None:
         return
-    res = tracker.resolve_open_for_bot(bot, "self_healed", now=now)
+    res = tracker.resolve_open_for_bot(bot, "self_healed", now=now,
+                                       include_parked=include_parked)
     if res is None:
         return
     if announce:

@@ -199,21 +199,29 @@ class IncidentTracker:
             "SELECT * FROM open_incidents WHERE bot = ? AND status = 'open' "
             "ORDER BY opened_ts", (bot,)).fetchall()]
 
-    def resolve_open_for_bot(self, bot, resolution, now=None):
-        """Resolve ALL open AND PARKED incidents for a bot regardless of source (the
-        bot/panel is healthy again — close everything). PARKED rows are included so
-        a recovered PC-off panel leaves the report-only ``needs_human`` view; the
-        caller (healthy-card path) is freshness-gated upstream — ``panel_rules.decide``
-        only returns ``healthy`` for a card NEWER than the stale window, so a stale
-        re-read of a pre-death card can't false-clear a parked-but-still-dead PC.
-        ESCALATED rows are deliberately left untouched (only open + parked clear).
-        Returns {elapsed (from earliest opened_ts), we_fixed, count} or None."""
+    def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
+        """Resolve open incidents for a bot regardless of source (the bot/panel is
+        healthy again — close everything). Returns {elapsed (from earliest
+        opened_ts), we_fixed, count} or None.
+
+        ``include_parked`` is the BLOCKER fix. PARKED rows (PC off, human-owned) must
+        be cleared ONLY on a FRESH HEALTHY panel status card — i.e. ONLY from the
+        freshness-gated panel-healthy caller, which passes ``include_parked=True``
+        (``panel_rules.decide`` returns ``healthy`` only for a card NEWER than the
+        stale window, so a stale pre-death card can't false-clear a still-dead PC).
+        The DEFAULT (``False``) clears only ``status='open'`` — this is what the
+        ``_evaluate_bot`` chatter path uses, so a benign "normal" line on a panel
+        name (panels share the watch roster) can NEVER false-clear a parked PC-off
+        panel and fire a bogus ✅ recovered. ESCALATED rows are never touched."""
         if self._dry_run:
             return None
         now = now if now is not None else time.time()
+        statuses = ("open", "parked") if include_parked else ("open",)
+        placeholders = ", ".join("?" for _ in statuses)
         rows = self.conn.execute(
-            "SELECT * FROM open_incidents WHERE bot = ? "
-            "AND status IN ('open', 'parked') ORDER BY opened_ts", (bot,)).fetchall()
+            f"SELECT * FROM open_incidents WHERE bot = ? "
+            f"AND status IN ({placeholders}) ORDER BY opened_ts",
+            (bot, *statuses)).fetchall()
         if not rows:
             return None
         earliest = min(r["opened_ts"] for r in rows)
@@ -222,9 +230,9 @@ class IncidentTracker:
         # successful re-fix on any row wins; otherwise store the caller's base.
         stored = "we_fixed" if we_fixed else resolution
         self.conn.execute(
-            "UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
-            "resolution = ? WHERE bot = ? AND status IN ('open', 'parked')",
-            (now, stored, bot))
+            f"UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
+            f"resolution = ? WHERE bot = ? AND status IN ({placeholders})",
+            (now, stored, bot, *statuses))
         self.conn.commit()
         return {"elapsed": now - earliest, "we_fixed": we_fixed, "count": len(rows)}
 
@@ -334,16 +342,18 @@ class IncidentTracker:
         self.conn.commit()
 
     def touch(self, incident_id, now=None):
-        """Bump a row's ``last_update_ts`` heartbeat WITHOUT changing its status —
-        the parked-dedup path uses it to record that a still-off panel re-flagged
-        the SAME condition without re-INSERTing or re-alerting. Status-agnostic by
-        design (it targets a parked row), so unlike the other by-id mutators there
-        is no ``AND status='open'`` guard."""
+        """Bump a PARKED row's ``last_update_ts`` heartbeat WITHOUT changing its
+        status — the parked-dedup path uses it to record that a still-off panel
+        re-flagged the SAME condition without re-INSERTing or re-alerting. The
+        ``AND status='parked'`` guard is defensive: ``touch`` is only ever called on
+        a row ``parked_by_key`` just returned, but the guard makes a stray call on a
+        resolved/escalated row a safe NO-OP (never resurrects its heartbeat)."""
         if self._dry_run:
             return
         now = now if now is not None else time.time()
         self.conn.execute(
-            "UPDATE open_incidents SET last_update_ts = ? WHERE id = ?",
+            "UPDATE open_incidents SET last_update_ts = ? "
+            "WHERE id = ? AND status = 'parked'",
             (now, incident_id),
         )
         self.conn.commit()

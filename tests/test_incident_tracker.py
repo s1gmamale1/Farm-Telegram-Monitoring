@@ -556,15 +556,43 @@ def test_parked_rows_not_in_open_novel_or_escalated_lists(tracker):
     assert [r["bot"] for r in tracker.parked_list()] == ["SF11"]
 
 
-def test_resolve_open_for_bot_also_clears_parked(tracker):
-    # Real recovery: the healthy-card path calls resolve_open_for_bot. It must close
-    # a PARKED panel row too (the PC came back), not just status='open' rows — else
-    # a recovered panel would linger in needs_human forever.
+def test_resolve_open_for_bot_default_does_not_clear_parked(tracker):
+    # THE BLOCKER GUARD: the DEFAULT (include_parked=False) must clear ONLY
+    # status='open' rows and NEVER a parked row. The _evaluate_bot chatter path
+    # uses the default, so a benign "normal" line on a panel name must not
+    # false-clear a parked PC-off panel.
     tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
     iid = tracker.open_for_bot("panel", "SF11")["id"]
     tracker.park_by_id(iid, now=100.0)
     assert tracker.parked_by_key("panel:SF11") is not None
-    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0)
+    # Default call: nothing OPEN for the bot → returns None, parked row untouched.
+    assert tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0) is None
+    assert tracker.parked_by_key("panel:SF11") is not None   # STILL parked
+    row = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE id = ?", (iid,)).fetchone()
+    assert row["status"] == "parked"
+
+
+def test_resolve_open_for_bot_default_clears_open_leaves_parked(tracker):
+    # Default also must not sweep a parked row while clearing a real open one.
+    tracker.open("bot_error", "SF11", "bot_error:SF11", "high", "boom", fixable=False, now=0.0)
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=10.0)
+    pid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(pid, now=100.0)
+    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0)  # default
+    assert res is not None and res["count"] == 1            # ONLY the open bot_error
+    assert tracker.open_for_bot("bot_error", "SF11") is None
+    assert tracker.parked_by_key("panel:SF11") is not None  # parked SURVIVES the default
+
+
+def test_resolve_open_for_bot_include_parked_clears_parked(tracker):
+    # Real recovery via the freshness-gated panel-healthy path: include_parked=True
+    # closes a PARKED panel row too (the PC came back) so it leaves needs_human.
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    assert tracker.parked_by_key("panel:SF11") is not None
+    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0, include_parked=True)
     assert res is not None and res["count"] == 1
     assert tracker.parked_by_key("panel:SF11") is None      # parked row closed
     row = tracker.conn.execute(
@@ -572,25 +600,26 @@ def test_resolve_open_for_bot_also_clears_parked(tracker):
     assert row["status"] == "resolved"
 
 
-def test_resolve_open_for_bot_clears_open_and_parked_together(tracker):
-    # A bot with BOTH an open bot_error and a parked panel row: a full recovery
-    # closes both (resolve_open_for_bot already spans all sources; now also parked).
+def test_resolve_open_for_bot_include_parked_clears_open_and_parked_together(tracker):
+    # A bot with BOTH an open bot_error and a parked panel row: include_parked
+    # closes both.
     tracker.open("bot_error", "SF11", "bot_error:SF11", "high", "boom", fixable=False, now=0.0)
     tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=10.0)
     pid = tracker.open_for_bot("panel", "SF11")["id"]
     tracker.park_by_id(pid, now=100.0)
-    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0)
+    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0, include_parked=True)
     assert res is not None and res["count"] == 2            # open + parked both closed
     assert tracker.open_for_bot("bot_error", "SF11") is None
     assert tracker.parked_by_key("panel:SF11") is None
 
 
-def test_resolve_open_for_bot_does_not_clear_escalated(tracker):
-    # GUARD: widening to 'parked' must NOT also start clearing 'escalated' rows —
+def test_resolve_open_for_bot_include_parked_does_not_clear_escalated(tracker):
+    # GUARD: include_parked must NOT also start clearing 'escalated' rows —
     # only open + parked. A bot_error escalation stays escalated.
     tracker.open("bot_error", "SF11", "bot_error:SF11", "high", "boom", fixable=False, now=0.0)
     tracker.escalate("bot_error:SF11", now=100.0)
-    assert tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0) is None  # nothing open/parked
+    assert tracker.resolve_open_for_bot(
+        "SF11", "self_healed", now=500.0, include_parked=True) is None  # nothing open/parked
     assert [r["bot"] for r in tracker.escalated_list()] == ["SF11"]    # still escalated
 
 

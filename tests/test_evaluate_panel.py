@@ -890,7 +890,7 @@ def test_healthy_resolves_open_ledger_row_even_without_latches(monkeypatch):
         def open_for_bot(self, source, bot):
             return {"key": f"panel:{bot}"} if source == "panel" else None
 
-        def resolve_open_for_bot(self, bot, resolution, now=None):
+        def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
             resolved.append((bot, resolution))
             return {"count": 1, "elapsed": 120.0, "we_fixed": False}
 
@@ -919,7 +919,7 @@ def test_healthy_no_episode_no_ledger_row_skips_resolve(monkeypatch):
         def parked_by_key(self, key):
             return None                       # no parked row either → skip resolve
 
-        def resolve_open_for_bot(self, bot, resolution, now=None):
+        def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
             resolved.append((bot, resolution))
             return None
 
@@ -948,7 +948,7 @@ def test_coldcased_panel_returns_healthy_resolves_ledger_once(monkeypatch):
         def open_for_bot(self, source, bot):
             return {"key": f"panel:{bot}"} if source == "panel" else None
 
-        def resolve_open_for_bot(self, bot, resolution, now=None):
+        def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
             resolved.append((bot, resolution))
             return {"count": 1, "elapsed": 600.0, "we_fixed": False}
 
