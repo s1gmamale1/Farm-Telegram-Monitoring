@@ -4,9 +4,9 @@
 A launchd timer runs this every ~120 s. It runs the deterministic health probe
 in-process (``overseer_health.build_report``) and invokes a *pluggable* agent
 command (``OVERSEER_WAKE_CMD``) **only when the core has genuinely failed** —
-with an atomic single-flight lock, a keyed/stuck-only cooldown, a process-group
-kill on timeout, and a compact, size-bounded wake log. It NEVER touches Hermes's
-own setup and NEVER acts on the agent's exit code (logs it only).
+with an ``fcntl.flock`` single-flight lock, a keyed/stuck-only cooldown, a
+process-group kill on timeout, and a compact, size-bounded wake log. It NEVER
+touches Hermes's own setup and NEVER acts on the agent's exit code (logs it only).
 
 Design: the DECISION LOGIC is pure (``run_wake``) — the clock (``now``), the
 invoke ``runner``, the ``data_dir`` for state files, the ``env`` knobs, and the
@@ -16,10 +16,17 @@ real subprocess runner / clock / environment / data dir.
 
 Wake decisions (in order):
   1. probe ``code == 0``         → "ok"            (healthy / core mid-recovery)
-  2. live lock held              → "skip:inflight" (single-flight)
-  3. stuck cooldown active       → "skip:cooldown" (KEYED; dead/wedged bypass it)
-  4. ``OVERSEER_WAKE_CMD`` unset → "would-wake"    (no-op until the manager plugs in)
-  5. otherwise                   → "woke"          (acquire lock, stamp, invoke)
+  2. stuck cooldown active       → "skip:cooldown" (KEYED; dead/wedged bypass it)
+  3. ``OVERSEER_WAKE_CMD`` unset → "would-wake"    (no-op until the manager plugs in)
+  4. flock already held          → "skip:inflight" (single-flight)
+  5. otherwise                   → "woke"          (held flock; stamp; invoke)
+
+The single-flight lock is ``fcntl.flock(LOCK_EX|LOCK_NB)`` on a persistent fd —
+NOT an O_EXCL PID-file. flock has no write-gap (there is no "created-but-empty"
+window an overlapping tick can mis-read), and the kernel releases it
+automatically when the holder dies, so there is no stale-lock / PID-reuse logic
+to get wrong. It is acquired ONLY around the stamp+invoke — so a no-op tick
+(code 0 / cooldown / would-wake) acquires nothing and leaves no held lock.
 
 Fail toward waking, never crash the timer: a ``build_report`` exception is
 synthesized into ``{"healthy": false, "probe_error": <exc>}`` with reason
@@ -27,6 +34,7 @@ synthesized into ``{"healthy": false, "probe_error": <exc>}`` with reason
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shlex
@@ -104,85 +112,56 @@ def _reason(report):
 
 
 # --------------------------------------------------------------------------- #
-# Atomic single-flight lock
+# Single-flight lock — fcntl.flock on a persistent fd.
+#
+# Why flock and not an O_EXCL PID-file: O_EXCL has a write-gap. The winner of
+# os.open(O_CREAT|O_EXCL) holds a CREATED-BUT-EMPTY file until it writes its pid;
+# a second tick that hits FileExistsError in that window reads "" → int("") →
+# ValueError → "stale" → unlinks the live winner's lock and wins too. Result:
+# 2-3 live holders under a race, and the first holder's release unlinks the
+# second's lock. flock closes BOTH that gap and the PID-reuse hole: the lock is
+# the kernel's advisory lock on the OPEN FD (no file-contents parsing), and the
+# kernel drops it automatically when the holder process dies — no stale logic.
 # --------------------------------------------------------------------------- #
 
 def _lock_path(data_dir):
     return os.path.join(data_dir, _LOCK_NAME)
 
 
-def _pid_alive(pid):
-    """True iff a process with ``pid`` exists. ``os.kill(pid, 0)`` probes it
-    without sending a real signal; ProcessLookupError → dead, PermissionError →
-    alive (exists, owned by someone else)."""
-    if pid <= 0:
-        return False
+def _acquire_lock(data_dir):
+    """Try to take the single-flight flock. Returns a ``release`` callable on
+    success, or ``None`` if another live wrapper already holds it.
+
+    ``fcntl.flock(LOCK_EX|LOCK_NB)`` on a persistent fd: non-blocking, so a
+    second wrapper gets ``BlockingIOError`` immediately instead of waiting. The
+    fd is kept open for the whole agent runtime (the lock lives as long as the fd
+    is open); ``release`` un-flocks and closes it. The pid written inside is
+    debug-only context, NOT used for correctness."""
+    path = _lock_path(data_dir)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        os.close(fd)
+        return None  # another wrapper holds it → single-flight skip
+    # Record our pid inside for human debugging (not load-bearing).
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode("ascii"))
     except OSError:
-        return False
+        pass
 
-
-def _read_lock_pid(path):
-    """The pid recorded inside an existing lock file, or None if unreadable /
-    non-numeric (garbage → treated as stale)."""
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return int(fh.read().strip())
-    except (OSError, ValueError):
-        return None
-
-
-def _lock_held_by_live_pid(data_dir):
-    """True iff the lock exists AND the pid inside it is alive. A stale lock
-    (dead/garbage pid) is NOT held — it will be reclaimed by ``_acquire_lock``."""
-    path = _lock_path(data_dir)
-    if not os.path.exists(path):
-        return False
-    pid = _read_lock_pid(path)
-    return pid is not None and _pid_alive(pid)
-
-
-def _acquire_lock(data_dir, pid):
-    """Atomically create the lock with our ``pid`` inside. Returns a release
-    callable on success, or None if a LIVE holder owns it.
-
-    Uses ``os.open(O_CREAT|O_EXCL|O_WRONLY)`` (not check-then-write) so two
-    overlapping ticks can't both win. On ``FileExistsError`` a stale lock (dead /
-    garbage pid) is unlinked and the create retried once (reclaim); a live holder
-    yields None."""
-    path = _lock_path(data_dir)
-    for _ in range(2):  # at most: try, reclaim-once, try again
+    def _release(_fd=fd):
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            holder = _read_lock_pid(path)
-            if holder is not None and _pid_alive(holder):
-                return None  # genuinely held by a live process
-            # Stale (dead or garbage pid) → reclaim and retry the atomic create.
-            try:
-                os.unlink(path)
-            except OSError:
-                return None  # someone else won the reclaim race; treat as held
-            continue
-        # Won the create.
-        try:
-            os.write(fd, str(pid).encode("ascii"))
+            fcntl.flock(_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
         finally:
-            os.close(fd)
-
-        def _release(_p=path):
             try:
-                os.unlink(_p)
+                os.close(_fd)
             except OSError:
                 pass
-        return _release
-    return None
+    return _release
 
 
 # --------------------------------------------------------------------------- #
@@ -363,27 +342,27 @@ def _decide_and_wake(cfg, now, data_dir, runner, env, build_report):
 
     bots = ",".join(sorted((report.get("flagged_stuck") or {}).get("bots") or []))
 
-    # 2. Single-flight: a LIVE lock means a previous wake is still running.
-    if _lock_held_by_live_pid(data_dir):
-        _log_line(data_dir, "skip:inflight", reason, bots, "", "", now=now)
-        return {"decision": "skip:inflight", "reason": reason, "rc": None}
+    # NON-INVOKING decisions FIRST, so they acquire NO lock and leave no held
+    # flock behind (preserves the "code0 / cooldown / would-wake create no lock
+    # state" guarantee). Single-flight is taken last, guarding ONLY the wake.
 
-    # 3. Keyed, stuck-only cooldown. Dead/wedged are urgent → bypass entirely.
+    # 2. Keyed, stuck-only cooldown. Dead/wedged are urgent → bypass entirely.
     if not urgent and _within_cooldown(data_dir, now, key, _cooldown_s(env)):
         _log_line(data_dir, "skip:cooldown", reason, bots, "", "", now=now)
         return {"decision": "skip:cooldown", "reason": reason, "rc": None}
 
-    # 4. No command plugged in yet → no-op (safe to install + verify the trigger).
+    # 3. No command plugged in yet → no-op (safe to install + verify the trigger).
     cmd = (env.get("OVERSEER_WAKE_CMD") or "").strip()
     if not cmd:
         _log_line(data_dir, "would-wake", reason, bots, "", "", now=now)
         return {"decision": "would-wake", "reason": reason, "rc": None}
 
-    # 5. Acquire the lock atomically (reclaiming a stale one), held for the whole
-    #    agent runtime; release in `finally` no matter what.
-    release = _acquire_lock(data_dir, os.getpid())
+    # 4. Single-flight: take the flock (LOCK_EX|LOCK_NB) ONLY now, around the
+    #    actual wake. None → another wrapper already holds it (a previous wake is
+    #    still running) → skip. Held across the whole agent runtime; released in
+    #    `finally` on every path (timeout / kill / exception).
+    release = _acquire_lock(data_dir)
     if release is None:
-        # Lost an atomic race to another tick between the check and the create.
         _log_line(data_dir, "skip:inflight", reason, bots, "", "", now=now)
         return {"decision": "skip:inflight", "reason": reason, "rc": None}
     try:

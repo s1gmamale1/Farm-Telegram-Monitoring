@@ -6,8 +6,9 @@ injected `runner` (so a real agent is NEVER spawned), an injected `data_dir`
 and an injected `env` + `build_report` (so knobs and the probe outcome are
 controllable without touching the process environment or a live watcher).
 
-Only the explicit process-group-kill test launches a real subprocess (via the
-real `_run_group`), and it uses a tiny timeout so it stays fast.
+Two tests touch real processes: the process-group-kill test (real `_run_group`)
+and the fork-storm single-flight test (os.fork). Both use tiny timeouts/barriers
+so they stay fast.
 """
 import json
 import os
@@ -21,7 +22,6 @@ import scripts.overseer_wake as ow
 # Helpers: a fake runner that records its argv + stdin and returns a canned rc;
 # a cfg whose db_path lives under tmp_path (data_dir derives from it); a tiny
 # log reader.
-# --------------------------------------------------------------------------- #
 
 class FakeRunner:
     """Records the (argv, stdin_json) it was called with; returns (rc, elapsed).
@@ -42,9 +42,8 @@ class FakeRunner:
 
 
 def _cfg(tmp_path):
+    # data_dir derives from db_path's dirname → sandbox, never the real data/.
     import types
-    # data_dir is derived from db_path's dirname; point it at tmp_path so the
-    # wrapper's state files land in the sandbox, never the real data/ dir.
     return types.SimpleNamespace(db_path=str(tmp_path / "incidents.db"))
 
 
@@ -67,9 +66,7 @@ def _report(*, alive=True, wedged=False, stuck_bots=(), stuck_stale=None,
 
 def _br(report, code):
     """A build_report stand-in returning a fixed (report, code)."""
-    def _fn(cfg, now, **kw):
-        return report, code
-    return _fn
+    return lambda cfg, now, **kw: (report, code)
 
 
 def _log_text(data_dir):
@@ -96,15 +93,16 @@ def _run(tmp_path, *, report, code, runner=None, env=None, now=10_000.0):
 
 # --------------------------------------------------------------------------- #
 # Decision logic: when does the wrapper invoke the agent at all?
-# --------------------------------------------------------------------------- #
 
 def test_healthy_code0_no_invoke(tmp_path):
-    # code==0 (healthy / in-flight) → log "ok", never invoke.
+    # code==0 (healthy / in-flight) → log "ok", never invoke, no lock acquired.
     result, runner = _run(tmp_path, report=_report(), code=0,
                           env={"OVERSEER_WAKE_CMD": "agent"})
     assert result["decision"] == "ok"
     assert not runner.invoked
     assert " ok " in (" " + _log_text(str(tmp_path)).split("\n")[0] + " ")
+    # No-op decision creates no lock file (single-flight guards only the wake).
+    assert not os.path.exists(os.path.join(str(tmp_path), "overseer_wake.lock"))
 
 
 def test_dead_watcher_invokes_and_bypasses_cooldown(tmp_path):
@@ -148,49 +146,55 @@ def test_inflight_flagged_code0_no_invoke(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Atomic single-flight lock
-# --------------------------------------------------------------------------- #
+# Single-flight lock (fcntl.flock on a persistent fd — no PID-file race, the
+# kernel drops the lock when the holder dies).
 
-def test_lock_held_by_live_pid_skips(tmp_path):
-    # A lock file pre-created with a LIVE pid (our own) → single-flight skip.
+def test_lock_held_by_live_holder_skips(tmp_path):
+    # Another holder owns the flock (a real fcntl.flock on the lock fd) → skip.
+    import fcntl
+    lock = os.path.join(str(tmp_path), "overseer_wake.lock")
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result, runner = _run(tmp_path,
+                              report=_report(stuck_bots=["SinFermera7"]),
+                              code=1, env={"OVERSEER_WAKE_CMD": "agent"})
+        assert result["decision"] == "skip:inflight"
+        assert not runner.invoked
+        # The lock file persists (flock is advisory; we don't unlink a held one).
+        assert os.path.exists(lock)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_lock_not_held_invokes(tmp_path):
+    # A bare lock FILE with stale pid TEXT inside but NO live flock holder → the
+    # flock acquires cleanly and we wake. flock, not the file's contents, is what
+    # makes a lock "held" — exactly the PID-reuse hole flock closes (a leftover
+    # pid number, even a recycled live one, never blocks us).
     lock = os.path.join(str(tmp_path), "overseer_wake.lock")
     with open(lock, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
-    result, runner = _run(tmp_path, report=_report(stuck_bots=["SinFermera7"]),
-                          code=1, env={"OVERSEER_WAKE_CMD": "agent"})
-    assert result["decision"] == "skip:inflight"
-    assert not runner.invoked
-    # The live lock is left intact (it belongs to the other holder).
-    assert os.path.exists(lock)
-
-
-def test_lock_held_by_dead_pid_reclaims_and_invokes(tmp_path):
-    # A stale lock (dead/bogus pid) is reclaimed (unlink + re-create) then we wake.
-    lock = os.path.join(str(tmp_path), "overseer_wake.lock")
-    with open(lock, "w", encoding="utf-8") as fh:
-        fh.write(str(_dead_pid()))
+        fh.write("999999")   # stale pid text; nobody holds the flock
     result, runner = _run(tmp_path, report=_report(stuck_bots=["SinFermera7"]),
                           code=1, env={"OVERSEER_WAKE_CMD": "agent"})
     assert result["decision"] == "woke"
     assert runner.invoked
-    # Lock released in the finally after the (fake, instant) invoke.
-    assert not os.path.exists(lock)
 
 
-def test_lock_garbage_pid_reclaims_and_invokes(tmp_path):
-    # A lock with non-numeric garbage inside is treated as stale → reclaimed.
-    lock = os.path.join(str(tmp_path), "overseer_wake.lock")
-    with open(lock, "w", encoding="utf-8") as fh:
-        fh.write("not-a-pid")
-    result, runner = _run(tmp_path, report=_report(alive=False, healthy=False),
-                          code=1, env={"OVERSEER_WAKE_CMD": "agent"})
-    assert result["decision"] == "woke"
-    assert runner.invoked
+def test_lock_released_after_wake(tmp_path):
+    # After a (fake, instant) wake the flock is released, so a second run also
+    # wakes — the lock is not stuck held.
+    r1, run1 = _run(tmp_path, report=_report(stuck_bots=["SinFermera7"]),
+                    code=1, env={"OVERSEER_WAKE_CMD": "agent"})
+    r2, run2 = _run(tmp_path, report=_report(alive=False, healthy=False),
+                    code=1, env={"OVERSEER_WAKE_CMD": "agent"})
+    assert r1["decision"] == "woke" and run1.invoked
+    assert r2["decision"] == "woke" and run2.invoked
 
 
 # --------------------------------------------------------------------------- #
 # Keyed, stuck-only cooldown
-# --------------------------------------------------------------------------- #
 
 def test_keyed_cooldown_different_bot_still_invokes(tmp_path):
     # Stamp a cooldown for SinFermera7, then a stuck incident for SinFermera14.
@@ -212,6 +216,8 @@ def test_same_key_within_cooldown_skips(tmp_path):
                           env={"OVERSEER_WAKE_CMD": "agent"})
     assert result["decision"] == "skip:cooldown"
     assert not runner.invoked
+    # A cooldown-skip is a no-op decision: it creates no lock file.
+    assert not os.path.exists(os.path.join(str(tmp_path), "overseer_wake.lock"))
 
 
 def test_same_key_after_cooldown_invokes(tmp_path):
@@ -258,7 +264,6 @@ def test_cooldown_prunes_old_entries_on_write(tmp_path):
 
 # --------------------------------------------------------------------------- #
 # Pluggable exec contract
-# --------------------------------------------------------------------------- #
 
 def test_cmd_unset_would_wake_no_invoke(tmp_path):
     # OVERSEER_WAKE_CMD unset → log "would-wake", no invoke, no lock left behind.
@@ -276,6 +281,7 @@ def test_cmd_empty_would_wake_no_invoke(tmp_path):
                           env={"OVERSEER_WAKE_CMD": "   "})
     assert result["decision"] == "would-wake"
     assert not runner.invoked
+    assert not os.path.exists(os.path.join(str(tmp_path), "overseer_wake.lock"))
 
 
 def test_invoke_argv_is_shlex_split_with_reason_last_and_json_stdin(tmp_path):
@@ -311,7 +317,6 @@ def test_reason_down_and_wedged(tmp_path):
 
 # --------------------------------------------------------------------------- #
 # Error handling: build_report raises → synthesize + still wake
-# --------------------------------------------------------------------------- #
 
 def test_build_report_raises_synthesizes_and_wakes(tmp_path):
     runner = FakeRunner()
@@ -337,8 +342,9 @@ def test_build_report_raises_synthesizes_and_wakes(tmp_path):
 
 
 def test_run_wake_never_raises_on_runner_failure(tmp_path):
-    # A runner that explodes must be caught — the timer never crashes (decision
-    # is recorded, lock released).
+    # A runner that explodes must be caught — the timer never crashes; the
+    # outcome is specifically "error" (tightened: a regression flipping
+    # error<->woke must be caught, not silently allowed).
     class Boom:
         def __call__(self, *a, **k):
             raise OSError("exec not found")
@@ -349,14 +355,16 @@ def test_run_wake_never_raises_on_runner_failure(tmp_path):
         env={"OVERSEER_WAKE_CMD": "agent"},
         build_report=_br(_report(stuck_bots=["SinFermera7"]), 1),
     )
-    assert result["decision"] in ("error", "woke")
-    # lock always released
-    assert not os.path.exists(os.path.join(str(tmp_path), "overseer_wake.lock"))
+    assert result["decision"] == "error"
+    # The flock is released even on the exception path (the fd is closed in
+    # finally); a follow-up run can acquire and wake.
+    follow, frun = _run(tmp_path, report=_report(alive=False, healthy=False),
+                        code=1, env={"OVERSEER_WAKE_CMD": "agent"})
+    assert follow["decision"] == "woke" and frun.invoked
 
 
 # --------------------------------------------------------------------------- #
 # Wake log: line format + truncation at the cap
-# --------------------------------------------------------------------------- #
 
 def test_wake_log_line_format(tmp_path):
     runner = FakeRunner(rc=0, elapsed=1.5)
@@ -383,7 +391,6 @@ def test_wake_log_truncates_at_cap(tmp_path):
 # REAL process-group kill: the only test that spawns a subprocess.
 # Launch a command whose child outlives the parent; on timeout the WHOLE group
 # must die so no orphan survives.
-# --------------------------------------------------------------------------- #
 
 def test_run_group_kills_whole_process_group_no_orphan(tmp_path):
     # `sh -c 'sleep 30 & echo $! >pidfile; sleep 30'` — the backgrounded child is
@@ -406,26 +413,71 @@ def test_run_group_kills_whole_process_group_no_orphan(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# small local utilities
-# --------------------------------------------------------------------------- #
+# TRUE-concurrency single-flight (regression for B1): a fork-storm of N wrappers
+# racing on the SAME data_dir with an URGENT report (bypasses cooldown) must
+# produce EXACTLY ONE wake. FAILS on the old O_EXCL+PID-file lock (2-3 winners
+# slip through the created-but-empty write gap); PASSES with fcntl.flock.
 
-def _dead_pid():
-    """A pid that is (almost certainly) not alive: spawn `true`, reap it, reuse
-    its pid number. os.kill(pid,0) on it raises ProcessLookupError."""
-    import subprocess
-    p = subprocess.Popen(["true"])
-    p.wait()
-    # Give the OS a moment; the pid is reaped so kill(pid,0) → ProcessLookupError.
-    for _ in range(50):
+def test_forkstorm_exactly_one_wake(tmp_path):
+    n = 20
+    data_dir = str(tmp_path)
+    marker = tmp_path / "wakes.log"   # each real wake appends one line here
+    barrier = tmp_path / "go"         # children spin until this appears
+
+    def _runner(argv, stdin_json, timeout):
+        # Inside the flock-held critical section: mark, then hold briefly so a
+        # wrongly-overlapping sibling would be caught by the len==1 assertion.
+        with open(marker, "a", encoding="utf-8") as fh:
+            fh.write(f"{os.getpid()}\n")
+        time.sleep(0.15)
+        return 0, 0.15
+
+    def _child():
+        import scripts.overseer_wake as cow
+        rep = _report(alive=False, healthy=False)   # urgent → no cooldown gate
+        deadline = time.time() + 10.0               # barrier-spin to race tightly
+        while not barrier.exists() and time.time() < deadline:
+            time.sleep(0.001)
         try:
-            os.kill(p.pid, 0)
-        except ProcessLookupError:
-            return p.pid
-        except PermissionError:
-            return p.pid
-        time.sleep(0.01)
-    return p.pid
+            cow.run_wake(_cfg(tmp_path), 10_000.0, data_dir=data_dir,
+                         runner=_runner, env={"OVERSEER_WAKE_CMD": "agent"},
+                         build_report=_br(rep, 1))
+        finally:
+            os._exit(0)   # hard-exit; skip pytest teardown/atexit in the child
 
+    pids = []
+    for _ in range(n):
+        pid = os.fork()
+        if pid == 0:
+            _child()     # never returns (os._exit)
+        pids.append(pid)
+
+    # Release all children at once, then reap them (bounded).
+    barrier.write_text("go")
+    deadline = time.time() + 20.0
+    for pid in pids:
+        while True:
+            wpid, _ = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                break
+            if time.time() > deadline:
+                # Last resort: don't hang the suite; signal + reap.
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                break
+            time.sleep(0.01)
+
+    wakes = marker.read_text().splitlines() if marker.exists() else []
+    assert len(wakes) == 1, (
+        f"expected exactly ONE wake across {n} racing wrappers, got "
+        f"{len(wakes)}: {wakes}")
+
+
+# --------------------------------------------------------------------------- #
+# small local utilities
 
 def _pid_alive(pid):
     try:
