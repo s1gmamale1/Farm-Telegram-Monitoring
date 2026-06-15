@@ -890,7 +890,7 @@ def test_healthy_resolves_open_ledger_row_even_without_latches(monkeypatch):
         def open_for_bot(self, source, bot):
             return {"key": f"panel:{bot}"} if source == "panel" else None
 
-        def resolve_open_for_bot(self, bot, resolution, now=None):
+        def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
             resolved.append((bot, resolution))
             return {"count": 1, "elapsed": 120.0, "we_fixed": False}
 
@@ -916,7 +916,10 @@ def test_healthy_no_episode_no_ledger_row_skips_resolve(monkeypatch):
         def open_for_bot(self, source, bot):
             return None
 
-        def resolve_open_for_bot(self, bot, resolution, now=None):
+        def parked_by_key(self, key):
+            return None                       # no parked row either → skip resolve
+
+        def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
             resolved.append((bot, resolution))
             return None
 
@@ -945,7 +948,7 @@ def test_coldcased_panel_returns_healthy_resolves_ledger_once(monkeypatch):
         def open_for_bot(self, source, bot):
             return {"key": f"panel:{bot}"} if source == "panel" else None
 
-        def resolve_open_for_bot(self, bot, resolution, now=None):
+        def resolve_open_for_bot(self, bot, resolution, now=None, *, include_parked=False):
             resolved.append((bot, resolution))
             return {"count": 1, "elapsed": 600.0, "we_fixed": False}
 
@@ -977,3 +980,65 @@ def test_coldcased_panel_returns_healthy_resolves_ledger_once(monkeypatch):
     assert resolved == [("SinFermera1", "self_healed")]
     assert alerts == ["report:SinFermera1:under-launch:fixed=True"]
     assert mcp_watcher._PANEL_STATE["SinFermera1"].coldcase_reported is False
+
+
+# ---------------------------------------------------------------------------
+# Parked-panel recovery is FRESHNESS-GATED. A FRESH healthy card clears the
+# parked row (PC came back); a STALE re-read of a pre-death card must NOT clear
+# it (the PC is still off). Real IncidentTracker on a tmp DB — no fakes, since
+# the resolve path dereferences sqlite3.Row.
+# ---------------------------------------------------------------------------
+
+def test_fresh_healthy_card_clears_parked_row(monkeypatch, tmp_path):
+    from watcherdog.incident_tracker import IncidentTracker
+    monkeypatch.setattr(mcp_watcher, "_alert",
+                        lambda *a, **k: asyncio.sleep(0))   # swallow the Resolved alert
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SinFermera14", "panel:SinFermera14", "high",
+                 "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SinFermera14")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    assert tracker.parked_by_key("panel:SinFermera14") is not None
+
+    cfg = _cfg(panel_stale_minutes=30)
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True               # latch re-armed (restart) for the parked panel
+    mcp_watcher._PANEL_STATE["SinFermera14"] = ps
+    state = {"tracker": tracker}
+
+    # A FRESH healthy card (age 5s < 30m stale window) → real power-on recovery.
+    note = _run(cfg, HEALTHY, name="SinFermera14", age=5.0, state=state)
+    assert note is None
+    assert tracker.parked_by_key("panel:SinFermera14") is None   # parked row CLEARED
+    assert mcp_watcher._PANEL_STATE["SinFermera14"].coldcase_reported is False
+    tracker.close()
+
+
+def test_stale_card_does_not_clear_parked_row(monkeypatch, tmp_path):
+    from watcherdog.incident_tracker import IncidentTracker
+    monkeypatch.setattr(mcp_watcher, "_alert", lambda *a, **k: asyncio.sleep(0))
+    # The probe must NOT make the still-dead panel look alive.
+    async def fake_probe(client, target_ref, cfg):
+        return None, ""                       # inconclusive — never escalates either
+    monkeypatch.setattr(mcp_watcher, "_panel_probe", fake_probe)
+    monkeypatch.setattr(mcp_watcher, "_panel_responds",
+                        lambda *a, **k: asyncio.sleep(0, result=None))
+
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SinFermera14", "panel:SinFermera14", "high",
+                 "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SinFermera14")["id"]
+    tracker.park_by_id(iid, now=100.0)
+
+    cfg = _cfg(panel_stale_minutes=30)
+    ps = mcp_watcher.panel_rules.PanelState()
+    ps.coldcase_reported = True               # parked + latched (PC still off)
+    mcp_watcher._PANEL_STATE["SinFermera14"] = ps
+    state = {"tracker": tracker}
+
+    # A STALE card (age 3600s > 30m window): decide() flags it as a cold-case, so
+    # the latched panel returns "awaiting PC" and NEVER reaches the resolve branch.
+    note = _run(cfg, HEALTHY, name="SinFermera14", age=3600.0, state=state)
+    assert note == "cold-case: awaiting PC"
+    assert tracker.parked_by_key("panel:SinFermera14") is not None  # STILL parked
+    tracker.close()
