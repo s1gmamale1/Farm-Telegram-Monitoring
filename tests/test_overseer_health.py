@@ -260,3 +260,224 @@ def test_build_report_needs_human_empty_when_no_parked(tmp_path):
     report, code = oh.build_report(cfg, 1060.0, alive_fn=lambda: True)
     assert report["needs_human"] == {"count": 0, "bots": [], "stale": []}
     assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# flagged_stuck — Component A. The EXIT CODE now gates on *stuck* incidents
+# (open longer than OVERSEER_STUCK_MIN) instead of any open incident, so the
+# probe never wakes the agent during the core's routine ~5-10 min auto-recovery
+# ladder. The full `flagged` set stays in the JSON unchanged (visibility); a new
+# `flagged_stuck` = {count, bots, stale:[{bot, open_min|null, reason?}]} carries
+# the gated subset. Missing/unparseable opened_ts fails toward waking.
+# ---------------------------------------------------------------------------
+
+def _open_flagged(db_path, bot, *, now):
+    """Open a novel/flagged incident at time `now` and close the tracker."""
+    tr = IncidentTracker(db_path)
+    tr.open("panel", bot, "panel:" + bot, "high", "screen grab failed",
+            fixable=False, novel=True, now=now)
+    tr.close()
+
+
+def _beacon(tmp_path, mtime):
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    os.utime(beacon, (mtime, mtime))
+    return beacon
+
+
+def test_flagged_stuck_younger_than_threshold_inflight_exit_0(tmp_path):
+    # A flagged incident YOUNGER than STUCK_MIN: the core is laddering it. It is
+    # still surfaced in `flagged` (visibility), but `flagged_stuck` is empty and
+    # the probe exits 0 / healthy — no wake during routine auto-recovery.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)
+    _beacon(tmp_path, 1300.0)
+    # 5 min old (< default 12 min STUCK_MIN).
+    report, code = oh.build_report(cfg, 1000.0 + 5 * 60, alive_fn=lambda: True)
+    assert report["flagged"]["count"] == 1
+    assert report["flagged"]["bots"] == ["SinFermera7"]
+    assert report["flagged_stuck"]["count"] == 0
+    assert report["flagged_stuck"]["bots"] == []
+    assert report["flagged_stuck"]["stale"] == []
+    assert code == 0 and report["healthy"] is True
+
+
+def test_flagged_stuck_older_than_threshold_wakes_exit_1(tmp_path):
+    # A flagged incident OLDER than STUCK_MIN → stuck → exit 1 / unhealthy, and
+    # listed in flagged_stuck with open_min ~ its age in minutes.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)
+    _beacon(tmp_path, 1000.0 + 20 * 60)
+    # 20 min old (> default 12 min STUCK_MIN).
+    report, code = oh.build_report(cfg, 1000.0 + 20 * 60, alive_fn=lambda: True)
+    assert code == 1 and report["healthy"] is False
+    assert report["flagged"]["count"] == 1            # full set still reported
+    assert report["flagged_stuck"]["count"] == 1
+    assert report["flagged_stuck"]["bots"] == ["SinFermera7"]
+    stale = report["flagged_stuck"]["stale"]
+    assert stale[0]["bot"] == "SinFermera7"
+    assert stale[0]["open_min"] == 20                 # int minutes open
+    assert "reason" not in stale[0]                   # age is known
+
+
+def test_flagged_stuck_age_unknown_fails_toward_waking(tmp_path):
+    # An incident with an unparseable opened_ts cannot be proven in-flight → it
+    # is counted as stuck with open_min==None, reason=="age_unknown", exit 1.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera9", now=1000.0)
+    # Corrupt opened_ts to a non-numeric value (NOT NULL still satisfied).
+    tr = IncidentTracker(cfg.db_path)
+    tr.conn.execute(
+        "UPDATE open_incidents SET opened_ts = 'garbage' WHERE bot = ?",
+        ("SinFermera9",))
+    tr.conn.commit()
+    tr.close()
+    _beacon(tmp_path, 1000.0)
+    report, code = oh.build_report(cfg, 1000.0 + 60 * 60, alive_fn=lambda: True)
+    assert code == 1 and report["healthy"] is False
+    assert report["flagged_stuck"]["count"] == 1
+    assert report["flagged_stuck"]["bots"] == ["SinFermera9"]
+    entry = report["flagged_stuck"]["stale"][0]
+    assert entry["bot"] == "SinFermera9"
+    assert entry["open_min"] is None
+    assert entry["reason"] == "age_unknown"
+
+
+def test_flagged_stuck_null_opened_ts_fails_toward_waking(tmp_path):
+    # A NULL opened_ts (the dict row carries None) is also unknown-age → stuck.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera10", now=1000.0)
+    # SQLite enforces NOT NULL on opened_ts; emulate a missing age by storing an
+    # empty string (parses to None) — the helper must still fail toward waking.
+    tr = IncidentTracker(cfg.db_path)
+    tr.conn.execute(
+        "UPDATE open_incidents SET opened_ts = '' WHERE bot = ?",
+        ("SinFermera10",))
+    tr.conn.commit()
+    tr.close()
+    _beacon(tmp_path, 1000.0)
+    report, code = oh.build_report(cfg, 1000.0 + 60 * 60, alive_fn=lambda: True)
+    assert code == 1
+    entry = report["flagged_stuck"]["stale"][0]
+    assert entry["open_min"] is None and entry["reason"] == "age_unknown"
+
+
+def test_flagged_stuck_dead_watcher_exit_1_regardless_of_age(tmp_path):
+    # Dead watcher trips immediately even with a young (in-flight) incident.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)
+    _beacon(tmp_path, 1000.0 + 60)
+    report, code = oh.build_report(cfg, 1000.0 + 60, alive_fn=lambda: False)
+    assert code == 1 and report["healthy"] is False
+    assert report["process_alive"] is False
+    assert report["flagged_stuck"]["count"] == 0       # incident itself not stuck
+
+
+def test_flagged_stuck_wedged_watcher_exit_1_regardless_of_age(tmp_path):
+    # Wedged (alive but stale beacon) trips immediately even with a young incident.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)
+    _beacon(tmp_path, 1000.0)                            # beacon 60s old at start
+    # now = 1000 + 700: beacon is 700s old > 5*120 → wedged; incident only 700s old.
+    report, code = oh.build_report(cfg, 1000.0 + 700, alive_fn=lambda: True)
+    assert report["wedged"] is True and code == 1
+    assert report["flagged_stuck"]["count"] == 0
+
+
+def test_flagged_stuck_escalated_recent_report_only_no_wake(tmp_path):
+    # escalated_recent present but no STUCK open incident → exit 0 (report-only
+    # invariant holds; escalation never flips the exit code).
+    cfg = _cfg(tmp_path)
+    tr = IncidentTracker(cfg.db_path)
+    tr.open("panel", "SinFermera11", "panel:SinFermera11", "high", "needs PC",
+            fixable=False, novel=True, now=1000.0)
+    tr.escalate("panel:SinFermera11", now=1500.0)
+    tr.close()
+    _beacon(tmp_path, 1560.0)
+    report, code = oh.build_report(cfg, 1560.0, alive_fn=lambda: True)
+    assert report["escalated_recent"]["bots"] == ["SinFermera11"]
+    assert report["flagged_stuck"]["count"] == 0
+    assert code == 0 and report["healthy"] is True
+
+
+def test_flagged_stuck_needs_human_report_only_no_wake(tmp_path):
+    # A parked panel (needs_human) present but no stuck open incident → exit 0.
+    cfg = _cfg(tmp_path)
+    tr = IncidentTracker(cfg.db_path)
+    tr.open("panel", "SinFermera14", "panel:SinFermera14", "high", "PC OFF",
+            fixable=False, novel=True, now=1000.0)
+    iid = tr.open_for_bot("panel", "SinFermera14")["id"]
+    tr.park_by_id(iid, now=2000.0)
+    tr.close()
+    now = 2000.0 + 48 * 3600.0
+    _beacon(tmp_path, now)
+    report, code = oh.build_report(cfg, now, alive_fn=lambda: True)
+    assert report["needs_human"]["bots"] == ["SinFermera14"]
+    assert report["flagged_stuck"]["count"] == 0
+    assert code == 0 and report["healthy"] is True
+
+
+def test_flagged_stuck_shape_and_flagged_unchanged(tmp_path):
+    # flagged_stuck has the documented shape; the full `flagged` set is present
+    # and unchanged (count/bots), and the whole report stays JSON-serialisable.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)     # stuck
+    _open_flagged(cfg.db_path, "SinFermera8", now=1000.0 + 19 * 60)  # young
+    _beacon(tmp_path, 1000.0 + 20 * 60)
+    report, code = oh.build_report(cfg, 1000.0 + 20 * 60, alive_fn=lambda: True)
+    # flagged carries BOTH open novel incidents, unchanged.
+    assert report["flagged"]["count"] == 2
+    assert sorted(report["flagged"]["bots"]) == ["SinFermera7", "SinFermera8"]
+    # flagged_stuck only the one over threshold.
+    fs = report["flagged_stuck"]
+    assert set(fs.keys()) == {"count", "bots", "stale"}
+    assert fs["count"] == 1 and fs["bots"] == ["SinFermera7"]
+    assert isinstance(fs["stale"], list) and len(fs["stale"]) == 1
+    assert set(fs["stale"][0].keys()) == {"bot", "open_min"}
+    assert fs["stale"][0]["open_min"] == 20
+    assert code == 1
+    import json as _json
+    _json.dumps(report)
+
+
+def test_flagged_stuck_env_override_flips_stuck(tmp_path, monkeypatch):
+    # Lowering OVERSEER_STUCK_MIN to 1 makes a 5-min incident stuck (exit 1);
+    # the default 12 would have left it in-flight (exit 0).
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)
+    _beacon(tmp_path, 1000.0 + 5 * 60)
+    monkeypatch.setenv("OVERSEER_STUCK_MIN", "1")
+    report, code = oh.build_report(cfg, 1000.0 + 5 * 60, alive_fn=lambda: True)
+    assert code == 1 and report["flagged_stuck"]["count"] == 1
+    assert report["flagged_stuck"]["stale"][0]["open_min"] == 5
+
+
+def test_flagged_stuck_default_threshold_is_12(tmp_path):
+    # Sanity-check the module default: an 11-min incident is in-flight, a 13-min
+    # incident is stuck, with no env override set.
+    cfg = _cfg(tmp_path)
+    _open_flagged(cfg.db_path, "SinFermera7", now=1000.0)
+    _beacon(tmp_path, 1000.0 + 13 * 60)
+    r11, c11 = oh.build_report(cfg, 1000.0 + 11 * 60, alive_fn=lambda: True)
+    assert c11 == 0 and r11["flagged_stuck"]["count"] == 0
+    r13, c13 = oh.build_report(cfg, 1000.0 + 13 * 60, alive_fn=lambda: True)
+    assert c13 == 1 and r13["flagged_stuck"]["count"] == 1
+
+
+def test_flagged_stuck_bad_db_degrades(tmp_path):
+    # A bad/empty DB path must degrade to the empty shape like its siblings
+    # (_flagged/_parked) — count 0, empty lists, never crash. (An `error` key is
+    # only present when the IncidentTracker actually raises.)
+    out = oh._flagged_stuck(str(tmp_path / "missing-dir" / "x.db"), 600)
+    assert out["count"] == 0 and out["bots"] == [] and out["stale"] == []
+
+
+def test_flagged_stuck_db_failure_carries_error(tmp_path, monkeypatch):
+    # When IncidentTracker genuinely raises, the helper degrades with an `error`
+    # key (mirrors the sibling try/except branches) instead of crashing the timer.
+    def _boom(*a, **k):
+        raise RuntimeError("db exploded")
+    monkeypatch.setattr(oh, "IncidentTracker", _boom)
+    out = oh._flagged_stuck(str(tmp_path / "i.db"), 600)
+    assert out == {"count": 0, "bots": [], "stale": [], "error": "db exploded"}
