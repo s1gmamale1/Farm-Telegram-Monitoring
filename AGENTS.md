@@ -20,9 +20,24 @@ A host healthcheck runs `scripts/overseer_health.py` every 1–2 min and wakes y
    (`launchctl kickstart -k gui/$(id -u)/com.watcherdog.telegram`) or directly
    (`nohup .venv/bin/python run_watcher.py --verbose >/dev/null 2>&1 &`). Never run
    two processes on `data/watcher.session` — stop the old one first.
-3. **If there are flagged incidents** (`flagged.count > 0`): drive the overseer
-   socket — `list_flagged` → `read_bot` / `screenshot` → fix → `teach_fix` →
-   `resolve_flagged`.
+3. **If there are flagged incidents** (`flagged.count > 0`): first understand that
+   the deterministic core is **already auto-recovering** most stalls — its
+   `novel-ladder` (kill → select → start) resolves a fixable panel in ~5–10 min on
+   its own. **You are the backstop for what the core can't fix, not a parallel
+   fixer.** Triage with `get_stats` (the fleet board) + `list_flagged`, then:
+   - **A freshly-open / in-flight incident** (small `down_since_h`, panel still
+     being worked): the core owns it — **observe, do NOT press.** A mutating press on
+     a panel mid-recovery is refused `{"refused":"in_flight_recovery"}` by design;
+     don't race the ladder. Re-check `get_stats` in a few minutes; it usually clears.
+   - **Only** drive the socket (`read_bot`/`screenshot` → `teach_fix` /
+     `resolve_flagged`, or a non-destructive `press_button`) for an incident the core
+     has been **stuck on** (open well past the ~10-min ladder window) or a genuinely
+     novel case it can't handle.
+   - **`press_button` is a blind click with NO incident-state effect** — a panel
+     flipping back to ✅ after you press is the *core's* recovery on its normal
+     cadence, not your press. Do **not** claim "I recovered SF##." Report only what
+     you actually changed: a `teach_fix`, a `resolve_flagged`, a diagnosis, or a
+     human hand-off.
 4. Report **only** when you took an action or a human is needed. Stay silent when
    healthy. Prefer diagnosis before any edit.
 
@@ -61,6 +76,12 @@ resolves against the watch roster only (`"SF7"`/`"7"`/`"SinFermera7"`).
   venv has it.)
 - `teach_fix` cannot mint standing auto-destructive authority (`auto:yes` + a
   destructive step is refused) — the owner keeps confirm authority.
+- **`{"refused":"in_flight_recovery"}`** — a mutating press (`press_button` /
+  `run_ladder`) on a panel the deterministic ladder is mid-recovery on is refused.
+  This is **expected, not an error**: the core owns recovery and you must not race
+  it (a second press could double-kill or knock out a just-started panel). Do **not**
+  retry in a loop — wait and re-check `get_stats`; the panel almost always recovers
+  on its own within the ladder window.
 
 ## Known-expected — do NOT flag these as issues or try to "fix" them
 
@@ -80,9 +101,17 @@ not offer to fix them (the owner has decided):
   already alerted the human and is THEIRS to resolve (e.g. a panel needing its PC
   powered on). It's shown for visibility, NOT as something for you to re-act on; it
   does not make the system "unhealthy."
+- **`⚠️ quiet` panels are NOT broken.** Under the freshness model, quiet /
+  "launching" / "lobby creation in 60 sec" = working; the core flags real staleness
+  (and dead PCs) and recovers it. Do **not** proactively "nudge" quiet or
+  transiently-stalled panels — that's redundant work the core already does (and now
+  refuses while mid-recovery). A panel only needs you when it carries an open
+  `flagged` incident the core is **stuck** on, or it's a dead PC for the human.
 
-When in doubt, act only on `flagged` (open novel incidents) and genuine
-down/wedged/error signals — not on the expected states above.
+When in doubt, act only on `flagged` (open novel incidents) the core is **stuck**
+on, and genuine down/wedged/error signals — not on in-flight recoveries, quiet
+panels, or the expected states above. The default is to **observe and let the
+deterministic core work**; press only when it has demonstrably failed.
 
 ## Read next
 
