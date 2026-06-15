@@ -224,6 +224,22 @@ Test safely without sending anything:
 .venv/bin/python tools/agent_probe.py "give me a quick farms health summary"
 ```
 
+**Running under launchd (production).** Two launchd agents keep the fleet
+self-healing:
+
+- `com.watcherdog.telegram` — the watcher itself, **`KeepAlive`**: launchd
+  resurrects it on crash or reboot. A plain `SIGTERM` is **respawned** by
+  KeepAlive, so to redeploy use `launchctl kickstart -k
+  gui/$(id -u)/com.watcherdog.telegram` and to actually stop it `launchctl
+  unload ~/Library/LaunchAgents/com.watcherdog.telegram.plist`.
+- `com.watcherdog.overseer-wake` — the on-trouble wake timer (`StartInterval
+  120`, no KeepAlive): runs `scripts/overseer_wake.py`, which wakes the external
+  Hermes overseer **only when the core has genuinely failed**.
+
+Install each with `cp <plist> ~/Library/LaunchAgents/ && launchctl load …`. The
+wake-on-trouble wiring (the probe, the wrapper, `OVERSEER_WAKE_CMD`) is in the
+[Hermes Overseer Runbook](docs/wiki/reference/Hermes%20Overseer%20Runbook.md).
+
 The full runbook — background running, launchd service, watching the logs, and
 troubleshooting — is in **[HOWTORUN.md](HOWTORUN.md)**.
 
@@ -255,6 +271,10 @@ its default). The keys you'll touch most:
 | `NOVEL_RECOVERY` | `true` | Deterministic generic-restart ladder for novel errors (ban/captcha family always exempt). |
 | `OVERSEER_SOCKET` / `OVERSEER_TOKEN` | unset | Opt-in overseer endpoint surface (local UNIX socket) — see `docs/wiki/reference/Overseer Endpoints.md`. |
 | `OVERSEER_ALLOW_DESTRUCTIVE` | `false` | Lets the external overseer press destructive buttons / run the ladder over the socket. Default off — it can still observe + teach. See the [Hermes Overseer Runbook](docs/wiki/reference/Hermes%20Overseer%20Runbook.md). |
+| `OVERSEER_STUCK_MIN` | `12` | Minutes a flagged incident may stay open before the wake probe calls it **stuck** and trips its exit code — so a panel the core is still laddering (~10 min) does not wake the overseer. |
+| `OVERSEER_WAKE_CMD` | unset | The Hermes manager's wake command (shlex-split or an executable path; reason appended as the last argv, probe JSON on stdin). Unset ⇒ the wake wrapper logs `would-wake` and no-ops. |
+| `OVERSEER_WAKE_COOLDOWN_MIN` | `30` | Per-key cooldown between **stuck-incident** wakes (dead/wedged bypass it). |
+| `OVERSEER_WAKE_TIMEOUT_MIN` | `15` | Max wake-agent runtime before the wrapper kills its whole process group and releases the single-flight lock. |
 | `AGENT_API_KEY` / `OPENROUTER_API_KEY` | — | Model key (also read from `~/.hermes/.env`). |
 | `AGENT_ACTIONS_ENABLED` | `true` | Let the agent DRIVE panels, not just read. |
 | `BOT_ACTIONS_ENABLED` | `false` | Let the BOT trigger actions (for `BOT_ACTION_USERS`). |
@@ -316,6 +336,15 @@ handshake/network failure apart from a "just need to log in" state),
 from the CLI), `simulate_error.py` (log-mode testing), `gui_probe.py` /
 `ax_probe.py` (legacy GUI debugging).
 `overseer_health.py` (prints a one-line JSON health summary and exits nonzero when the watcher is dead, wedged, or has flagged incidents — the Option-B wake trigger for the Hermes overseer).
+
+### Scripts `scripts/`
+`overseer_health.py` (the socket-free health/wake probe — prints one-line JSON,
+exits nonzero on dead / wedged / **stuck** flagged incidents past
+`OVERSEER_STUCK_MIN`, adding `flagged_stuck` + report-only `needs_human`),
+`overseer_wake.py` (the host-side on-trouble wake wrapper run by the
+`com.watcherdog.overseer-wake` launchd timer — flock single-flight, keyed
+cooldown, process-group kill on timeout, pluggable `OVERSEER_WAKE_CMD`),
+`overseer_cli.py` (the reference overseer-socket client).
 
 ---
 
