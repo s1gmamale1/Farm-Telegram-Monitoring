@@ -470,12 +470,38 @@ def _open_panel_incident(state, name, summary, now=None):
 
     Cold-cases are flagged ``novel=True`` (Phase 6) so they enter the overseer's
     ``list_flagged`` queue — the one place the core has exhausted text-based
-    understanding (the overseer takes a fresh ``screenshot`` to diagnose)."""
+    understanding (the overseer takes a fresh ``screenshot`` to diagnose).
+
+    PARKED-AWARE DEDUP (the churn fix). A panel whose PC is OFF gets PARKED by the
+    follow-up loop (terminal-until-recovery). While parked, a re-cold-case must not
+    re-open + re-alert. Returns a VERDICT so the call site can gate its alert:
+      * ``"deduped"`` — a parked row for the SAME condition exists: bump its
+        heartbeat and swallow it. NO new row, and the caller MUST skip its alert.
+      * ``"realert"`` — a parked row exists but the incoming cold-case is
+        materially DIFFERENT (the summary marker changed, e.g. "PC off" → "black
+        screen (RDP frozen)"): refresh the parked summary and let the caller emit
+        exactly ONE re-alert. Still no second open row — parked is human-owned.
+      * ``"opened"`` — no parked row: the normal open path ran.
+      * ``None`` — tracking disabled (inert).
+    "Same vs different" is decided by an exact match of the incoming ``summary``
+    against the parked row's stored summary — deterministic, no schema change, and
+    naturally distinguishes the distinct cold-case strings the panel FSM emits."""
     tracker = state.get("tracker")
     if tracker is None:
-        return
-    tracker.open("panel", name, f"panel:{name}", "high", summary,
+        return None
+    key = f"panel:{name}"
+    parked = tracker.parked_by_key(key)
+    if parked is not None:
+        tracker.touch(parked["id"], now=now)
+        if (parked["summary"] or "") == (summary or ""):
+            return "deduped"        # same condition still off — swallow silently
+        # A genuinely different/worse cold-case: record it on the parked row and
+        # tell the caller to re-alert ONCE (don't let parked hide a new failure).
+        tracker.update_summary(parked["id"], summary)
+        return "realert"
+    tracker.open("panel", name, key, "high", summary,
                  fixable=False, novel=True, now=now)
+    return "opened"
 
 
 async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state, target, seed=False):
@@ -551,11 +577,15 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
             if not had_episode and tracker is not None:
                 # Latches are process-memory and can be wiped on restart; when they
                 # say "no episode" we consult the durable ledger to catch an
-                # orphaned open row a wiped latch would otherwise leak. Costs one
-                # cheap SELECT per healthy panel per sweep against the tiny
+                # orphaned open OR PARKED row a wiped latch would otherwise leak.
+                # Costs one cheap SELECT per healthy panel per sweep against the tiny
                 # open_incidents table (returns None -> no-op) — acceptable; the row
                 # is the only durable evidence a wiped-latch panel had an incident.
-                had_episode = tracker.open_for_bot("panel", name) is not None
+                # A still-FRESH healthy card reached this branch (decide() flags a
+                # stale card before here), so clearing a parked row here is the real
+                # power-on recovery, not a stale-read false clear.
+                had_episode = (tracker.open_for_bot("panel", name) is not None
+                               or tracker.parked_by_key(f"panel:{name}") is not None)
             if had_episode:
                 await _resolve_incidents_for(state, client, target, name, now, deliver, cfg,
                                              announce=announce_resolved)
@@ -641,11 +671,17 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
                                 "will retry next window", name)
                     return "probe: inconclusive"
                 # alive is False -> genuine no /start reply -> the PC is off/crashed.
-                # Only a human/power-on fixes it: HIGH alert.
-                await _panel_report_pc_off(state, client, target, name, age,
-                                           deliver=deliver, cfg=cfg)
-                _open_panel_incident(state, name, "PC OFF / unreachable — no /start reply", now=now)
-                log.info("[panel] %s silent AND no /start reply — PC off (HIGH)", name)
+                # Only a human/power-on fixes it: HIGH alert — UNLESS this panel is
+                # already parked for the same PC-off condition (dedup → no re-alert,
+                # the churn fix). _open_panel_incident gates the alert on its verdict.
+                verdict = _open_panel_incident(
+                    state, name, "PC OFF / unreachable — no /start reply", now=now)
+                if verdict != "deduped":
+                    await _panel_report_pc_off(state, client, target, name, age,
+                                               deliver=deliver, cfg=cfg)
+                    log.info("[panel] %s silent AND no /start reply — PC off (HIGH)", name)
+                else:
+                    log.info("[panel] %s PC still off (parked) — suppressed re-alert", name)
             else:
                 # Probing off (or dry-run): can't confirm PC-off, so keep the
                 # timing-only "dead" report rather than over-claiming.
@@ -660,13 +696,14 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
     # loop and escalate as a cold case — a frozen RDP host can't be fixed from
     # Telegram. Report ONCE; then stay quiet (above) until the panel recovers.
     if ps.recover_attempts >= getattr(cfg, "panel_max_attempts", 3):
-        await _panel_report(state, client, target, name,
-                            ps.episode_issue or _issue_label(decision, status, cfg),
-                            fixed=False, deliver=deliver, cfg=cfg,
-                            extra=f" ({ps.recover_attempts} relaunches failed)")
         ps.coldcase_reported = True
-        _open_panel_incident(state, name,
-                             f"{ps.episode_issue or 'issue'} — relaunches failed", now=now)
+        verdict = _open_panel_incident(
+            state, name, f"{ps.episode_issue or 'issue'} — relaunches failed", now=now)
+        if verdict != "deduped":
+            await _panel_report(state, client, target, name,
+                                ps.episode_issue or _issue_label(decision, status, cfg),
+                                fixed=False, deliver=deliver, cfg=cfg,
+                                extra=f" ({ps.recover_attempts} relaunches failed)")
         return "cold-case: attempts exhausted"
 
     # R4 cold-case: a relaunch (select_unfarmed -> start_selected) we already
@@ -676,12 +713,17 @@ async def _evaluate_panel(client, cfg, name, ent, text, date, *, deliver, state,
         if (now - ps.r2_attempted_ts) >= cfg.panel_action_debounce_seconds and deliver:
             shot = await panel_actions.screenshot_black(client, target_ref, cfg)
             if shot["black"]:
-                await _panel_report(state, client, target, name, "black screen",
-                                    fixed=False, deliver=deliver, cfg=cfg,
-                                    extra=" (RDP frozen)")
                 ps.r2_attempted_ts = None
                 ps.coldcase_reported = True
-                _open_panel_incident(state, name, "black screen (RDP frozen)", now=now)
+                verdict = _open_panel_incident(
+                    state, name, "black screen (RDP frozen)", now=now)
+                # A parked PC-off that now reads black-screen is a DIFFERENT
+                # cold-case → verdict 'realert' fires the report once; a repeat of
+                # the same black-screen condition dedups (no spam).
+                if verdict != "deduped":
+                    await _panel_report(state, client, target, name, "black screen",
+                                        fixed=False, deliver=deliver, cfg=cfg,
+                                        extra=" (RDP frozen)")
                 return "R4 cold-case flagged"
 
     if not deliver:
@@ -819,11 +861,15 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
         log.warning("[panel] %s self-report silence: probe inconclusive", name)
         return "self-report: probe inconclusive"
     if alive is False:
-        await _panel_report_pc_off(state, client, target, name, None,
-                                   deliver=deliver, cfg=cfg)
         ps.flag_alerted = True
-        _open_panel_incident(state, name, "self-reported silent + no /start reply", now=now)
-        log.info("[panel] %s self-report silence + no /start reply — PC off (HIGH)", name)
+        verdict = _open_panel_incident(
+            state, name, "self-reported silent + no /start reply", now=now)
+        if verdict != "deduped":
+            await _panel_report_pc_off(state, client, target, name, None,
+                                       deliver=deliver, cfg=cfg)
+            log.info("[panel] %s self-report silence + no /start reply — PC off (HIGH)", name)
+        else:
+            log.info("[panel] %s self-report: PC still off (parked) — suppressed re-alert", name)
         return "self-report: PC off"
     # The probe reply carries the panel's live card: spot the RDP-bug marker and
     # the launch state BEFORE deciding anything (the SF21 lesson).
@@ -844,14 +890,15 @@ async def _handle_panel_selfreport_silence(client, cfg, name, target_ref, *,
             about_to_coldcase=True)
         if handled:
             return f"self-report: {handled}"
-        await _panel_report(state, client, target, name,
-                            ps.episode_issue or "self-reported silence",
-                            fixed=False, deliver=deliver, cfg=cfg,
-                            extra=f" ({ps.recover_attempts} relaunches failed)")
         ps.coldcase_reported = True
-        _open_panel_incident(state, name,
-                             f"{ps.episode_issue or 'self-reported silence'} — relaunches failed",
-                             now=now)
+        verdict = _open_panel_incident(
+            state, name,
+            f"{ps.episode_issue or 'self-reported silence'} — relaunches failed", now=now)
+        if verdict != "deduped":
+            await _panel_report(state, client, target, name,
+                                ps.episode_issue or "self-reported silence",
+                                fixed=False, deliver=deliver, cfg=cfg,
+                                extra=f" ({ps.recover_attempts} relaunches failed)")
         log.info("[panel] %s self-report silence: attempts exhausted -> cold case", name)
         return "self-report: attempts exhausted"
     # Relaunch through the existing gate, arming the SAME state R2 does.
@@ -1118,14 +1165,18 @@ async def _evaluate_bot(client, cfg, store, state, target, bot, text, now, loop,
 
 
 def _rearm_panel_episodes(state):
-    """After a (re)start, in-memory panel latches are empty but open panel: rows
-    persist in SQLite. Re-arm coldcase_reported from the ledger so the followup
+    """After a (re)start, in-memory panel latches are empty but open/parked panel
+    rows persist in SQLite. Re-arm coldcase_reported from the ledger so the followup
     loop doesn't falsely escalate a healed panel, and the next healthy sweep
-    resolves the row (ledger-aware closure). Inert when tracking is disabled."""
+    resolves the row (ledger-aware closure). Inert when tracking is disabled.
+
+    PARKED rows MUST re-arm too: a parked panel (PC still off) whose latch is lost
+    on restart would re-cold-case, re-open and re-churn ~60 min later — the exact
+    bug parking fixes. So we sweep both the open queue AND parked_list()."""
     tracker = state.get("tracker")
     if tracker is None:
         return
-    for row in tracker.open_list():
+    for row in list(tracker.open_list()) + list(tracker.parked_list()):
         if row["source"] == "panel":
             ps = _PANEL_STATE.setdefault(row["bot"], panel_rules.PanelState())
             ps.coldcase_reported = True
@@ -1418,13 +1469,22 @@ async def _incident_followup_tick(client, cfg, tracker, target, state, now, deli
         elapsed = now - row["opened_ts"]
         if act["kind"] == "giveup":
             needs_pc = row["source"] == "panel"
+            # Tell the human ONCE that recovery gave up (a panel needs its PC).
             await _alert(state, client, target,
                          format_incident_escalated(
                              bot, row["summary"], elapsed, needs_pc=needs_pc,
                              retried=(row["fix_retries"] > 0)),
                          deliver, cfg=cfg)
-            tracker.escalate_by_id(incident_id, now=now)
-            log.info("ESCALATED %s after %.0fs", bot, elapsed)
+            # A PANEL cold-case is PC-off (human-owned): PARK it (terminal-until-
+            # recovery) instead of escalating. Parked rows power the dedup that
+            # kills the re-cold-case churn and the report-only needs_human view;
+            # bot_error rows keep today's escalate path (escalated_recent, fades).
+            if needs_pc:
+                tracker.park_by_id(incident_id, now=now)
+                log.info("PARKED %s after %.0fs (needs PC)", bot, elapsed)
+            else:
+                tracker.escalate_by_id(incident_id, now=now)
+                log.info("ESCALATED %s after %.0fs", bot, elapsed)
             continue
         ent = _entity_for(state, bot) if act["kind"] == "refix" else None
         # Only press real buttons when delivering AND we can resolve the panel

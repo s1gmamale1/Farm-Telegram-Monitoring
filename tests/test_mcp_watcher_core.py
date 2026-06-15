@@ -1345,6 +1345,170 @@ def test_followup_tick_refix_resolved_midawait_spares_reopened_row(tmp_path, mon
 
 
 # ---------------------------------------------------------------------------
+# 'parked' lifecycle — a PANEL cold-case whose PC is OFF gets PARKED (not
+# escalated) at the give-up point, the parked row dedups a re-cold-case of the
+# same condition (kills the churn), and the in-process latch re-arms from the
+# parked ledger on restart. bot_error stays on the escalate path.
+# ---------------------------------------------------------------------------
+
+def test_followup_tick_panel_parks_not_escalates(tmp_path, monkeypatch):
+    # A PANEL incident past the give-up window is PARKED (status='parked',
+    # resolution='needs_pc'), NOT escalated — but the human is still told ONCE.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF",
+                 fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 3600.0, deliver=True))
+
+    # Off the open queue and PARKED, not escalated.
+    assert tracker.open_for_bot("panel", "SF11") is None
+    assert tracker.escalated_list() == []                       # NOT escalated
+    parked = tracker.parked_by_key("panel:SF11")
+    assert parked is not None and parked["id"] == iid
+    assert parked["resolution"] == "needs_pc"
+    # The one-time escalation alert STILL fired (human told once a PC needs power).
+    escalated = [m for m in msgs if "❌" in m]
+    assert len(escalated) == 1 and "needs PC" in escalated[0]
+    tracker.close()
+
+
+def test_followup_tick_bot_error_still_escalates(tmp_path, monkeypatch):
+    # A bot_error incident at give-up keeps TODAY's behaviour: status='escalated',
+    # in escalated_recent, never parked.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _followup_cfg(tmp_path)
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("bot_error", "Bot1", "bot_error:Bot1", "high", "boom",
+                 fixable=False, now=0.0)
+    client = _FakeClient()
+    msgs = _capture_alerts(monkeypatch)
+
+    asyncio.run(mcp_watcher._incident_followup_tick(
+        client, cfg, tracker, "ibo", {"tracker": tracker}, 3600.0, deliver=True))
+
+    assert tracker.open_for_bot("bot_error", "Bot1") is None
+    assert [r["bot"] for r in tracker.escalated_list()] == ["Bot1"]   # escalated
+    assert tracker.parked_by_key("bot_error:Bot1") is None            # NOT parked
+    assert len([m for m in msgs if "❌" in m]) == 1
+    tracker.close()
+
+
+def test_open_panel_incident_dedups_same_condition_while_parked(tmp_path):
+    # THE CHURN FIX: re-opening the SAME panel cold-case while parked must NOT
+    # INSERT a new row and must NOT alert — it only bumps the parked row's
+    # heartbeat. (_open_panel_incident is the open path; alerting is gated on its
+    # verdict at the call sites, which we assert separately below.)
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SF11", "panel:SF11", "high",
+                 "PC OFF / unreachable — no /start reply", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    state = {"tracker": tracker}
+
+    verdict = mcp_watcher._open_panel_incident(
+        state, "SF11", "PC OFF / unreachable — no /start reply", now=500.0)
+
+    assert verdict == "deduped"                       # same condition → swallow
+    # No new row: still exactly one row for the key, still parked, heartbeat bumped.
+    rows = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE key = 'panel:SF11'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "parked"
+    assert rows[0]["last_update_ts"] == 500.0         # touched
+    assert tracker.open_list() == []                  # nothing reopened
+    tracker.close()
+
+
+def test_open_panel_incident_realerts_on_different_coldcase_while_parked(tmp_path):
+    # A materially DIFFERENT/worse cold-case on a parked panel must NOT be silently
+    # swallowed: the verdict is 'realert' (the caller emits ONE re-alert) and the
+    # parked row's summary is refreshed so the new failure is recorded — still no
+    # second open row.
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SF11", "panel:SF11", "high",
+                 "PC OFF / unreachable — no /start reply", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    state = {"tracker": tracker}
+
+    verdict = mcp_watcher._open_panel_incident(
+        state, "SF11", "black screen (RDP frozen)", now=500.0)
+
+    assert verdict == "realert"                        # different → don't swallow
+    rows = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE key = 'panel:SF11'").fetchall()
+    assert len(rows) == 1                              # still no new row
+    assert rows[0]["status"] == "parked"
+    assert rows[0]["summary"] == "black screen (RDP frozen)"   # refreshed to the new failure
+    assert rows[0]["last_update_ts"] == 500.0
+    tracker.close()
+
+
+def test_open_panel_incident_opens_normally_when_not_parked(tmp_path):
+    # No parked row → the normal path: a fresh open row + verdict 'opened'.
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    state = {"tracker": tracker}
+    verdict = mcp_watcher._open_panel_incident(state, "SF11", "PC OFF", now=10.0)
+    assert verdict == "opened"
+    assert tracker.open_for_bot("panel", "SF11") is not None
+    tracker.close()
+
+
+def test_parked_panel_does_not_swallow_bot_error(tmp_path):
+    # GUARD: a parked panel:{name} must NOT suppress a DIFFERENT bot_error:{name} —
+    # the bot_error path keys on its own (different) key/source and opens + alerts.
+    from watcherdog.incident_tracker import IncidentTracker
+    cfg = _cfg(tmp_path, {"DISABLE_AI": "true", "AGENT_ACTIONS_ENABLED": "false",
+                          "MIN_SEVERITY": "high", "DEDUPE_WINDOW": "0"})
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "Bot1", "panel:Bot1", "high", "PC OFF", fixable=False, now=1.0)
+    iid = tracker.open_for_bot("panel", "Bot1")["id"]
+    tracker.park_by_id(iid, now=2.0)                  # panel parked
+    client = _FakeClient()
+    state = {"tracker": tracker}
+    asyncio.run(mcp_watcher._evaluate_bot(
+        client, cfg, store, state, "ibo", "Bot1",
+        "[Bot1] Got an error while launching accounts.", 50.0,
+        asyncio.new_event_loop(), deliver=True, ent=None))
+    assert client.sent                                # bot_error STILL alerts
+    assert tracker.open_for_bot("bot_error", "Bot1") is not None  # bot_error opened
+    assert tracker.parked_by_key("panel:Bot1") is not None        # panel stays parked
+    store.close()
+    tracker.close()
+
+
+def test_rearm_panel_episodes_arms_latch_for_parked(tmp_path):
+    # On restart the in-process latch is empty but parked rows persist. Re-arming
+    # must set coldcase_reported=True for parked panels too, so a still-off PC does
+    # NOT re-cold-case and re-churn.
+    from watcherdog.incident_tracker import IncidentTracker
+    tracker = IncidentTracker(str(tmp_path / "incidents.db"))
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    # An open panel row should also still arm (existing behaviour).
+    tracker.open("panel", "SF14", "panel:SF14", "high", "PC OFF", fixable=False, now=5.0)
+    mcp_watcher._PANEL_STATE.clear()
+    state = {"tracker": tracker}
+
+    mcp_watcher._rearm_panel_episodes(state)
+
+    assert mcp_watcher._PANEL_STATE["SF11"].coldcase_reported is True   # parked re-armed
+    assert mcp_watcher._PANEL_STATE["SF14"].coldcase_reported is True   # open re-armed
+    tracker.close()
+
+
+# ---------------------------------------------------------------------------
 # flush_daily_report (integration with daily_report module)
 # ---------------------------------------------------------------------------
 

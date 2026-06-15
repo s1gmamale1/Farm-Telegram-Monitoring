@@ -111,6 +111,35 @@ def _escalated(db_path, since):
         return {"count": 0, "bots": [], "error": str(exc)}
 
 
+def _parked(db_path, now):
+    """Panel cold-cases PARKED because the PC is OFF (human-owned: only a power-on
+    fixes them). REPORT-ONLY context — like `escalated_recent` it must NEVER flip
+    the exit code (a parked panel was already alerted once; re-waking Hermes on it
+    would loop on a human-owned incident). Unlike escalated_recent there is NO
+    fade: a still-off PC stays visible here forever. ``parked_h`` is hours since
+    the park time (the row's ``resolved_ts``). Shape:
+    {"count":N, "bots":[...], "stale":[{"bot":..., "parked_h":...}, ...]}."""
+    try:
+        tr = IncidentTracker(db_path)
+        try:
+            rows = tr.parked_list()
+        finally:
+            tr.close()
+        bots, stale = [], []
+        for r in rows:
+            b = r["bot"]
+            if not b or b in bots:
+                continue          # one entry per panel (newest park wins via order)
+            bots.append(b)
+            parked_ts = r["resolved_ts"]
+            parked_h = (round(max(0.0, now - parked_ts) / 3600.0, 1)
+                        if parked_ts is not None else None)
+            stale.append({"bot": b, "parked_h": parked_h})
+        return {"count": len(bots), "bots": bots, "stale": stale}
+    except Exception as exc:  # noqa: BLE001
+        return {"count": 0, "bots": [], "stale": [], "error": str(exc)}
+
+
 def _tail_lines(path, limit):
     """Last `limit` lines of a file (bounded), or [] if unreadable."""
     try:
@@ -166,6 +195,7 @@ def build_report(cfg, now, *, alive_fn=_process_alive):
     wedged = bool(alive and beacon_stale)
     flagged = _flagged(cfg.db_path)
     escalated = _escalated(cfg.db_path, now - _ESCALATED_WINDOW_S)
+    needs_human = _parked(cfg.db_path, now)
     sock = getattr(cfg, "overseer_socket", "") or ""
     report = {
         "process_alive": alive,
@@ -173,15 +203,18 @@ def build_report(cfg, now, *, alive_fn=_process_alive):
         "wedged": wedged,
         "flagged": flagged,
         "escalated_recent": escalated,
+        "needs_human": needs_human,
         "last_sweep": _last_sweep(getattr(cfg, "gui_run_log", "") or ""),
         "recent_errors": _recent_errors(
             [os.path.join(data_dir, "telegram.err.log"),
              getattr(cfg, "gui_run_log", "") or ""]),
         "socket_present": (os.path.exists(sock) if sock else None),
     }
-    # NOTE: escalated_recent is REPORT-ONLY — auto-recovery already alerted the human,
-    # so it must not flip the exit code (else Hermes would be woken in a loop on a
-    # human-owned incident). It only restores VISIBILITY of an escalated-down panel.
+    # NOTE: escalated_recent AND needs_human are REPORT-ONLY — auto-recovery already
+    # alerted the human, so neither flips the exit code (else Hermes would be woken
+    # in a loop on a human-owned incident). escalated_recent fades at 24h; needs_human
+    # (parked / PC-off) never fades so a still-off PC stays visible — but still must
+    # NOT wake Hermes. They only restore VISIBILITY of a down-but-human-owned panel.
     unhealthy = (not alive) or beacon_stale or flagged.get("count", 0) > 0
     report["healthy"] = not unhealthy
     return report, (1 if unhealthy else 0)

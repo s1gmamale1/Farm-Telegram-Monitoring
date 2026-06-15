@@ -90,6 +90,18 @@ class IncidentTracker:
             (source, bot),
         ).fetchone()
 
+    def parked_by_key(self, key):
+        """Newest PARKED row for ``key``, or None. A parked row is a panel cold-case
+        retired until a human powers its PC back on; the panel-open path consults
+        this to DEDUP a re-cold-case of the same condition (the churn fix) instead
+        of opening + alerting again. Keyed strictly on ``key`` so a parked
+        ``panel:{name}`` never masks a distinct ``bot_error:{name}``."""
+        return self.conn.execute(
+            "SELECT * FROM open_incidents WHERE key = ? AND status = 'parked' "
+            "ORDER BY resolved_ts DESC, id DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+
     # --- mutations ----------------------------------------------------------
     def open(self, source, bot, key, severity, summary, *, fixable,
              novel=False, fix_attempted=None, raw_excerpt=None, now=None):
@@ -188,13 +200,20 @@ class IncidentTracker:
             "ORDER BY opened_ts", (bot,)).fetchall()]
 
     def resolve_open_for_bot(self, bot, resolution, now=None):
-        """Resolve ALL open incidents for a bot regardless of source (the bot/panel
-        is healthy again — close everything). Returns {elapsed (from earliest
-        opened_ts), we_fixed (any attempt reported 'fixed'), count} or None."""
+        """Resolve ALL open AND PARKED incidents for a bot regardless of source (the
+        bot/panel is healthy again — close everything). PARKED rows are included so
+        a recovered PC-off panel leaves the report-only ``needs_human`` view; the
+        caller (healthy-card path) is freshness-gated upstream — ``panel_rules.decide``
+        only returns ``healthy`` for a card NEWER than the stale window, so a stale
+        re-read of a pre-death card can't false-clear a parked-but-still-dead PC.
+        ESCALATED rows are deliberately left untouched (only open + parked clear).
+        Returns {elapsed (from earliest opened_ts), we_fixed, count} or None."""
         if self._dry_run:
             return None
         now = now if now is not None else time.time()
-        rows = self.open_list_for_bot(bot)
+        rows = self.conn.execute(
+            "SELECT * FROM open_incidents WHERE bot = ? "
+            "AND status IN ('open', 'parked') ORDER BY opened_ts", (bot,)).fetchall()
         if not rows:
             return None
         earliest = min(r["opened_ts"] for r in rows)
@@ -204,7 +223,7 @@ class IncidentTracker:
         stored = "we_fixed" if we_fixed else resolution
         self.conn.execute(
             "UPDATE open_incidents SET status = 'resolved', resolved_ts = ?, "
-            "resolution = ? WHERE bot = ? AND status = 'open'",
+            "resolution = ? WHERE bot = ? AND status IN ('open', 'parked')",
             (now, stored, bot))
         self.conn.commit()
         return {"elapsed": now - earliest, "we_fixed": we_fixed, "count": len(rows)}
@@ -297,6 +316,52 @@ class IncidentTracker:
         )
         self.conn.commit()
 
+    def park_by_id(self, incident_id, now=None):
+        """Retire an OPEN panel cold-case to the terminal ``parked`` status (PC is
+        off; only a human power-on fixes it). Like ``escalate_by_id`` it drops the
+        row off the open queue, but with its OWN status/resolution so the dedup
+        and the report-only ``needs_human`` probe can find it — and so it does NOT
+        leak into the escalated_recent window (which fades). ``resolved_ts`` is the
+        park time, the never-fading ``parked_h`` clock. NO-OP on a non-open id."""
+        if self._dry_run:
+            return
+        now = now if now is not None else time.time()
+        self.conn.execute(
+            "UPDATE open_incidents SET status = 'parked', resolved_ts = ?, "
+            "resolution = 'needs_pc' WHERE id = ? AND status = 'open'",
+            (now, incident_id),
+        )
+        self.conn.commit()
+
+    def touch(self, incident_id, now=None):
+        """Bump a row's ``last_update_ts`` heartbeat WITHOUT changing its status —
+        the parked-dedup path uses it to record that a still-off panel re-flagged
+        the SAME condition without re-INSERTing or re-alerting. Status-agnostic by
+        design (it targets a parked row), so unlike the other by-id mutators there
+        is no ``AND status='open'`` guard."""
+        if self._dry_run:
+            return
+        now = now if now is not None else time.time()
+        self.conn.execute(
+            "UPDATE open_incidents SET last_update_ts = ? WHERE id = ?",
+            (now, incident_id),
+        )
+        self.conn.commit()
+
+    def update_summary(self, incident_id, summary):
+        """Overwrite a row's ``summary`` by id, any status. The parked-dedup path
+        uses it to record a DIFFERENT/worse cold-case onto an existing parked row
+        (so the report-only ``needs_human`` view shows the current failure) without
+        opening a second row. Unlike ``refresh`` (which only edits OPEN rows) this
+        deliberately works on a parked row."""
+        if self._dry_run:
+            return
+        self.conn.execute(
+            "UPDATE open_incidents SET summary = ? WHERE id = ?",
+            (summary, incident_id),
+        )
+        self.conn.commit()
+
     def resolve_by_id(self, incident_id, resolution, now=None):
         """Resolve ONE open row by id (the overseer's resolve_flagged). Returns
         True iff a row was actually closed; a resolved/unknown id is False."""
@@ -341,6 +406,19 @@ class IncidentTracker:
                     "SELECT * FROM open_incidents WHERE status = 'escalated' "
                     "AND resolved_ts >= ? ORDER BY resolved_ts DESC", (since,)).fetchall()
             return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
+    def parked_list(self):
+        """PANEL cold-cases retired to ``parked`` (PC off — human-owned), newest
+        park first. There is deliberately NO ``since`` filter: a still-off PC needs
+        to stay VISIBLE in the report-only ``needs_human`` view forever, unlike the
+        escalated_recent window that fades at 24h. Re-arming the in-process latch on
+        restart also reads this so a parked panel never re-churns."""
+        try:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM open_incidents WHERE status = 'parked' "
+                "ORDER BY resolved_ts DESC, id DESC").fetchall()]
         except sqlite3.OperationalError:
             return []
 

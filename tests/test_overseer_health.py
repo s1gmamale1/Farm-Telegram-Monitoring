@@ -197,3 +197,66 @@ def test_build_report_escalated_recent_is_report_only(tmp_path):
     assert report["flagged"]["count"] == 0                 # escalated out of the open queue
     assert report["escalated_recent"]["bots"] == ["SinFermera11"]
     assert report["healthy"] is True and code == 0         # context only, not a wake trigger
+
+
+# ---------------------------------------------------------------------------
+# needs_human — parked (PC-off) panels. Report-only, NEVER fades, and MUST NOT
+# flip `healthy`/the exit code (a parked panel is human-owned; surfacing it must
+# never re-wake Hermes in a loop). Mirrors the escalated_recent rationale.
+# ---------------------------------------------------------------------------
+
+def test_parked_reads_parked_rows_with_park_hours(tmp_path):
+    db = str(tmp_path / "i.db")
+    tr = IncidentTracker(db)
+    tr.open("panel", "SinFermera14", "panel:SinFermera14", "high",
+            "PC OFF", fixable=False, novel=True, now=1000.0)
+    iid = tr.open_for_bot("panel", "SinFermera14")["id"]
+    tr.park_by_id(iid, now=2000.0)        # parked at t=2000
+    tr.close()
+    # 2h after parking (now - resolved_ts = 7200s = 2.0h).
+    out = oh._parked(db, 2000.0 + 7200.0)
+    assert out["count"] == 1
+    assert out["bots"] == ["SinFermera14"]
+    assert out["stale"][0]["bot"] == "SinFermera14"
+    assert out["stale"][0]["parked_h"] == 2.0
+
+
+def test_parked_bad_db_degrades(tmp_path):
+    out = oh._parked(str(tmp_path / "missing-dir" / "x.db"), 0.0)
+    assert out["count"] == 0 and out["bots"] == [] and out["stale"] == []
+
+
+def test_build_report_needs_human_is_report_only_no_fade(tmp_path):
+    # A parked panel must appear in needs_human EVEN >24h after parking (no fade),
+    # while `healthy` stays True and the exit code is 0 — it must never re-wake
+    # Hermes. It also drops out of flagged (status!='open') and escalated_recent
+    # (status!='escalated').
+    cfg = _cfg(tmp_path)
+    tr = IncidentTracker(cfg.db_path)
+    tr.open("panel", "SinFermera14", "panel:SinFermera14", "high", "PC OFF",
+            fixable=False, novel=True, now=1000.0)
+    iid = tr.open_for_bot("panel", "SinFermera14")["id"]
+    tr.park_by_id(iid, now=2000.0)
+    tr.close()
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n")
+    # 48h after parking — well past the 24h escalated window.
+    now = 2000.0 + 48 * 3600.0
+    os.utime(beacon, (now, now))
+    report, code = oh.build_report(cfg, now, alive_fn=lambda: True)
+    assert report["flagged"]["count"] == 0                  # parked → out of open queue
+    assert report["escalated_recent"]["count"] == 0         # parked != escalated
+    assert report["needs_human"]["bots"] == ["SinFermera14"]
+    assert report["needs_human"]["stale"][0]["parked_h"] == 48.0   # no fade
+    assert report["healthy"] is True and code == 0          # report-only, no wake
+    import json as _json
+    _json.dumps(report)                                     # still serialisable
+
+
+def test_build_report_needs_human_empty_when_no_parked(tmp_path):
+    cfg = _cfg(tmp_path)
+    beacon = tmp_path / "watcher_healthy"
+    beacon.write_text("1 1\n"); os.utime(beacon, (1000.0, 1000.0))
+    report, code = oh.build_report(cfg, 1060.0, alive_fn=lambda: True)
+    assert report["needs_human"] == {"count": 0, "bots": [], "stale": []}
+    assert code == 0

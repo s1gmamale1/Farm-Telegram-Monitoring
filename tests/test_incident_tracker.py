@@ -454,3 +454,175 @@ def test_escalated_list_returns_escalated_with_since_filter(tmp_path):
     assert [r["bot"] for r in tr.escalated_list(since=150.0)] == ["SinFermera11"]
     assert tr.escalated_list(since=300.0) == []   # escalated (ts=200) is before the window
     tr.close()
+
+
+# ---------------------------------------------------------------------------
+# 'parked' terminal status — a PANEL cold-case whose only fix is a human turning
+# the PC on. park_by_id() retires the row (status='parked'), parked_by_key()
+# powers the churn-killing dedup, parked_list() persists the latch across a
+# restart, and touch() bumps a parked row's heartbeat without re-INSERTing.
+# ---------------------------------------------------------------------------
+
+def test_park_by_id_sets_parked_status_and_needs_pc(tracker):
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=3600.0)
+    # Off the open queue (like escalate) but NOT escalated — its own terminal status.
+    assert tracker.open_list() == []
+    assert tracker.get_open_by_id(iid) is None
+    row = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE id = ?", (iid,)).fetchone()
+    assert row["status"] == "parked"
+    assert row["resolution"] == "needs_pc"
+    assert row["resolved_ts"] == 3600.0
+
+
+def test_park_by_id_noop_on_resolved_id(tracker):
+    # Mirror escalate_by_id: a park on an already-closed id is a silent NO-OP so a
+    # stale snapshot never re-parks a freshly-reopened row.
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.resolve_by_bot("panel", "SF11", "self_healed", now=100.0)
+    tracker.park_by_id(iid, now=200.0)
+    row = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE id = ?", (iid,)).fetchone()
+    assert row["status"] == "resolved"          # park no-op'd against the resolved id
+    assert row["resolution"] == "self_healed"
+
+
+def test_parked_by_key_returns_newest_parked_or_none(tracker):
+    assert tracker.parked_by_key("panel:SF11") is None     # nothing parked
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    assert tracker.parked_by_key("panel:SF11") is None     # open, not yet parked
+    tracker.park_by_id(iid, now=3600.0)
+    parked = tracker.parked_by_key("panel:SF11")
+    assert parked is not None
+    assert parked["id"] == iid
+    assert parked["summary"] == "PC OFF"
+    # A different key is unaffected.
+    assert tracker.parked_by_key("panel:SF14") is None
+
+
+def test_parked_by_key_scoped_strictly_to_key(tracker):
+    # The guard the reviewer attacks: parked dedup must key STRICTLY on
+    # panel:{name}; a bot_error key for the SAME bot must NOT see the parked row.
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=10.0)
+    assert tracker.parked_by_key("panel:SF11") is not None
+    assert tracker.parked_by_key("bot_error:SF11") is None   # different key/source
+
+
+def test_touch_bumps_last_update_without_new_row(tracker):
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=10.0)
+    before = tracker.parked_by_key("panel:SF11")
+    tracker.touch(iid, now=999.0)
+    after = tracker.parked_by_key("panel:SF11")
+    assert after["id"] == before["id"]            # same row, no INSERT
+    assert after["last_update_ts"] == 999.0       # heartbeat bumped
+    assert after["status"] == "parked"            # still parked (touch ≠ resolve/escalate)
+    assert after["resolved_ts"] == 10.0           # park time untouched (the "since" clock)
+    # Touch must not add a row.
+    all_rows = tracker.conn.execute(
+        "SELECT COUNT(*) c FROM open_incidents WHERE key = 'panel:SF11'").fetchone()
+    assert all_rows["c"] == 1
+
+
+def test_parked_list_returns_parked_newest_first(tracker):
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    tracker.open("panel", "SF14", "panel:SF14", "high", "black screen", fixable=False, now=1.0)
+    iid11 = tracker.open_for_bot("panel", "SF11")["id"]
+    iid14 = tracker.open_for_bot("panel", "SF14")["id"]
+    assert tracker.parked_list() == []
+    tracker.park_by_id(iid11, now=100.0)
+    tracker.park_by_id(iid14, now=200.0)   # newer park time
+    parked = tracker.parked_list()
+    assert [r["bot"] for r in parked] == ["SF14", "SF11"]   # newest park first
+
+
+def test_parked_rows_not_in_open_novel_or_escalated_lists(tracker):
+    # GUARD: parked is a DISTINCT status — it must not leak into the open queue,
+    # the flagged (novel) queue, or the escalated_recent queue.
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF",
+                 fixable=False, novel=True, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    assert tracker.open_list() == []
+    assert tracker.novel_list() == []            # flagged must NOT include parked
+    assert tracker.escalated_list() == []        # escalated_recent must NOT include parked
+    assert [r["bot"] for r in tracker.parked_list()] == ["SF11"]
+
+
+def test_resolve_open_for_bot_also_clears_parked(tracker):
+    # Real recovery: the healthy-card path calls resolve_open_for_bot. It must close
+    # a PARKED panel row too (the PC came back), not just status='open' rows — else
+    # a recovered panel would linger in needs_human forever.
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=100.0)
+    assert tracker.parked_by_key("panel:SF11") is not None
+    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0)
+    assert res is not None and res["count"] == 1
+    assert tracker.parked_by_key("panel:SF11") is None      # parked row closed
+    row = tracker.conn.execute(
+        "SELECT * FROM open_incidents WHERE id = ?", (iid,)).fetchone()
+    assert row["status"] == "resolved"
+
+
+def test_resolve_open_for_bot_clears_open_and_parked_together(tracker):
+    # A bot with BOTH an open bot_error and a parked panel row: a full recovery
+    # closes both (resolve_open_for_bot already spans all sources; now also parked).
+    tracker.open("bot_error", "SF11", "bot_error:SF11", "high", "boom", fixable=False, now=0.0)
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=10.0)
+    pid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(pid, now=100.0)
+    res = tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0)
+    assert res is not None and res["count"] == 2            # open + parked both closed
+    assert tracker.open_for_bot("bot_error", "SF11") is None
+    assert tracker.parked_by_key("panel:SF11") is None
+
+
+def test_resolve_open_for_bot_does_not_clear_escalated(tracker):
+    # GUARD: widening to 'parked' must NOT also start clearing 'escalated' rows —
+    # only open + parked. A bot_error escalation stays escalated.
+    tracker.open("bot_error", "SF11", "bot_error:SF11", "high", "boom", fixable=False, now=0.0)
+    tracker.escalate("bot_error:SF11", now=100.0)
+    assert tracker.resolve_open_for_bot("SF11", "self_healed", now=500.0) is None  # nothing open/parked
+    assert [r["bot"] for r in tracker.escalated_list()] == ["SF11"]    # still escalated
+
+
+def test_update_summary_edits_parked_row(tracker):
+    # The "different cold-case" path records the new failure onto the parked row.
+    tracker.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=0.0)
+    iid = tracker.open_for_bot("panel", "SF11")["id"]
+    tracker.park_by_id(iid, now=10.0)
+    tracker.update_summary(iid, "black screen (RDP frozen)")
+    parked = tracker.parked_by_key("panel:SF11")
+    assert parked["summary"] == "black screen (RDP frozen)"
+    assert parked["status"] == "parked"          # status untouched
+
+
+def test_park_and_touch_are_dry_run_safe(tmp_path):
+    # A rehearsal sharing the prod DB must never write the ledger via the new
+    # mutators (mirror the existing dry-run isolation tests).
+    db = str(tmp_path / "shared.db")
+    live = IncidentTracker(db)
+    live.open("panel", "SF11", "panel:SF11", "high", "PC OFF", fixable=False, now=1.0)
+    rid = live.open_for_bot("panel", "SF11")["id"]
+    live.close()
+
+    dry = IncidentTracker(db, dry_run=True)
+    dry.park_by_id(rid, now=9.0)
+    dry.touch(rid, now=9.0)
+    dry.update_summary(rid, "MUTATED")
+    dry.close()
+
+    check = IncidentTracker(db)
+    after = check.open_for_bot("panel", "SF11")
+    assert after is not None and after["status"] == "open"   # park no-op'd
+    assert after["last_update_ts"] == 1.0                    # touch no-op'd
+    assert after["summary"] == "PC OFF"                      # update_summary no-op'd
+    check.close()
