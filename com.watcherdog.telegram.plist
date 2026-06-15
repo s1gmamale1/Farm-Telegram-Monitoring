@@ -35,6 +35,30 @@
     <key>RunAtLoad</key>
     <true/>
 
+    <!--
+      Match the watcher's runtime launch env. Without these the launchd-supervised
+      watcher would differ from the manual launch — most importantly OVERSEER_SOCKET,
+      which (per config.py) defaults to empty => NO overseer socket is created.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Clear PYTHONPATH so Hermes's own `tools` package can't shadow this
+             repo's `from tools import …` (the standard WatcherDog rule). -->
+        <key>PYTHONPATH</key>
+        <string></string>
+        <!-- Expose the overseer UNIX socket (the Hermes overseer's read/drive
+             endpoints). Resolved relative to WorkingDirectory. Empty/unset => no
+             socket at all, so this is REQUIRED to preserve current behavior. -->
+        <key>OVERSEER_SOCKET</key>
+        <string>data/overseer.sock</string>
+        <!-- Owner's grant: let the overseer SOCKET take destructive panel actions
+             (Kill/Reboot/Shutdown, run_ladder). The watcher's OWN deterministic
+             recovery is gated separately by PANEL_AUTO_DESTRUCTIVE, so flipping this
+             to "false" only restricts the socket to observe/teach/resolve. -->
+        <key>OVERSEER_ALLOW_DESTRUCTIVE</key>
+        <string>true</string>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>/Users/aisigma/projects/csGrind/Farm-Telegram-Monitoring/data/telegram.out.log</string>
     <key>StandardErrorPath</key>
