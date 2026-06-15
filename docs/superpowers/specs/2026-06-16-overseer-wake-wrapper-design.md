@@ -18,10 +18,14 @@ single-flight, cooldown, and a wake log — without ever touching Hermes's own s
   contract to a `sherlock …` call. **We never edit `~/.hermes/`.**
 
 ### The invocation contract (locked)
-The wrapper invokes `$OVERSEER_WAKE_CMD` as: **`argv[1]` = a one-line reason**,
-**stdin = the probe JSON**. Exit code is logged, not acted on. If `OVERSEER_WAKE_CMD`
-is unset/empty, the wrapper logs `would-wake` and no-ops (safe to install + verify the
-whole trigger before Sherlock is plugged in).
+`OVERSEER_WAKE_CMD` is **an executable path or a shlex-splittable command string** (NOT
+a shell string — run with `shell=False` to avoid quoting ambiguity in the launchd plist).
+The wrapper `shlex.split`s it, **appends the one-line reason as the final argv element**,
+and feeds the **probe JSON on stdin**. The command's exit code is logged, not acted on.
+If `OVERSEER_WAKE_CMD` is unset/empty, the wrapper logs `would-wake` and no-ops (safe to
+install + verify the whole trigger before Sherlock is plugged in). The manager points it
+at a shim (e.g. `/Users/aisigma/Sigma-Agents/watcherdog/sherlock-wake-cmd.sh`) that reads
+`argv[-1]`=reason + stdin=JSON and calls `sherlock …`.
 
 ## Wake policy (decided)
 
@@ -45,13 +49,20 @@ unhealthy = (not alive) or beacon_stale or (flagged_stuck.count > 0)
 - Dead/wedged still trip immediately (unchanged).
 - A flagged incident younger than `STUCK_MIN` (core is laddering it) → **exit 0**.
 - The JSON **still reports the full `flagged` and `needs_human` exactly as today**
-  (visibility unchanged) and **adds `flagged_stuck` = {count, bots, stale:[{bot,open_min}]}**
-  for transparency. `healthy` in the JSON tracks the new `unhealthy` (so it stays
+  (visibility unchanged) and **adds `flagged_stuck` = {count, bots,
+  stale:[{bot, open_min|null, reason?}]}** (`reason:"age_unknown"` when `opened_ts` is
+  missing/unparseable) for transparency. `healthy` in the JSON tracks the new `unhealthy` (so it stays
   consistent with the exit code).
 
 **Where the ages come from.** `_flagged` already reads open novel incidents; extend it
 (or add `_flagged_stuck`) to carry each bot's oldest `opened_ts` so the threshold can be
 applied. `IncidentTracker.novel_list()` rows include `opened_ts`.
+
+**Missing/unparseable `opened_ts` → fail toward waking.** If a flagged incident's
+`opened_ts` is absent or unparseable, the probe **cannot prove the panel is in-flight**,
+so it counts as stuck: include it in `flagged_stuck` with `open_min: null` and
+`reason: "age_unknown"`, and it trips the exit code. Never silently treat an
+unknown-age incident as in-flight.
 
 **Back-compat note.** This changes when the probe exits non-zero. The runbook §2 and
 `AGENTS.md` probe-field list must be updated to describe `flagged_stuck` and the
@@ -75,16 +86,17 @@ subprocess invoke. Loads `cfg` via `load_config()` and reuses
 report, code = overseer_health.build_report(cfg, now)
 if code == 0:                          log "ok"          ; exit 0    # healthy / in-flight
 if _lock_held_by_live_pid():           log "skip:inflight"; exit 0    # single-flight
-reason = _reason(report)               # "watcher down" | "wedged" | "stuck: SF14,SF7"
+reason, key = _reason(report)          # reason "stuck: SF7,SF14"; key "stuck:SinFermera7,SinFermera14"
 urgent = (not report["process_alive"]) or report["wedged"]
-if (not urgent) and _within_cooldown(now):
-                                       log "skip:cooldown"; exit 0    # stuck-only cooldown
+if (not urgent) and _within_cooldown(now, key):
+                                       log "skip:cooldown"; exit 0    # KEYED, stuck-only cooldown
 cmd = env OVERSEER_WAKE_CMD
 if not cmd:                            log "would-wake "+reason; exit 0   # no-op until plugged in
-with _lock(pid):                       # held for the agent's lifetime
-    _stamp_wake(now)
-    rc = run(cmd, argv1=reason, stdin=json.dumps(report), timeout=TIMEOUT)
-    log f"woke rc={rc} reason={reason}"   # on timeout: kill, log "woke timeout", release
+with _atomic_lock(pid):                # O_CREAT|O_EXCL, stale-PID reclaim; held for agent lifetime
+    _stamp_cooldown(key, now)
+    argv = shlex.split(cmd) + [reason]
+    rc = _run_group(argv, stdin=json.dumps(report), timeout=TIMEOUT)  # start_new_session; killpg on timeout
+    log f"woke rc={rc} reason={reason}"   # on timeout: killpg, log "woke timeout", release
 ```
 
 **Why the timeout matters:** the lock is held while the agent runs, so a **hung agent
@@ -93,12 +105,25 @@ would hold the lock forever and permanently disable all future wakes.**
 kills the command, logs `woke timeout`, and releases the lock so the next tick can wake
 again.
 
+**Kill the whole process GROUP, not just the parent.** The shim spawns Sherlock, which may
+spawn children; `subprocess.run(timeout=)` only kills the immediate child and orphans the
+rest. Launch with `subprocess.Popen(..., start_new_session=True)` (new process group), and
+on timeout `os.killpg(os.getpgid(proc.pid), SIGTERM)` then `SIGKILL` if it doesn't exit —
+so no orphaned agent/shim children survive.
+
 **State (under `data/`, all size-bounded):**
-- `overseer_wake.lock` — single-flight; holds the wrapper PID; **stale lock (PID not
-  alive via `kill -0`) is reclaimed**.
-- `overseer_wake.last` — last-wake epoch for cooldown.
-- `overseer_wake.log` — one line per decision (ts, decision, reason, bots), **truncated
-  to its last ~1 MB** when it exceeds that (we learned the 122 MB lesson).
+- `overseer_wake.lock` — single-flight, acquired **atomically** via
+  `os.open(path, O_CREAT|O_EXCL|O_WRONLY)` (NOT check-then-write — avoids the TOCTOU race
+  between two overlapping timer ticks); the wrapper writes its PID inside. A **stale lock
+  (PID not alive via `os.kill(pid, 0)`) is reclaimed** (unlink + retry the atomic create).
+- `overseer_wake.cooldowns.json` — **keyed** cooldown: `{ "<key>": <last_wake_epoch> }`
+  where `<key>` is the reason/bot-set, e.g. `"stuck:SinFermera7"` or
+  `"stuck:SinFermera7,SinFermera14"` (bots sorted for a stable key). A new/unrelated stuck
+  bot has a *different* key, so its wake is **never suppressed** by another bot's cooldown.
+  Dead/wedged bypass cooldown entirely. Prune entries older than a day on write.
+- `overseer_wake.log` — one compact line per decision:
+  `ts decision reason bots rc elapsed_s`, **truncated to its last ~1 MB** when it exceeds
+  that (we learned the 122 MB lesson).
 
 **Knobs (env, with defaults):**
 - `OVERSEER_WAKE_CMD` — the manager's command (unset ⇒ no-op).
@@ -107,18 +132,23 @@ again.
 - Dead/wedged **bypass cooldown** (single-flight still applies) — get the watcher back ASAP.
 
 **Error handling (fail toward waking, never crash the timer):**
-- `build_report` raises → treat as trouble, attempt a wake (`reason="probe error"`).
+- `build_report` raises → **synthesize** a report `{"healthy": false, "probe_error": "<exc>"}`
+  and pass THAT as the JSON on stdin (so the agent gets context), `reason="probe error"`.
 - `OVERSEER_WAKE_CMD` missing/non-zero/not-found → log it, release lock, exit 0.
-- Lock always released (context manager / `finally`).
+- Lock always released (context manager / `finally`), including on timeout/kill.
 
-**Tests (pure logic; mocked clock + invoke; real lock/stamp/log files on `tmp_path`):**
+**Tests (pure logic; mocked clock + invoke; real lock/cooldown/log files on `tmp_path`):**
 healthy → no wake; dead → wake (bypasses cooldown); wedged → wake; stuck flagged → wake;
 in-flight flagged (code 0) → no wake; lock held by live PID → skip; lock held by dead PID
-→ reclaim + wake; within cooldown (stuck) → skip; dead within cooldown → still wakes;
-`OVERSEER_WAKE_CMD` unset → would-wake no-op (no invoke); invoke receives `argv[1]`=reason
-and stdin=JSON; invoke failure → logged, lock released; **agent exceeds
-`OVERSEER_WAKE_TIMEOUT_MIN` → killed, `woke timeout` logged, lock released (next tick can
-wake)**; wake log truncates at the cap.
+→ reclaim + wake; **two simultaneous wrapper attempts → exactly one wakes (atomic
+`O_EXCL`), the other skips**; **keyed cooldown: bot A within cooldown does NOT suppress a
+new stuck bot B (different key)**; same-key within cooldown → skip; dead within cooldown →
+still wakes; `OVERSEER_WAKE_CMD` unset → would-wake no-op (no invoke); invoke is
+`shlex`-split with **reason appended as the final argv** and stdin=JSON; invoke failure →
+logged, lock released; `build_report` raises → invoke still fires with the
+`{"healthy":false,"probe_error":…}` JSON; **agent exceeds `OVERSEER_WAKE_TIMEOUT_MIN` →
+process GROUP killed (no orphans), `woke timeout` logged, lock released**; wake log
+truncates at the cap.
 
 ---
 
