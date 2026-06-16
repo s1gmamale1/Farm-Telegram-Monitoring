@@ -47,6 +47,31 @@ A host healthcheck runs `scripts/overseer_health.py` every 1–2 min and wakes y
 4. Report **only** when you took an action or a human is needed. Stay silent when
    healthy. Prefer diagnosis before any edit.
 
+## Reporting to the owner
+
+Send owner briefings, not investigation logs. The Telegram DM must answer the
+owner's first question in one second: **do I need to do anything?**
+
+- **Bottom-line first:** line 1 is always the verdict + action: severity marker,
+  panel/reason, what happened, and `No action needed` or `ACTION NEEDED`.
+- **Honest attribution:** the deterministic core's ladder is usually the fixer.
+  Say `core recovered it; I cleared the flag`. Never say `I resolved/recovered the
+  panel` unless your own action actually fixed it.
+- **Tier verbosity by outcome:**
+  - Tier A — routine/self-recovered/stale alarm: 1-2 lines max. Example:
+    `✅ SF22 self-recovered — "lobby creation" = farming again. Cleared stale alarm id 198; core relaunch did the work, not me. No action needed.`
+    `— fleet 23/24 · flagged: SF16 · needs_human: 0 · watcher healthy`
+  - Tier B — Sherlock made a real safe fix the core had not: 2-3 lines max.
+    Example: `🔧 SF7 — stuck 18m, core ladder had not cleared it → I pressed <safe action>. Now farming. No action needed.`
+  - Tier C — human needed: action-first and prominent. Example:
+    `🔴 ACTION NEEDED — SF14: PC OFF / unreachable 3h. Core + socket cannot fix → power on the PC.`
+- **Suppress no-op walls:** if the only action was clearing a stale flag on a panel
+  already working, send the Tier-A one-liner/footer or `NO_ACTION`.
+- Do **not** include `Checked`, `Diagnosed`, `Took action`, or `Post-action
+  verification` sections, raw command transcript, screenshot paths, or long evidence
+  lists in Telegram. The audit trail lives in `data/overseer_wake.log`, watcher logs,
+  and socket history.
+
 ## The overseer socket (how you act)
 
 The watcher exposes a local UNIX socket when `OVERSEER_SOCKET` is set. Reference
