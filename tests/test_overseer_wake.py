@@ -307,6 +307,16 @@ def test_reason_and_key_for_stuck_bots_sorted(tmp_path):
     assert urgent is False
 
 
+def test_reason_normalizes_common_sinfermera_casing_typos(tmp_path):
+    # Historical probe/log data sometimes carried `SInFermera##` casing, which
+    # made cooldown keys distinct from the canonical `SinFermera##` spelling.
+    rep = _report(stuck_bots=["SInFermera15", "SinFermera7"])
+    reason, key, urgent = ow._reason(rep)
+    assert reason == "stuck: SinFermera15,SinFermera7"
+    assert key == "stuck:SinFermera15,SinFermera7"
+    assert urgent is False
+
+
 def test_reason_down_and_wedged(tmp_path):
     r_down, k_down, u_down = ow._reason(_report(alive=False, healthy=False))
     assert r_down == "watcher down" and k_down == "down" and u_down is True

@@ -37,6 +37,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -89,6 +90,15 @@ def _timeout_s(env):
 # Reason / key derivation (pure)
 # --------------------------------------------------------------------------- #
 
+def _normalize_bot_name(name):
+    """Canonicalize common SinFermera casing drift before keying cooldowns."""
+    text = str(name).strip()
+    match = re.fullmatch(r"sinfermera(\d+)", text, flags=re.IGNORECASE)
+    if match:
+        return f"SinFermera{match.group(1)}"
+    return text
+
+
 def _reason(report):
     """Map a probe report → ``(reason, key, urgent)``.
 
@@ -102,7 +112,7 @@ def _reason(report):
         return "watcher down", "down", True
     if report.get("wedged"):
         return "wedged", "wedged", True
-    bots = sorted((report.get("flagged_stuck") or {}).get("bots") or [])
+    bots = sorted(_normalize_bot_name(b) for b in ((report.get("flagged_stuck") or {}).get("bots") or []))
     joined = ",".join(bots)
     if joined:
         return f"stuck: {joined}", f"stuck:{joined}", False
@@ -340,7 +350,7 @@ def _decide_and_wake(cfg, now, data_dir, runner, env, build_report):
             return {"decision": "ok", "reason": None, "rc": None}
         reason, key, urgent = _reason(report)
 
-    bots = ",".join(sorted((report.get("flagged_stuck") or {}).get("bots") or []))
+    bots = ",".join(sorted(_normalize_bot_name(b) for b in ((report.get("flagged_stuck") or {}).get("bots") or [])))
 
     # NON-INVOKING decisions FIRST, so they acquire NO lock and leave no held
     # flock behind (preserves the "code0 / cooldown / would-wake create no lock
