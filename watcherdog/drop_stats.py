@@ -141,13 +141,16 @@ async def _await_reply(client, ent, after_id, *, need_buttons=False, match=None,
 
 
 async def _press(message, prefixes):
-    """Click the first inline button whose label starts with any prefix
-    (case-insensitive). Returns True if a button was pressed."""
-    rows = getattr(message, "buttons", None) or []
-    for row in rows:
-        for btn in row:
+    """Click the first inline button matching any prefix — exact, then prefix,
+    then substring (case-insensitive), mirroring tg_actions.press_button. The
+    substring pass is what tolerates the real emoji-prefixed live labels (e.g.
+    '🟣 Collect purple accounts', '🔴 Kill all CS & Steam') that a bare
+    startswith would miss. Returns True if a button was pressed."""
+    buttons = [btn for row in (getattr(message, "buttons", None) or []) for btn in row]
+    for matches in (lambda l, p: l == p, lambda l, p: l.startswith(p), lambda l, p: p in l):
+        for btn in buttons:
             label = (getattr(btn, "text", "") or "").strip().lower()
-            if any(label.startswith(p) for p in prefixes):
+            if label and any(matches(label, p) for p in prefixes):
                 await message.click(text=btn.text)
                 return True
     return False
