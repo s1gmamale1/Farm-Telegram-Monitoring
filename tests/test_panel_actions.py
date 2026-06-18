@@ -62,3 +62,20 @@ def test_screenshot_is_black_filesize_fallback(tmp_path):
 def test_screenshot_is_black_missing_path():
     assert panel_actions.screenshot_is_black(None) is False
     assert panel_actions.screenshot_is_black("/no/such/file") is False
+
+
+def test_collect_purple_presses_the_purple_button(monkeypatch):
+    import asyncio
+    from watcherdog import panel_actions
+
+    captured = {}
+
+    async def fake_press_button(client, panel, label, **kw):
+        captured["label"] = label
+        return {"pressed": label}
+
+    monkeypatch.setattr(panel_actions.tg_actions, "press_button", fake_press_button)
+    res = asyncio.run(panel_actions.collect_purple(None, "panel"))
+    assert res["ok"] is True
+    assert captured["label"] == panel_actions.BTN_COLLECT_PURPLE
+    assert "collect_purple" in panel_actions._ACTIONS
