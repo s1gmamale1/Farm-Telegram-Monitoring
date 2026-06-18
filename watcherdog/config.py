@@ -169,6 +169,11 @@ class Config:
         # per panel to DROP_STATS_DIR/<YYYY-Www>.json, then push to a sheet via
         # watcherdog/drop_sheets.py. See docs/hermes/skills/05-drop-stats.md.
         self.drop_stats_dir = resolve_path(get("DROP_STATS_DIR", "data/hermes/drop_stats"))
+        # Weekly maintenance sequence (Wed 00:00): kill all -> collect purple ->
+        # wait -> drop stats (await DROP REPORT) -> activity booster.
+        self.weekly_maintenance_enabled = get("WEEKLY_MAINTENANCE_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+        self.purple_collect_wait_seconds = float(get("PURPLE_COLLECT_WAIT_SECONDS", "3600"))
+        self.drop_report_timeout_seconds = float(get("DROP_REPORT_TIMEOUT_SECONDS", "1800"))
         # Google Sheets sink. drop_sheets.py reads these from the ENVIRONMENT; the
         # weekly job bridges them across before calling append_week(). The creds
         # path is resolved under the project root so a relative .env value works

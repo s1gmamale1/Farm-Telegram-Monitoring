@@ -358,3 +358,23 @@ def test_gui_run_log_rotation_defaults():
     assert cfg.gui_run_log_max_mb == 25 and cfg.gui_run_log_backups == 5
     cfg2 = Config({"GUI_RUN_LOG_MAX_MB": "10", "GUI_RUN_LOG_BACKUPS": "3"})
     assert cfg2.gui_run_log_max_mb == 10 and cfg2.gui_run_log_backups == 3
+
+
+def test_weekly_maintenance_config_defaults():
+    from watcherdog.config import Config
+    cfg = Config({})
+    assert cfg.weekly_maintenance_enabled is True
+    assert cfg.purple_collect_wait_seconds == 3600.0
+    assert cfg.drop_report_timeout_seconds == 1800.0
+
+
+def test_weekly_maintenance_config_overrides():
+    from watcherdog.config import Config
+    cfg = Config({
+        "WEEKLY_MAINTENANCE_ENABLED": "false",
+        "PURPLE_COLLECT_WAIT_SECONDS": "10",
+        "DROP_REPORT_TIMEOUT_SECONDS": "20",
+    })
+    assert cfg.weekly_maintenance_enabled is False
+    assert cfg.purple_collect_wait_seconds == 10.0
+    assert cfg.drop_report_timeout_seconds == 20.0
