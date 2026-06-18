@@ -261,6 +261,54 @@ async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
     return rows
 
 
+async def _for_each_panel(client, panels, action, label):
+    """Run ``action(client, ent)`` on every panel; log (never raise) per-panel
+    failures so one slow/dead panel never blocks the rest of the phase."""
+    for name, ent in panels:
+        try:
+            await action(client, ent)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: %s failed: %s", panel_label(name), label, exc)
+
+
+async def collect_maintenance(client, cfg, panels, *, week, date=None, deliver=True):
+    """Weekly maintenance collector (global phases): kill ALL farms -> collect
+    purple on ALL -> wait ``purple_collect_wait_seconds`` -> Drop Stats on ALL
+    (awaiting each panel's DROP REPORT) -> activity booster on ALL. Returns one
+    row per panel. ``deliver=False`` presses nothing and does not sleep."""
+    if not deliver:
+        log.info("[DRY-RUN] weekly maintenance over %d panels: "
+                 "kill->purple->wait->drop->booster", len(panels))
+        rows = []
+        for name, ent in panels:
+            parsed = _report_to_row("")
+            parsed["notes"] = "dry-run"
+            rows.append(make_row(week, panel_label(name), parsed, date=date))
+        return rows
+
+    await _for_each_panel(client, panels, stop_farm, "kill all")
+    await _for_each_panel(client, panels, collect_purple, "collect purple")
+    await asyncio.sleep(cfg.purple_collect_wait_seconds)
+
+    rows = []
+    for name, ent in panels:
+        panel = panel_label(name)
+        text = ""
+        try:
+            text = await request_drop_stats(
+                client, ent, wait_for_report=True,
+                timeout=cfg.drop_report_timeout_seconds)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: drop-stats request failed: %s", panel, exc)
+        parsed = _report_to_row(text)
+        if not text.strip():
+            parsed["notes"] = "no report"
+        rows.append(make_row(week, panel, parsed, date=date))
+
+    await _for_each_panel(client, panels, run_activity_booster, "activity booster")
+    return rows
+
+
 # --- orchestration + scheduler ---------------------------------------------
 async def _send(client, target, text, deliver=True):
     # `target` may be a single entity OR a list/tuple — when it's a list we send

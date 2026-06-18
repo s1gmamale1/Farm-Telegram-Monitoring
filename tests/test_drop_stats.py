@@ -915,3 +915,122 @@ def test_request_drop_stats_wait_for_report_filters_to_title(monkeypatch):
     monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
     out = asyncio.run(drop_stats.request_drop_stats(None, "ent", wait_for_report=True, timeout=2.0))
     assert "DROP REPORT" in out
+
+
+def test_collect_maintenance_global_phase_order(monkeypatch):
+    """kill-all-panels -> purple-all -> sleep(1h) -> drop-all -> booster-all."""
+    import asyncio
+
+    calls = []
+
+    async def fake_stop(client, ent):
+        calls.append(("kill", ent)); return True
+
+    async def fake_purple(client, ent):
+        calls.append(("purple", ent)); return True
+
+    async def fake_drops(client, ent, **kw):
+        calls.append(("drops", ent, kw.get("wait_for_report"))); return "DROP REPORT\n..."
+
+    async def fake_boost(client, ent):
+        calls.append(("boost", ent)); return True
+
+    async def fake_sleep(s):
+        calls.append(("sleep", s))
+
+    monkeypatch.setattr(drop_stats, "stop_farm", fake_stop)
+    monkeypatch.setattr(drop_stats, "collect_purple", fake_purple)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", fake_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", fake_boost)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    cfg = Config({"PURPLE_COLLECT_WAIT_SECONDS": "3600"})
+    panels = [("Panel 1", "ent1"), ("Panel 2", "ent2")]
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, cfg, panels, week="2026-W23", date="2026-06-03"))
+
+    assert calls == [
+        ("kill", "ent1"), ("kill", "ent2"),
+        ("purple", "ent1"), ("purple", "ent2"),
+        ("sleep", 3600.0),
+        ("drops", "ent1", True), ("drops", "ent2", True),
+        ("boost", "ent1"), ("boost", "ent2"),
+    ]
+    assert len(rows) == 2
+
+
+def test_collect_maintenance_dry_run_presses_nothing_and_does_not_sleep(monkeypatch):
+    import asyncio
+
+    calls = []
+
+    async def boom(*a, **k):
+        calls.append("press"); return True
+
+    async def boom_sleep(s):
+        calls.append("sleep")
+
+    monkeypatch.setattr(drop_stats, "stop_farm", boom)
+    monkeypatch.setattr(drop_stats, "collect_purple", boom)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", boom)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", boom)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", boom_sleep)
+
+    panels = [("Panel 1", "e1"), ("Panel 2", "e2")]
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), panels, week="2026-W23", date="d", deliver=False))
+    assert calls == []
+    assert len(rows) == 2
+    assert all(r["notes"] == "dry-run" for r in rows)
+
+
+def test_collect_maintenance_no_report_marks_notes(monkeypatch):
+    import asyncio
+
+    async def ok(client, ent, *a, **k):
+        return True
+
+    async def empty_drops(client, ent, **kw):
+        return "   "
+
+    async def fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(drop_stats, "stop_farm", ok)
+    monkeypatch.setattr(drop_stats, "collect_purple", ok)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", empty_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", ok)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), [("Panel 1", "e1")], week="2026-W23", date="d"))
+    assert rows[0]["notes"] == "no report"
+
+
+def test_collect_maintenance_one_bad_panel_does_not_abort_rest(monkeypatch):
+    import asyncio
+
+    async def kill_one_raises(client, ent):
+        if ent == "e1":
+            raise RuntimeError("panel 1 down")
+        return True
+
+    async def ok(client, ent, *a, **k):
+        return True
+
+    async def drops(client, ent, **kw):
+        return "DROP REPORT\nTotal cases: 1 pcs."
+
+    async def fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(drop_stats, "stop_farm", kill_one_raises)
+    monkeypatch.setattr(drop_stats, "collect_purple", ok)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", ok)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), [("Panel 1", "e1"), ("Panel 2", "e2")],
+        week="2026-W23", date="d"))
+    assert len(rows) == 2  # the bad kill on e1 did not abort the run
