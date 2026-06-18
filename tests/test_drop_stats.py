@@ -1089,3 +1089,45 @@ def test_weekly_loop_uses_legacy_collector_when_disabled(monkeypatch):
     except _aio.CancelledError:
         pass
     assert seen["collector"] is drop_stats.collect_week
+
+
+def test_request_drop_stats_wait_for_report_accepts_cant_get_drop(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+    async def fake_press(msg, prefixes):
+        return True
+    async def fake_await_reply(client, ent, after_id, *, match=None, **kw):
+        assert match is not None
+        assert match(SimpleNamespace(message="[Stats] Can't get drop on 2 accounts. Check them.")) is True
+        assert match(SimpleNamespace(message="just an unrelated reply")) is False
+        return SimpleNamespace(message="[Stats] Can't get drop on 2 accounts. Check them.")
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    out = asyncio.run(drop_stats.request_drop_stats(None, "ent", wait_for_report=True))
+    assert "Can't get drop" in out
+
+
+def test_collect_maintenance_records_terminal_error_in_notes(monkeypatch):
+    import asyncio
+
+    async def ok(client, ent, *a, **k):
+        return True
+    async def err_drops(client, ent, **kw):
+        return "[Stats] Can't get drop on 2 accounts. Check them."
+    async def fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(drop_stats, "stop_farm", ok)
+    monkeypatch.setattr(drop_stats, "collect_purple", ok)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", err_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", ok)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), [("Panel 1", "e1")], week="2026-W23", date="d"))
+    assert "Can't get drop" in rows[0]["notes"]
+    assert rows[0]["notes"] != "no report"

@@ -171,13 +171,22 @@ async def stop_farm(client, ent):
     return pressed
 
 
+def _is_terminal_drop_reply(m):
+    """Stop waiting on a Drop Stats reply that is terminal: the DROP REPORT
+    itself, or a 'can't get drop' failure notice — so a failing panel doesn't
+    burn the whole timeout, and its error still reaches the buffer/report."""
+    t = (getattr(m, "message", "") or "").lower()
+    return "drop report" in t or "can't get drop" in t or "cant get drop" in t
+
+
 async def request_drop_stats(client, ent, *, timeout=25.0, wait_for_report=False):
     """Press *Drops Stats* and return the reply text ("" if unavailable).
 
     With ``wait_for_report=True`` it waits (up to ``timeout``) for the panel's
-    DROP REPORT message specifically — a reply whose text contains "drop report"
-    (case-insensitive, emoji-safe) — instead of the first reply. Used by the
-    scheduled weekly maintenance run, whose report can take minutes to arrive.
+    terminal Drop Stats reply — the DROP REPORT message, or a "can't get drop"
+    failure notice — instead of the first reply (see :func:`_is_terminal_drop_reply`).
+    Used by the scheduled weekly maintenance run, whose report can take minutes to
+    arrive; a failing panel returns its error promptly rather than timing out.
     """
     menu = await _open_menu(client, ent)
     if menu is None:
@@ -185,7 +194,7 @@ async def request_drop_stats(client, ent, *, timeout=25.0, wait_for_report=False
     if not await _press(menu, DROPS_BUTTONS):
         log.warning("%s: no Drops Stats button found", tg_tools.entity_name(ent))
         return ""
-    match = (lambda m: "drop report" in (m.message or "").lower()) if wait_for_report else None
+    match = _is_terminal_drop_reply if wait_for_report else None
     reply = await _await_reply(client, ent, menu.id, timeout=timeout, match=match)
     return (reply.message or "") if reply else ""
 
@@ -274,8 +283,13 @@ async def _for_each_panel(client, panels, action, label):
 async def collect_maintenance(client, cfg, panels, *, week, date=None, deliver=True):
     """Weekly maintenance collector (global phases): kill ALL farms -> collect
     purple on ALL -> wait ``purple_collect_wait_seconds`` -> Drop Stats on ALL
-    (awaiting each panel's DROP REPORT) -> activity booster on ALL. Returns one
-    row per panel. ``deliver=False`` presses nothing and does not sleep."""
+    (awaiting each panel's terminal Drop Stats reply) -> activity booster on ALL.
+    Returns one row per panel. ``deliver=False`` presses nothing and does not sleep.
+
+    The kill/purple/booster phases run via :func:`_for_each_panel`, so one
+    slow/dead panel never blocks the rest. The Drop Stats phase is serial (it
+    needs each call's reply text) and is bounded per panel by
+    ``drop_report_timeout_seconds``."""
     if not deliver:
         log.info("[DRY-RUN] weekly maintenance over %d panels: "
                  "kill->purple->wait->drop->booster", len(panels))
@@ -290,7 +304,10 @@ async def collect_maintenance(client, cfg, panels, *, week, date=None, deliver=T
     await _for_each_panel(client, panels, collect_purple, "collect purple")
     await asyncio.sleep(cfg.purple_collect_wait_seconds)
 
+    # Drop phase is serial (not _for_each_panel): we need each call's RETURN value
+    # (the reply text) to build that panel's row.
     rows = []
+    _shown = lambda v: "?" if v == "" else v  # noqa: E731
     for name, ent in panels:
         panel = panel_label(name)
         text = ""
@@ -302,8 +319,13 @@ async def collect_maintenance(client, cfg, panels, *, week, date=None, deliver=T
             log.warning("%s: drop-stats request failed: %s", panel, exc)
         parsed = _report_to_row(text)
         if not text.strip():
-            parsed["notes"] = "no report"
+            parsed["notes"] = "no report"            # waited for a DROP REPORT, none arrived
+        elif "drop report" not in text.lower() and not parsed["notes"]:
+            # terminal non-report reply (e.g. "Can't get drop on N accounts")
+            parsed["notes"] = " ".join(text.split())[:200]
         rows.append(make_row(week, panel, parsed, date=date))
+        log.info("%s: cases=%s items=%s value=%s", panel,
+                 _shown(parsed["drops"]), _shown(parsed["items"]), _shown(parsed["value"]))
 
     await _for_each_panel(client, panels, run_activity_booster, "activity booster")
     return rows
