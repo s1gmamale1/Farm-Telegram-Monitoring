@@ -796,7 +796,7 @@ def test_weekly_loop_alerts_once_per_failure_streak(monkeypatch):
     targets_seen = []
     calls = {"n": 0}
 
-    async def fake_run_weekly(client, cfg, target=None, *, deliver=True):
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True, collector=None):
         targets_seen.append(target)
         calls["n"] += 1
         # fail 3 times, then succeed (call #4); the loop then sleeps 60s.
@@ -822,3 +822,312 @@ def test_weekly_loop_alerts_once_per_failure_streak(monkeypatch):
     # First run got target="ibo" (alert once); the 3 retries + success got None.
     assert targets_seen[0] == "ibo"
     assert targets_seen[1:] == [None, None, None]
+
+
+def test_await_reply_match_filters_to_matching_message():
+    import asyncio
+    from types import SimpleNamespace
+
+    nope = SimpleNamespace(out=False, id=11, buttons=None, message="just a reply")
+    report = SimpleNamespace(out=False, id=12, buttons=None, message="x DROP REPORT x")
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return [report, nope]  # newest first
+
+    result = asyncio.run(drop_stats._await_reply(
+        _Client(), "ent", after_id=5, timeout=1.0,
+        match=lambda m: "drop report" in (m.message or "").lower()))
+    assert result is report
+
+
+def test_collect_purple_returns_false_when_no_menu(monkeypatch):
+    import asyncio
+
+    async def fake_open_menu(client, ent, **kw):
+        return None
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    assert asyncio.run(drop_stats.collect_purple(None, "ent")) is False
+
+
+def test_collect_purple_presses_purple_button(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    seen = {}
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=1)
+
+    async def fake_press(msg, prefixes):
+        seen["prefixes"] = prefixes
+        return True
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    assert asyncio.run(drop_stats.collect_purple(None, "ent")) is True
+    assert seen["prefixes"] == drop_stats.PURPLE_BUTTONS
+
+
+def test_request_drop_stats_default_passes_no_match(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+
+    async def fake_press(msg, prefixes):
+        return True
+
+    captured = {}
+
+    async def fake_await_reply(client, ent, after_id, *, match=None, **kw):
+        captured["match"] = match
+        return SimpleNamespace(message="312 drops")
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    out = asyncio.run(drop_stats.request_drop_stats(None, "ent"))
+    assert "312" in out
+    assert captured["match"] is None
+
+
+def test_request_drop_stats_wait_for_report_filters_to_title(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+
+    async def fake_press(msg, prefixes):
+        return True
+
+    async def fake_await_reply(client, ent, after_id, *, match=None, **kw):
+        assert match is not None
+        assert match(SimpleNamespace(message="some other reply")) is False
+        assert match(SimpleNamespace(message="=-=-= ❤️FSM PANEL | DROP REPORT❤️ =-=-=")) is True
+        return SimpleNamespace(message="=-=-= ❤️FSM PANEL | DROP REPORT❤️ =-=-=\nTotal cases: 5 pcs.")
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    out = asyncio.run(drop_stats.request_drop_stats(None, "ent", wait_for_report=True, timeout=2.0))
+    assert "DROP REPORT" in out
+
+
+def test_collect_maintenance_global_phase_order(monkeypatch):
+    """kill-all-panels -> purple-all -> sleep(1h) -> drop-all -> booster-all."""
+    import asyncio
+
+    calls = []
+
+    async def fake_stop(client, ent):
+        calls.append(("kill", ent)); return True
+
+    async def fake_purple(client, ent):
+        calls.append(("purple", ent)); return True
+
+    async def fake_drops(client, ent, **kw):
+        calls.append(("drops", ent, kw.get("wait_for_report"))); return "DROP REPORT\n..."
+
+    async def fake_boost(client, ent):
+        calls.append(("boost", ent)); return True
+
+    async def fake_sleep(s):
+        calls.append(("sleep", s))
+
+    monkeypatch.setattr(drop_stats, "stop_farm", fake_stop)
+    monkeypatch.setattr(drop_stats, "collect_purple", fake_purple)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", fake_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", fake_boost)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    cfg = Config({"PURPLE_COLLECT_WAIT_SECONDS": "3600"})
+    panels = [("Panel 1", "ent1"), ("Panel 2", "ent2")]
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, cfg, panels, week="2026-W23", date="2026-06-03"))
+
+    assert calls == [
+        ("kill", "ent1"), ("kill", "ent2"),
+        ("purple", "ent1"), ("purple", "ent2"),
+        ("sleep", 3600.0),
+        ("drops", "ent1", True), ("drops", "ent2", True),
+        ("boost", "ent1"), ("boost", "ent2"),
+    ]
+    assert len(rows) == 2
+
+
+def test_collect_maintenance_dry_run_presses_nothing_and_does_not_sleep(monkeypatch):
+    import asyncio
+
+    calls = []
+
+    async def boom(*a, **k):
+        calls.append("press"); return True
+
+    async def boom_sleep(s):
+        calls.append("sleep")
+
+    monkeypatch.setattr(drop_stats, "stop_farm", boom)
+    monkeypatch.setattr(drop_stats, "collect_purple", boom)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", boom)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", boom)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", boom_sleep)
+
+    panels = [("Panel 1", "e1"), ("Panel 2", "e2")]
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), panels, week="2026-W23", date="d", deliver=False))
+    assert calls == []
+    assert len(rows) == 2
+    assert all(r["notes"] == "dry-run" for r in rows)
+
+
+def test_collect_maintenance_no_report_marks_notes(monkeypatch):
+    import asyncio
+
+    async def ok(client, ent, *a, **k):
+        return True
+
+    async def empty_drops(client, ent, **kw):
+        return "   "
+
+    async def fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(drop_stats, "stop_farm", ok)
+    monkeypatch.setattr(drop_stats, "collect_purple", ok)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", empty_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", ok)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), [("Panel 1", "e1")], week="2026-W23", date="d"))
+    assert rows[0]["notes"] == "no report"
+
+
+def test_collect_maintenance_one_bad_panel_does_not_abort_rest(monkeypatch):
+    import asyncio
+
+    async def kill_one_raises(client, ent):
+        if ent == "e1":
+            raise RuntimeError("panel 1 down")
+        return True
+
+    async def ok(client, ent, *a, **k):
+        return True
+
+    async def drops(client, ent, **kw):
+        return "DROP REPORT\nTotal cases: 1 pcs."
+
+    async def fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(drop_stats, "stop_farm", kill_one_raises)
+    monkeypatch.setattr(drop_stats, "collect_purple", ok)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", ok)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), [("Panel 1", "e1"), ("Panel 2", "e2")],
+        week="2026-W23", date="d"))
+    assert len(rows) == 2  # the bad kill on e1 did not abort the run
+
+
+def test_weekly_loop_selects_maintenance_collector_when_enabled(monkeypatch):
+    import asyncio
+    import asyncio as _aio
+
+    seen = {}
+    n = {"i": 0}
+
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True, collector=None):
+        seen["collector"] = collector
+        return {"ok": True}
+
+    async def fake_sleep(s):
+        n["i"] += 1
+        if n["i"] >= 2:        # initial seconds_until sleep, then post-success 60s
+            raise _aio.CancelledError()
+
+    monkeypatch.setattr(drop_stats, "run_weekly", fake_run_weekly)
+    monkeypatch.setattr(drop_stats, "seconds_until", lambda *a, **k: 0)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    try:
+        asyncio.run(drop_stats.weekly_loop(object(), Config({}), target="ibo"))
+    except _aio.CancelledError:
+        pass
+    assert seen["collector"] is drop_stats.collect_maintenance
+
+
+def test_weekly_loop_uses_legacy_collector_when_disabled(monkeypatch):
+    import asyncio
+    import asyncio as _aio
+
+    seen = {}
+    n = {"i": 0}
+
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True, collector=None):
+        seen["collector"] = collector
+        return {"ok": True}
+
+    async def fake_sleep(s):
+        n["i"] += 1
+        if n["i"] >= 2:
+            raise _aio.CancelledError()
+
+    monkeypatch.setattr(drop_stats, "run_weekly", fake_run_weekly)
+    monkeypatch.setattr(drop_stats, "seconds_until", lambda *a, **k: 0)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    try:
+        asyncio.run(drop_stats.weekly_loop(
+            object(), Config({"WEEKLY_MAINTENANCE_ENABLED": "false"}), target="ibo"))
+    except _aio.CancelledError:
+        pass
+    assert seen["collector"] is drop_stats.collect_week
+
+
+def test_request_drop_stats_wait_for_report_accepts_cant_get_drop(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+    async def fake_press(msg, prefixes):
+        return True
+    async def fake_await_reply(client, ent, after_id, *, match=None, **kw):
+        assert match is not None
+        assert match(SimpleNamespace(message="[Stats] Can't get drop on 2 accounts. Check them.")) is True
+        assert match(SimpleNamespace(message="just an unrelated reply")) is False
+        return SimpleNamespace(message="[Stats] Can't get drop on 2 accounts. Check them.")
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    out = asyncio.run(drop_stats.request_drop_stats(None, "ent", wait_for_report=True))
+    assert "Can't get drop" in out
+
+
+def test_collect_maintenance_records_terminal_error_in_notes(monkeypatch):
+    import asyncio
+
+    async def ok(client, ent, *a, **k):
+        return True
+    async def err_drops(client, ent, **kw):
+        return "[Stats] Can't get drop on 2 accounts. Check them."
+    async def fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(drop_stats, "stop_farm", ok)
+    monkeypatch.setattr(drop_stats, "collect_purple", ok)
+    monkeypatch.setattr(drop_stats, "request_drop_stats", err_drops)
+    monkeypatch.setattr(drop_stats, "run_activity_booster", ok)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    rows = asyncio.run(drop_stats.collect_maintenance(
+        None, Config({}), [("Panel 1", "e1")], week="2026-W23", date="d"))
+    assert "Can't get drop" in rows[0]["notes"]
+    assert rows[0]["notes"] != "no report"

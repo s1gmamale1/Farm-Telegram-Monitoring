@@ -17,6 +17,7 @@ BTN_START_SELECTED = "start selected"
 BTN_MAKE_LOBBIES = "make lobbies"
 BTN_DROP_STATS = "drop stats"
 BTN_ACTIVITY_BOOSTER = "run activity booster"
+BTN_COLLECT_PURPLE = "collect purple"
 BTN_RESTART_PANEL = "restart panel"
 
 
@@ -49,6 +50,10 @@ async def run_activity_booster(client, panel):
     return await _press(client, panel, BTN_ACTIVITY_BOOSTER)
 
 
+async def collect_purple(client, panel):
+    return await _press(client, panel, BTN_COLLECT_PURPLE)
+
+
 async def restart_panel(client, panel, *, confirmed=True):
     return await _press(client, panel, BTN_RESTART_PANEL, confirmed=confirmed)
 
@@ -66,6 +71,7 @@ _ACTIONS = {
     "make_lobbies": lambda c, p, cf: make_lobbies(c, p),
     "drop_stats": lambda c, p, cf: drop_stats(c, p),
     "run_activity_booster": lambda c, p, cf: run_activity_booster(c, p),
+    "collect_purple": lambda c, p, cf: collect_purple(c, p),
 }
 
 

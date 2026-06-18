@@ -23,13 +23,21 @@ apart from the (already-required) Telethon client passed in.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import re
 from datetime import datetime, timedelta
 
-from watcherdog import drop_sheets, farm_stats, tg_tools
+from watcherdog import drop_sheets, tg_tools
+from watcherdog.drop_stats_format import (  # re-exported pure helpers (back-compat)
+    _report_to_row,
+    buffer_path,
+    format_report,
+    iso_week,
+    load_buffer,
+    make_row,
+    panel_label,
+    write_buffer,
+)
 
 log = logging.getLogger("watcherdog.drop_stats")
 
@@ -38,128 +46,13 @@ STOP_BUTTONS = ("kill all cs", "kill all", "stop the farm", "stop farm", "stop")
 DROPS_BUTTONS = ("drops stats", "drop stats", "drops")
 # Operator rule: the activity booster must run AFTER drop stats are pulled.
 BOOSTER_BUTTONS = ("run activity booster", "activity booster")
+# Operator weekly maintenance: collect "purple" accounts before pulling stats.
+PURPLE_BUTTONS = ("collect purple", "purple")
 
 # Wednesday = weekday() 2 (Mon=0). Run at 00:00.
 RUN_WEEKDAY = 2
 RUN_HOUR = 0
 RUN_MINUTE = 0
-
-
-# --- pure helpers (unit-tested) --------------------------------------------
-def iso_week(dt):
-    """Canonical week id like ``2026-W23`` (ISO year + zero-padded ISO week).
-
-    Used both for the buffer filename and ibo's report header so they match.
-    """
-    iso = dt.isocalendar()
-    year, week = iso[0], iso[1]
-    return f"{year}-W{week:02d}"
-
-
-def buffer_path(drop_stats_dir, week):
-    """Path of the weekly buffer file for ``week`` (e.g. .../2026-W23.json)."""
-    return os.path.join(drop_stats_dir, f"{week}.json")
-
-
-def panel_label(name):
-    """Display name -> ``Panel#N`` using the number in the name (skill 0)."""
-    m = re.search(r"(\d+)", name or "")
-    return f"Panel#{m.group(1)}" if m else (name.strip() if name else "Panel#?")
-
-
-def _report_to_row(text):
-    """Parse a panel's Drop Stats reply into the sheet-column fields, via the
-    Phase 1 farm_stats parser. Empty/echo text -> all-blank (so format_report and
-    the Sheets push show nothing rather than a fabricated 0). Never raises."""
-    rep = farm_stats.parse_drop_report(text)
-    has = (rep.total_cases is not None or rep.value_usd is not None
-           or rep.accounts is not None)
-    if not has and not rep.problems:
-        return {"drops": "", "items": "", "value": "", "notes": ""}
-    return {
-        "drops": rep.total_cases if rep.total_cases is not None else "",
-        "items": len(rep.skins),
-        "value": rep.value_usd if rep.value_usd is not None else "",
-        "notes": "; ".join(rep.problems),
-    }
-
-
-def make_row(week, panel, parsed, *, date=None):
-    """Build one sheet row (keyed by drop_sheets.COLUMNS) for a panel."""
-    parsed = parsed or {}
-    return {
-        "week": week,
-        "date": date or datetime.now().date().isoformat(),
-        "panel": panel,
-        "drops": parsed.get("drops", ""),
-        "items": parsed.get("items", ""),
-        "value": parsed.get("value", ""),
-        "notes": parsed.get("notes", ""),
-    }
-
-
-def write_buffer(path, week, rows, *, generated=None):
-    """Write the weekly buffer (one file per week, overwriting). Returns payload.
-
-    Never raises — a failed write is logged so the caller can still push/report.
-    """
-    payload = {
-        "week": week,
-        "generated": generated or datetime.now().isoformat(timespec="seconds"),
-        "rows": rows,
-    }
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False)
-    except OSError as exc:
-        log.warning("could not write drop-stats buffer %s: %s", path, exc)
-    return payload
-
-
-def load_buffer(path):
-    """Read a weekly buffer back (or ``None`` if missing/unreadable)."""
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("could not read drop-stats buffer %s: %s", path, exc)
-        return None
-
-
-def format_report(week, rows, push=None):
-    """Render ibo's weekly report (skill 5 step 5).
-
-        🐕 Weekly drops — 2026-W23
-        • Panel#1 — 312 drops · ~$xx
-        • Panel#2 — 280 drops
-        Total: 592 · saved to Sheets ✅
-    """
-    lines = [f"🐕 Weekly drops — {week}"]
-    total = 0
-    for r in rows:
-        drops = str(r.get("drops", "") or "")
-        value = str(r.get("value", "") or "")
-        try:
-            total += int(drops)
-        except (TypeError, ValueError):
-            pass
-        shown = drops or "?"
-        val = f" · ~${value}" if value else ""
-        lines.append(f"• {r.get('panel', 'Panel#?')} — {shown} drops{val}")
-
-    push = push or {}
-    if push.get("ok"):
-        tail = f"Total: {total} · saved to Sheets ✅"
-    elif push.get("reason") == "not configured":
-        tail = f"Total: {total} · buffered, no API key yet"
-    else:
-        reason = push.get("reason", "")
-        tail = f"Total: {total} · buffered ({reason})" if reason else f"Total: {total} · buffered"
-    lines.append(tail)
-    return "\n".join(lines)
 
 
 def seconds_until(now, *, weekday=RUN_WEEKDAY, hour=RUN_HOUR, minute=RUN_MINUTE):
@@ -219,10 +112,11 @@ async def load_panels(client, cfg):
     return panels
 
 
-async def _await_reply(client, ent, after_id, *, need_buttons=False,
+async def _await_reply(client, ent, after_id, *, need_buttons=False, match=None,
                        timeout=20.0, poll=1.5):
     """Poll for an INCOMING message newer than ``after_id`` (optionally one that
-    carries inline buttons). Returns the message or ``None`` on timeout."""
+    carries inline buttons, and/or one matching ``match(m)``). Returns the
+    message or ``None`` on timeout."""
     waited = 0.0
     while True:
         try:
@@ -236,6 +130,8 @@ async def _await_reply(client, ent, after_id, *, need_buttons=False,
             if after_id and m.id <= after_id:
                 continue
             if need_buttons and not getattr(m, "buttons", None):
+                continue
+            if match is not None and not match(m):
                 continue
             return m
         if waited >= timeout:
@@ -275,15 +171,31 @@ async def stop_farm(client, ent):
     return pressed
 
 
-async def request_drop_stats(client, ent, *, timeout=25.0):
-    """Press *Drops Stats* and return the reply text ("" if unavailable)."""
+def _is_terminal_drop_reply(m):
+    """Stop waiting on a Drop Stats reply that is terminal: the DROP REPORT
+    itself, or a 'can't get drop' failure notice — so a failing panel doesn't
+    burn the whole timeout, and its error still reaches the buffer/report."""
+    t = (getattr(m, "message", "") or "").lower()
+    return "drop report" in t or "can't get drop" in t or "cant get drop" in t
+
+
+async def request_drop_stats(client, ent, *, timeout=25.0, wait_for_report=False):
+    """Press *Drops Stats* and return the reply text ("" if unavailable).
+
+    With ``wait_for_report=True`` it waits (up to ``timeout``) for the panel's
+    terminal Drop Stats reply — the DROP REPORT message, or a "can't get drop"
+    failure notice — instead of the first reply (see :func:`_is_terminal_drop_reply`).
+    Used by the scheduled weekly maintenance run, whose report can take minutes to
+    arrive; a failing panel returns its error promptly rather than timing out.
+    """
     menu = await _open_menu(client, ent)
     if menu is None:
         return ""
     if not await _press(menu, DROPS_BUTTONS):
         log.warning("%s: no Drops Stats button found", tg_tools.entity_name(ent))
         return ""
-    reply = await _await_reply(client, ent, menu.id, timeout=timeout)
+    match = _is_terminal_drop_reply if wait_for_report else None
+    reply = await _await_reply(client, ent, menu.id, timeout=timeout, match=match)
     return (reply.message or "") if reply else ""
 
 
@@ -300,6 +212,18 @@ async def run_activity_booster(client, ent):
     pressed = await _press(menu, BOOSTER_BUTTONS)
     if not pressed:
         log.warning("%s: no activity booster button found", tg_tools.entity_name(ent))
+    return pressed
+
+
+async def collect_purple(client, ent):
+    """Open the panel's menu and press *Collect purple accounts*. True if pressed."""
+    menu = await _open_menu(client, ent)
+    if menu is None:
+        log.warning("%s: no /start menu — cannot collect purple", tg_tools.entity_name(ent))
+        return False
+    pressed = await _press(menu, PURPLE_BUTTONS)
+    if not pressed:
+        log.warning("%s: no collect-purple button found", tg_tools.entity_name(ent))
     return pressed
 
 
@@ -346,6 +270,67 @@ async def collect_week(client, cfg, panels, *, week, date=None, deliver=True):
     return rows
 
 
+async def _for_each_panel(client, panels, action, label):
+    """Run ``action(client, ent)`` on every panel; log (never raise) per-panel
+    failures so one slow/dead panel never blocks the rest of the phase."""
+    for name, ent in panels:
+        try:
+            await action(client, ent)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: %s failed: %s", panel_label(name), label, exc)
+
+
+async def collect_maintenance(client, cfg, panels, *, week, date=None, deliver=True):
+    """Weekly maintenance collector (global phases): kill ALL farms -> collect
+    purple on ALL -> wait ``purple_collect_wait_seconds`` -> Drop Stats on ALL
+    (awaiting each panel's terminal Drop Stats reply) -> activity booster on ALL.
+    Returns one row per panel. ``deliver=False`` presses nothing and does not sleep.
+
+    The kill/purple/booster phases run via :func:`_for_each_panel`, so one
+    slow/dead panel never blocks the rest. The Drop Stats phase is serial (it
+    needs each call's reply text) and is bounded per panel by
+    ``drop_report_timeout_seconds``."""
+    if not deliver:
+        log.info("[DRY-RUN] weekly maintenance over %d panels: "
+                 "kill->purple->wait->drop->booster", len(panels))
+        rows = []
+        for name, ent in panels:
+            parsed = _report_to_row("")
+            parsed["notes"] = "dry-run"
+            rows.append(make_row(week, panel_label(name), parsed, date=date))
+        return rows
+
+    await _for_each_panel(client, panels, stop_farm, "kill all")
+    await _for_each_panel(client, panels, collect_purple, "collect purple")
+    await asyncio.sleep(cfg.purple_collect_wait_seconds)
+
+    # Drop phase is serial (not _for_each_panel): we need each call's RETURN value
+    # (the reply text) to build that panel's row.
+    rows = []
+    _shown = lambda v: "?" if v == "" else v  # noqa: E731
+    for name, ent in panels:
+        panel = panel_label(name)
+        text = ""
+        try:
+            text = await request_drop_stats(
+                client, ent, wait_for_report=True,
+                timeout=cfg.drop_report_timeout_seconds)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: drop-stats request failed: %s", panel, exc)
+        parsed = _report_to_row(text)
+        if not text.strip():
+            parsed["notes"] = "no report"            # waited for a DROP REPORT, none arrived
+        elif "drop report" not in text.lower() and not parsed["notes"]:
+            # terminal non-report reply (e.g. "Can't get drop on N accounts")
+            parsed["notes"] = " ".join(text.split())[:200]
+        rows.append(make_row(week, panel, parsed, date=date))
+        log.info("%s: cases=%s items=%s value=%s", panel,
+                 _shown(parsed["drops"]), _shown(parsed["items"]), _shown(parsed["value"]))
+
+    await _for_each_panel(client, panels, run_activity_booster, "activity booster")
+    return rows
+
+
 # --- orchestration + scheduler ---------------------------------------------
 async def _send(client, target, text, deliver=True):
     # `target` may be a single entity OR a list/tuple — when it's a list we send
@@ -367,11 +352,13 @@ async def _send(client, target, text, deliver=True):
         return False
 
 
-async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
+async def run_weekly(client, cfg, target=None, *, deliver=True, now=None, collector=None):
     """Run the full skill-5 job once: stop farms, pull stats, buffer, push, report.
 
-    Returns ``{"week", "rows", "push", "path", "ok"}`` (and ``"reason"`` on a
-    failure such as a 0-panel folder resolution).
+    ``collector`` selects the collect step (defaults to :func:`collect_week`, the
+    fast on-demand pull); ``weekly_loop`` passes :func:`collect_maintenance` for
+    the scheduled phased run. Returns ``{"week", "rows", "push", "path", "ok"}``
+    (and ``"reason"`` on a failure such as a 0-panel folder resolution).
     """
     now = now or datetime.now()
     week = iso_week(now)
@@ -390,8 +377,9 @@ async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
         return {"week": week, "ok": False, "reason": "no panels",
                 "rows": None, "push": None, "path": None}
 
-    rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat(),
-                              deliver=deliver)
+    collect = collector or collect_week
+    rows = await collect(client, cfg, panels, week=week, date=now.date().isoformat(),
+                         deliver=deliver)
 
     path = buffer_path(cfg.drop_stats_dir, week)
     write_buffer(path, week, rows, generated=now.isoformat(timespec="seconds"))
@@ -414,7 +402,13 @@ async def weekly_loop(client, cfg, target=None, *, deliver=True):
     Alert fatigue guard: a persistent failure streak alerts the owner ONCE — the
     first failed run carries ``target``; every subsequent hourly retry passes
     ``target=None`` so ``run_weekly`` retries SILENTLY. A fresh weekly window (or
-    a recovery + new failure) re-arms the alert."""
+    a recovery + new failure) re-arms the alert.
+
+    The scheduled run uses the phased :func:`collect_maintenance` collector when
+    ``cfg.weekly_maintenance_enabled`` (default), else the legacy
+    :func:`collect_week`. The on-demand "drops stats" command stays a fast pull —
+    it calls ``run_weekly`` directly with the default collector."""
+    collector = collect_maintenance if getattr(cfg, "weekly_maintenance_enabled", True) else collect_week
     while True:
         delay = seconds_until(datetime.now())
         log.info("Next weekly drop-stats run in %.1f h (%s)",
@@ -426,7 +420,7 @@ async def weekly_loop(client, cfg, target=None, *, deliver=True):
             try:
                 res = await run_weekly(client, cfg,
                                        target if not alerted else None,  # alert once per streak
-                                       deliver=deliver)
+                                       deliver=deliver, collector=collector)
             except Exception:  # noqa: BLE001
                 log.exception("weekly drop-stats run failed; retry in 1h")
                 res = {"ok": False, "reason": "exception"}
