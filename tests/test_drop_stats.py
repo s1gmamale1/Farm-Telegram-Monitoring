@@ -543,6 +543,53 @@ def test_press_no_buttons_returns_false():
     assert result is False
 
 
+def test_press_matches_real_emoji_prefixed_live_labels():
+    """Regression (manual test 2026-06-18): real panel buttons are emoji-prefixed
+    (ground truth in data/captures/, e.g. '🔴 Kill all CS & Steam', '🟣 Collect
+    purple accounts'). _press must match them by substring, not just startswith —
+    otherwise every weekly-maintenance driver silently no-ops on the live fleet."""
+    import asyncio
+
+    # The real /start menu, verbatim from data/captures/SinFermera10.txt.
+    real_labels = [
+        "🖼 Screenshot", "📊 Launched accs stats", "👉 Select 4/10 unfarmed",
+        "👉 Select first 4/10 accs", "👉 Select accounts manually",
+        "👥 Make lobbies and search game", "🟢 Start selected accounts",
+        "🔴 Kill all CS & Steam", "🎁 Loot selected accounts", "📈 Drop Stats",
+        "⚡ Run activity booster", "🔎 Steam Route Tool [🟢 ON]",
+        "⏰ Set Timer for Autofarm", "🟣 Collect purple accounts",
+        "⚙️ Panel settings menu", "🔄 Restart panel", "🔄⚠️ Reboot PC",
+        "⛔⚠️ Shutdown PC",
+    ]
+
+    class _Btn:
+        def __init__(self, text):
+            self.text = text
+
+    def _menu():
+        clicked = []
+
+        class _Msg:
+            buttons = [[_Btn(t)] for t in real_labels]
+
+            async def click(self, text=None):
+                clicked.append(text)
+
+        return _Msg(), clicked
+
+    cases = [
+        (drop_stats.STOP_BUTTONS, "🔴 Kill all CS & Steam"),
+        (drop_stats.DROPS_BUTTONS, "📈 Drop Stats"),
+        (drop_stats.BOOSTER_BUTTONS, "⚡ Run activity booster"),
+        (drop_stats.PURPLE_BUTTONS, "🟣 Collect purple accounts"),
+    ]
+    for prefixes, expected in cases:
+        msg, clicked = _menu()
+        ok = asyncio.run(drop_stats._press(msg, prefixes))
+        assert ok is True, f"{prefixes} matched no live label"
+        assert clicked == [expected], f"{prefixes} clicked {clicked}, expected [{expected}]"
+
+
 # --- stop_farm / request_drop_stats / run_activity_booster ------------------
 
 def test_stop_farm_returns_false_when_no_menu(monkeypatch):
