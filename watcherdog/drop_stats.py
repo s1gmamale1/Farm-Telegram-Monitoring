@@ -330,11 +330,13 @@ async def _send(client, target, text, deliver=True):
         return False
 
 
-async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
+async def run_weekly(client, cfg, target=None, *, deliver=True, now=None, collector=None):
     """Run the full skill-5 job once: stop farms, pull stats, buffer, push, report.
 
-    Returns ``{"week", "rows", "push", "path", "ok"}`` (and ``"reason"`` on a
-    failure such as a 0-panel folder resolution).
+    ``collector`` selects the collect step (defaults to :func:`collect_week`, the
+    fast on-demand pull); ``weekly_loop`` passes :func:`collect_maintenance` for
+    the scheduled phased run. Returns ``{"week", "rows", "push", "path", "ok"}``
+    (and ``"reason"`` on a failure such as a 0-panel folder resolution).
     """
     now = now or datetime.now()
     week = iso_week(now)
@@ -353,8 +355,9 @@ async def run_weekly(client, cfg, target=None, *, deliver=True, now=None):
         return {"week": week, "ok": False, "reason": "no panels",
                 "rows": None, "push": None, "path": None}
 
-    rows = await collect_week(client, cfg, panels, week=week, date=now.date().isoformat(),
-                              deliver=deliver)
+    collect = collector or collect_week
+    rows = await collect(client, cfg, panels, week=week, date=now.date().isoformat(),
+                         deliver=deliver)
 
     path = buffer_path(cfg.drop_stats_dir, week)
     write_buffer(path, week, rows, generated=now.isoformat(timespec="seconds"))
@@ -377,7 +380,13 @@ async def weekly_loop(client, cfg, target=None, *, deliver=True):
     Alert fatigue guard: a persistent failure streak alerts the owner ONCE — the
     first failed run carries ``target``; every subsequent hourly retry passes
     ``target=None`` so ``run_weekly`` retries SILENTLY. A fresh weekly window (or
-    a recovery + new failure) re-arms the alert."""
+    a recovery + new failure) re-arms the alert.
+
+    The scheduled run uses the phased :func:`collect_maintenance` collector when
+    ``cfg.weekly_maintenance_enabled`` (default), else the legacy
+    :func:`collect_week`. The on-demand "drops stats" command stays a fast pull —
+    it calls ``run_weekly`` directly with the default collector."""
+    collector = collect_maintenance if getattr(cfg, "weekly_maintenance_enabled", True) else collect_week
     while True:
         delay = seconds_until(datetime.now())
         log.info("Next weekly drop-stats run in %.1f h (%s)",
@@ -389,7 +398,7 @@ async def weekly_loop(client, cfg, target=None, *, deliver=True):
             try:
                 res = await run_weekly(client, cfg,
                                        target if not alerted else None,  # alert once per streak
-                                       deliver=deliver)
+                                       deliver=deliver, collector=collector)
             except Exception:  # noqa: BLE001
                 log.exception("weekly drop-stats run failed; retry in 1h")
                 res = {"ok": False, "reason": "exception"}

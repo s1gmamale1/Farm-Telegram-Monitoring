@@ -796,7 +796,7 @@ def test_weekly_loop_alerts_once_per_failure_streak(monkeypatch):
     targets_seen = []
     calls = {"n": 0}
 
-    async def fake_run_weekly(client, cfg, target=None, *, deliver=True):
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True, collector=None):
         targets_seen.append(target)
         calls["n"] += 1
         # fail 3 times, then succeed (call #4); the loop then sleeps 60s.
@@ -1034,3 +1034,58 @@ def test_collect_maintenance_one_bad_panel_does_not_abort_rest(monkeypatch):
         None, Config({}), [("Panel 1", "e1"), ("Panel 2", "e2")],
         week="2026-W23", date="d"))
     assert len(rows) == 2  # the bad kill on e1 did not abort the run
+
+
+def test_weekly_loop_selects_maintenance_collector_when_enabled(monkeypatch):
+    import asyncio
+    import asyncio as _aio
+
+    seen = {}
+    n = {"i": 0}
+
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True, collector=None):
+        seen["collector"] = collector
+        return {"ok": True}
+
+    async def fake_sleep(s):
+        n["i"] += 1
+        if n["i"] >= 2:        # initial seconds_until sleep, then post-success 60s
+            raise _aio.CancelledError()
+
+    monkeypatch.setattr(drop_stats, "run_weekly", fake_run_weekly)
+    monkeypatch.setattr(drop_stats, "seconds_until", lambda *a, **k: 0)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    try:
+        asyncio.run(drop_stats.weekly_loop(object(), Config({}), target="ibo"))
+    except _aio.CancelledError:
+        pass
+    assert seen["collector"] is drop_stats.collect_maintenance
+
+
+def test_weekly_loop_uses_legacy_collector_when_disabled(monkeypatch):
+    import asyncio
+    import asyncio as _aio
+
+    seen = {}
+    n = {"i": 0}
+
+    async def fake_run_weekly(client, cfg, target=None, *, deliver=True, collector=None):
+        seen["collector"] = collector
+        return {"ok": True}
+
+    async def fake_sleep(s):
+        n["i"] += 1
+        if n["i"] >= 2:
+            raise _aio.CancelledError()
+
+    monkeypatch.setattr(drop_stats, "run_weekly", fake_run_weekly)
+    monkeypatch.setattr(drop_stats, "seconds_until", lambda *a, **k: 0)
+    monkeypatch.setattr(drop_stats.asyncio, "sleep", fake_sleep)
+
+    try:
+        asyncio.run(drop_stats.weekly_loop(
+            object(), Config({"WEEKLY_MAINTENANCE_ENABLED": "false"}), target="ibo"))
+    except _aio.CancelledError:
+        pass
+    assert seen["collector"] is drop_stats.collect_week
