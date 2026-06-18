@@ -46,6 +46,8 @@ STOP_BUTTONS = ("kill all cs", "kill all", "stop the farm", "stop farm", "stop")
 DROPS_BUTTONS = ("drops stats", "drop stats", "drops")
 # Operator rule: the activity booster must run AFTER drop stats are pulled.
 BOOSTER_BUTTONS = ("run activity booster", "activity booster")
+# Operator weekly maintenance: collect "purple" accounts before pulling stats.
+PURPLE_BUTTONS = ("collect purple", "purple")
 
 # Wednesday = weekday() 2 (Mon=0). Run at 00:00.
 RUN_WEEKDAY = 2
@@ -110,10 +112,11 @@ async def load_panels(client, cfg):
     return panels
 
 
-async def _await_reply(client, ent, after_id, *, need_buttons=False,
+async def _await_reply(client, ent, after_id, *, need_buttons=False, match=None,
                        timeout=20.0, poll=1.5):
     """Poll for an INCOMING message newer than ``after_id`` (optionally one that
-    carries inline buttons). Returns the message or ``None`` on timeout."""
+    carries inline buttons, and/or one matching ``match(m)``). Returns the
+    message or ``None`` on timeout."""
     waited = 0.0
     while True:
         try:
@@ -127,6 +130,8 @@ async def _await_reply(client, ent, after_id, *, need_buttons=False,
             if after_id and m.id <= after_id:
                 continue
             if need_buttons and not getattr(m, "buttons", None):
+                continue
+            if match is not None and not match(m):
                 continue
             return m
         if waited >= timeout:
@@ -166,15 +171,22 @@ async def stop_farm(client, ent):
     return pressed
 
 
-async def request_drop_stats(client, ent, *, timeout=25.0):
-    """Press *Drops Stats* and return the reply text ("" if unavailable)."""
+async def request_drop_stats(client, ent, *, timeout=25.0, wait_for_report=False):
+    """Press *Drops Stats* and return the reply text ("" if unavailable).
+
+    With ``wait_for_report=True`` it waits (up to ``timeout``) for the panel's
+    DROP REPORT message specifically — a reply whose text contains "drop report"
+    (case-insensitive, emoji-safe) — instead of the first reply. Used by the
+    scheduled weekly maintenance run, whose report can take minutes to arrive.
+    """
     menu = await _open_menu(client, ent)
     if menu is None:
         return ""
     if not await _press(menu, DROPS_BUTTONS):
         log.warning("%s: no Drops Stats button found", tg_tools.entity_name(ent))
         return ""
-    reply = await _await_reply(client, ent, menu.id, timeout=timeout)
+    match = (lambda m: "drop report" in (m.message or "").lower()) if wait_for_report else None
+    reply = await _await_reply(client, ent, menu.id, timeout=timeout, match=match)
     return (reply.message or "") if reply else ""
 
 
@@ -191,6 +203,18 @@ async def run_activity_booster(client, ent):
     pressed = await _press(menu, BOOSTER_BUTTONS)
     if not pressed:
         log.warning("%s: no activity booster button found", tg_tools.entity_name(ent))
+    return pressed
+
+
+async def collect_purple(client, ent):
+    """Open the panel's menu and press *Collect purple accounts*. True if pressed."""
+    menu = await _open_menu(client, ent)
+    if menu is None:
+        log.warning("%s: no /start menu — cannot collect purple", tg_tools.entity_name(ent))
+        return False
+    pressed = await _press(menu, PURPLE_BUTTONS)
+    if not pressed:
+        log.warning("%s: no collect-purple button found", tg_tools.entity_name(ent))
     return pressed
 
 

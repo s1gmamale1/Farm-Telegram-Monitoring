@@ -822,3 +822,96 @@ def test_weekly_loop_alerts_once_per_failure_streak(monkeypatch):
     # First run got target="ibo" (alert once); the 3 retries + success got None.
     assert targets_seen[0] == "ibo"
     assert targets_seen[1:] == [None, None, None]
+
+
+def test_await_reply_match_filters_to_matching_message():
+    import asyncio
+    from types import SimpleNamespace
+
+    nope = SimpleNamespace(out=False, id=11, buttons=None, message="just a reply")
+    report = SimpleNamespace(out=False, id=12, buttons=None, message="x DROP REPORT x")
+
+    class _Client:
+        async def get_messages(self, ent, limit=6):
+            return [report, nope]  # newest first
+
+    result = asyncio.run(drop_stats._await_reply(
+        _Client(), "ent", after_id=5, timeout=1.0,
+        match=lambda m: "drop report" in (m.message or "").lower()))
+    assert result is report
+
+
+def test_collect_purple_returns_false_when_no_menu(monkeypatch):
+    import asyncio
+
+    async def fake_open_menu(client, ent, **kw):
+        return None
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    assert asyncio.run(drop_stats.collect_purple(None, "ent")) is False
+
+
+def test_collect_purple_presses_purple_button(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    seen = {}
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=1)
+
+    async def fake_press(msg, prefixes):
+        seen["prefixes"] = prefixes
+        return True
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    assert asyncio.run(drop_stats.collect_purple(None, "ent")) is True
+    assert seen["prefixes"] == drop_stats.PURPLE_BUTTONS
+
+
+def test_request_drop_stats_default_passes_no_match(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+
+    async def fake_press(msg, prefixes):
+        return True
+
+    captured = {}
+
+    async def fake_await_reply(client, ent, after_id, *, match=None, **kw):
+        captured["match"] = match
+        return SimpleNamespace(message="312 drops")
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    out = asyncio.run(drop_stats.request_drop_stats(None, "ent"))
+    assert "312" in out
+    assert captured["match"] is None
+
+
+def test_request_drop_stats_wait_for_report_filters_to_title(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    async def fake_open_menu(client, ent, **kw):
+        return SimpleNamespace(buttons=[[]], id=5)
+
+    async def fake_press(msg, prefixes):
+        return True
+
+    async def fake_await_reply(client, ent, after_id, *, match=None, **kw):
+        assert match is not None
+        assert match(SimpleNamespace(message="some other reply")) is False
+        assert match(SimpleNamespace(message="=-=-= ❤️FSM PANEL | DROP REPORT❤️ =-=-=")) is True
+        return SimpleNamespace(message="=-=-= ❤️FSM PANEL | DROP REPORT❤️ =-=-=\nTotal cases: 5 pcs.")
+
+    monkeypatch.setattr(drop_stats, "_open_menu", fake_open_menu)
+    monkeypatch.setattr(drop_stats, "_press", fake_press)
+    monkeypatch.setattr(drop_stats, "_await_reply", fake_await_reply)
+    out = asyncio.run(drop_stats.request_drop_stats(None, "ent", wait_for_report=True, timeout=2.0))
+    assert "DROP REPORT" in out
